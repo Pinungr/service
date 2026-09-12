@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.db*
+*.sqlite*
+runtime/
+demo-data/
+benchmark-data/
+build/
+dist/
+*.log
+*.zip
+*.spec.bak
+.env
+.env.*
+!.env.example
+# Local shop files and credentials must never be published.
+managed/
+Customers/
+backups/
+interactive.lock
+*.pem
+*.key
+*.pfx
+# Session notes and generated verification outputs stay on this computer.
+PROGRESS.md
+docs/screenshots/
+docs/test-results.xml
+docs/package-verification.json
+docs/benchmark-results.json

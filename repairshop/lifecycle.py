@@ -1,0 +1,711 @@
+"""Guided repair lifecycle over the existing jobs, work, custody and accounts.
+
+Physical location is always read from holdings. Workflow evidence augments a job;
+it never replaces movements, issued quotes, payments or the immutable audit log.
+"""
+from contextvars import ContextVar
+from datetime import datetime, timezone, date
+from zoneinfo import ZoneInfo
+import json
+import uuid
+from .domain import RuleError, now, day, rupees
+
+_command = ContextVar('repair_lifecycle_command', default=False)
+ROUTE_LABELS = {'in_house': 'IN-HOUSE REPAIR', 'warranty_centre': 'AUTHORIZED SERVICE CENTER', 'third_party': 'THIRD-PARTY REPAIR'}
+LABELS = dict(received='RECEIVED', inspection='INITIAL INSPECTION', warranty_check='WARRANTY CHECK',
+    route_selection='SELECT REPAIR ROUTE', diagnosis='DIAGNOSIS', external_diagnosis='EXTERNAL DIAGNOSIS',
+    awaiting_estimate='PREPARE ESTIMATE', awaiting_approval='WAITING FOR CUSTOMER APPROVAL', approved='APPROVED',
+    ready_dispatch='DISPATCH PENDING', under_repair='REPAIR IN PROGRESS', waiting_parts='WAITING FOR PARTS',
+    awaiting_return='AWAITING RETURN TO SHOP', technician_testing='TECHNICIAN TESTING', testing='FINAL QC',
+    final_qc='FINAL QC', billing='BILLING', ready_repaired='READY FOR DELIVERY',
+    return_unrepaired='RETURN WITHOUT REPAIR', ready_unrepaired='READY FOR DELIVERY · UNREPAIRED',
+    collected='DELIVERED', closed='CLOSED')
+ACTIONS = {
+    'inspect': 'Perform initial inspection', 'inspection_done': 'Complete initial inspection',
+    'verify_warranty': 'Verify warranty', 'select_route': 'Select repair route', 'change_route': 'Change repair route',
+    'prepare_dispatch': 'Create dispatch record', 'dispatch': 'Send device', 'arrive': 'Confirm arrival at repairer',
+    'diagnose': 'Record diagnosis', 'quote': 'Prepare customer estimate', 'decision': 'Record customer decision',
+    'warranty_result': 'Record service center warranty decision', 'wait_parts': 'Order / wait for parts',
+    'parts_received': 'Mark parts received', 'start_repair': 'Start / authorize repair',
+    'complete_repair': 'Record repair completed', 'replacement': 'Record replacement result',
+    'repair_failed': 'Record unsuccessful repair', 'test': 'Record technician test', 'receive': 'Receive device back at shop',
+    'qc': 'Perform final QC / return check', 'bill': 'Review billing and mark ready',
+    'notify': 'Notify customer', 'payment': 'Record customer payment / refund', 'handover': 'Start device handover',
+    'close': 'Close job', 'decline': 'Declined / not repairable / cancelled', 'rework': 'Record concern and reopen diagnosis',
+    'adopt': 'Review legacy job and enable guided actions', 'details': 'Update route details',
+    'resolve_item': 'Record item custody exception',
+    'claim': 'Resolve warranty claim',
+}
+
+
+def local_time(value):
+    if not value:
+        return 'Not recorded'
+    try:
+        return datetime.fromisoformat(value).astimezone(ZoneInfo('Asia/Kolkata')).strftime('%d %b %Y, %I:%M %p')
+    except ValueError:
+        return value
+
+
+def guard(j, operation):
+    if j['lifecycle_version'] and not _command.get():
+        raise RuleError('Use the guided job action to ' + operation + '. Open the job to see the next required step.')
+
+
+def quote_guard(c, j):
+    if not j['lifecycle_version']:
+        return
+    if j['stage'] not in ('awaiting_estimate', 'awaiting_approval', 'approved'):
+        raise RuleError('Record diagnosis and reach Prepare Estimate before issuing or revising a quotation.')
+
+
+class Lifecycle:
+    def __init__(self, service):
+        self.s, self.db = service, service.db
+
+    def holdings(self, ident):
+        return self.db.rows('''SELECT i.id,i.description,i.type,i.serial,h.location,h.quantity
+            FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0''', (ident,))
+
+    def timeline(self, ident):
+        self.s.require()
+        rows = self.db.rows("SELECT a.id,a.created,u.name AS actor,a.action,a.payload FROM audit a LEFT JOIN users u ON u.id=a.actor WHERE a.entity='job' AND a.entity_id=? ORDER BY a.created,a.id", (ident,))
+        for r in rows:
+            r['time'] = local_time(r['created'])
+            payload = json.loads(r['payload'])
+            r['event'] = ACTIONS.get(payload.get('action'), r['action'].replace('_', ' ').title())
+            # Financial detail visibility remains owner-only; business events stay readable.
+            if self.s.user['role'] != 'owner' and r['action'] in ('expense_allocated', 'finance_posted') and payload.get('account_type') != 'customer':
+                r['details'] = 'Account record updated'
+            else:
+                def readable(obj):
+                    parts=[]
+                    for key,value in obj.items():
+                        if key in ('action','before','after','version','actor'):
+                            continue
+                        if self.s.user['role']!='owner' and key in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price','purchase_cost','cost','estimate'):
+                            continue
+                        if isinstance(value,dict):
+                            parts.append(readable(value))
+                        elif isinstance(value,list):
+                            parts.append(key.replace('_',' ').title()+': '+', '.join(readable(x) if isinstance(x,dict) else str(x) for x in value))
+                        elif value not in (None,''):
+                            shown=rupees(value) if key in ('amount','total','cost','estimate','vendor_parts','vendor_labour','transport_cost','other_cost','customer_price') and isinstance(value,int) else ('Yes' if value is True else 'No' if value is False else str(value).replace('_',' '))
+                            parts.append(key.replace('_',' ').title()+': '+shown)
+                    return ' · '.join(parts)
+                r['details'] = readable(payload) or r['event']
+        return rows
+
+    def snapshot(self, ident):
+        with self.db.read_snapshot():
+            return self._snapshot(ident)
+
+    def _snapshot(self, ident):
+        j = self.s.job(ident)
+        data = json.loads(j['lifecycle_data'])
+        holdings = self.holdings(ident)
+        devices = [h for h in holdings if h['type'] == 'device' and not h['location'].startswith('exception:')]
+        names = {'shop': 'IN SHOP', 'technician': 'IN SHOP · TECHNICIAN', 'vendor': 'THIRD-PARTY TECHNICIAN',
+                 'centre': 'AUTHORIZED SERVICE CENTER', 'transit': 'IN TRANSIT', 'customer': 'WITH CUSTOMER'}
+        locations = sorted({h['location'] for h in devices})
+        location = ' / '.join(names.get(v.split(':')[0], v) + (': ' + v.split(':', 1)[1] if ':' in v else '') for v in locations) or 'LOCATION NEEDS REVIEW'
+        assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,u.name AS technician FROM assignments a
+            LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE a.id=?''', (j['assignment_id'],)) or {}
+        try:
+            profile=json.loads(assignment.get('details') or '{}')
+        except ValueError:
+            profile={}
+        if isinstance(profile,dict) and profile:
+            assignment['details']=' · '.join(k.replace('_',' ').title()+': '+str(val) for k,val in profile.items() if val)
+        away = any(not v.startswith(('shop:', 'technician:')) and v != 'customer' for v in locations)
+        at_shop = bool(devices) and all(h['location'].startswith(('shop:', 'technician:')) for h in devices)
+        responsible = (j['customer'] if locations == ['customer'] else
+            ', '.join(v.split(':', 1)[1] for v in locations if v.startswith('transit:')) if any(v.startswith('transit:') for v in locations) else
+            assignment.get('party') if away else assignment.get('technician')) or 'Shop counter · assignment needed'
+        if away and data.get('route_details',{}).get('contact_person') and not any(v.startswith('transit:') for v in locations):
+            responsible=data['route_details']['contact_person']+' · '+(assignment.get('party') or 'External repairer')
+        elif away and isinstance(profile,dict) and profile.get('contact_person') and not any(v.startswith('transit:') for v in locations):
+            responsible=profile['contact_person']+' · '+(assignment.get('party') or 'External repairer')
+        quotes = self.db.one('SELECT * FROM quotes WHERE job_id=? ORDER BY version DESC LIMIT 1', (ident,)) or {}
+        warranty = self.db.one('SELECT * FROM warranty WHERE job_id=? ORDER BY id DESC LIMIT 1', (ident,)) or {}
+        finances = self.db.one("SELECT COALESCE(sum(amount),0) balance,COALESCE(sum(CASE WHEN kind='invoice' THEN amount ELSE 0 END),0) billed FROM entries WHERE account_type='customer' AND job_id=?", (ident,))
+        receipts = self.db.one("""SELECT -COALESCE(sum(e.amount),0) paid FROM entries e LEFT JOIN entries o ON o.id=e.reverses_id
+            WHERE e.account_type='customer' AND e.job_id=? AND (e.kind IN ('receipt','refund') OR (e.kind='reversal' AND o.kind IN ('receipt','refund')))""", (ident,))['paid']
+        events = self.timeline(ident)
+        changes = [e for e in events if e['action'] in ('received','lifecycle','stage_changed','quote_issued','quote_decision','custody_moved')]
+        pending = changes[-1]['created'] if changes else j['received']
+        for e in reversed(changes):
+            p = json.loads(e['payload'])
+            if e['action'] != 'lifecycle' or p.get('before') != p.get('after'):
+                pending = e['created']
+                break
+        stage = j['stage']
+        actions = self.allowed(j, data, away, quotes)
+        if j['lifecycle_version'] and stage in ('final_qc','billing','ready_repaired','ready_unrepaired') and any(h['location'].startswith(('centre:','vendor:','transit:')) for h in holdings) and 'receive' not in actions:
+            actions.append('receive')
+        primary = actions[0] if actions else ''
+        status = LABELS.get(stage, 'LEGACY STATUS: ' + stage)
+        if stage == 'external_diagnosis':
+            status = 'AT SERVICE CENTER · DIAGNOSIS' if j['route'] == 'warranty_centre' else 'WITH THIRD-PARTY TECHNICIAN · DIAGNOSIS'
+        if any(v.startswith('transit:') for v in locations):
+            status = 'IN TRANSIT · ' + status
+        if not j['lifecycle_version']:
+            status += ' · LEGACY'
+        next_action = ACTIONS.get(primary, 'Review job history')
+        if stage=='external_diagnosis' and not data.get('in_transit'):
+            next_action='Wait for service center diagnosis' if j['route']=='warranty_centre' else 'Wait for vendor diagnosis'
+        if stage=='under_repair' and j['route']!='in_house':
+            next_action='Wait for service center repair result' if j['route']=='warranty_centre' else 'Wait for vendor repair result'
+        if stage == 'approved' and j['deposit'] > receipts:
+            next_action, primary = 'Collect required advance payment', 'payment'
+        if stage in ('ready_repaired', 'ready_unrepaired'):
+            primary = 'payment' if finances['balance'] else 'handover' if data.get('notified') else 'notify'
+            next_action = 'Collect remaining payment' if finances['balance'] > 0 else 'Record refund due' if finances['balance'] < 0 else ACTIONS[primary]
+        if j['hold_reason'] and stage not in ('closed','collected'):
+            next_action, primary = 'Resolve hold: ' + j['hold_reason'], ''
+        attention = []
+        today = date.today().isoformat()
+        if stage == 'awaiting_approval' and quotes.get('valid_until') and quotes['valid_until'] < today:
+            attention.append('Quotation expired on '+quotes['valid_until']+'; approval needs a revised estimate')
+            if primary == 'decision':next_action='Record a decline or issue a revised estimate'
+        if stage not in ('closed','collected'):
+            for field, label, relevant in [('return_due','External return overdue',away),('repair_due','Repair overdue',stage not in ('ready_repaired','ready_unrepaired')),('collection_due','Collection overdue',True)]:
+                if relevant and j[field] and j[field] < today:
+                    attention.append(label)
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(pending)).days
+            except ValueError:
+                age = 0
+            if stage in ('awaiting_approval','waiting_parts') and age >= int(self.db.setting('lifecycle_attention_days', 3)):
+                attention.append('Customer approval pending too long' if stage == 'awaiting_approval' else 'Parts pending too long')
+            if stage in ('final_qc','testing'):
+                attention.append('QC pending')
+            if finances['balance'] > 0:
+                attention.append('Payment pending: ' + rupees(finances['balance']))
+            if finances['balance'] < 0 and stage in ('billing','ready_unrepaired','ready_repaired'):
+                attention.append('Advance / refund to review: ' + rupees(-finances['balance']))
+            if j['hold_reason']:
+                attention.append('On hold: ' + j['hold_reason'])
+            if not devices:
+                attention.append('Physical device location needs review')
+            if at_shop and any(h['type'] != 'device' and not h['location'].startswith(('shop:','exception:')) and h['location'] != 'customer' for h in holdings):
+                attention.append('Accessories remain with an external holder')
+        route_label=ROUTE_LABELS.get(j['route'],j['route'])
+        if j['lifecycle_version'] and stage in ('received','inspection','warranty_check','route_selection'):
+            route_label='NOT SELECTED · AFTER WARRANTY CHECK'
+        card=self.db.one('SELECT sequence,kind FROM job_cards WHERE job_id=? ORDER BY sequence DESC LIMIT 1',(ident,))
+        from .warranties import Warranties
+        part_warranties=Warranties(self.s).rows(j['device_id'])
+        active=sum(r['effective_status']=='ACTIVE' for r in part_warranties)
+        claims=self.db.one("SELECT count(*) n FROM warranty_claims WHERE new_job_id=? AND status!='CLOSED'",(ident,))['n']
+        if claims and stage=='collected':
+            primary,next_action='claim','Resolve and close the warranty claim'
+            actions.insert(0,'claim')
+        return dict(j, data=data, route_label=route_label, current_status=status,
+            current_card=f"CARD-{card['sequence']:02d} · {card['kind'].replace('_',' ')}" if card else 'LEGACY · no issued card',
+            warranty_indicator=f"{active} active warranties · {sum(r['effective_status']=='CLAIMED' for r in part_warranties)} claimed · {claims} open claims",open_claims=claims,
+            current_location=location, responsible=responsible, pending_since=local_time(pending), pending_raw=pending,
+            next_action=next_action, primary=primary, actions=actions, attention=attention, at_shop=at_shop, away=away,
+            assignment=assignment, quote=quotes, warranty=warranty, warranty_status=data.get('warranty_status','Unknown / requires verification'),
+            balance=finances['balance'], paid=receipts, holdings=holdings, timeline=events,
+            tracker=self.tracker(j, data, events))
+
+    def allowed(self, j, data, away, quote):
+        if not j['lifecycle_version']:
+            return [] if j['stage'] == 'closed' else ['adopt']
+        stage = j['stage']
+        by_stage = {
+            'received': ['inspect'], 'inspection': ['inspection_done'], 'warranty_check': ['verify_warranty'],
+            'route_selection': ['select_route'], 'ready_dispatch': ['dispatch' if data.get('dispatch') else 'prepare_dispatch'],
+            'external_diagnosis': ['arrive' if data.get('in_transit') else 'diagnose'],
+            'diagnosis': ['diagnose'], 'awaiting_estimate': ['quote'], 'awaiting_approval': ['decision','quote'],
+            'approved': ['start_repair','payment'], 'waiting_parts': ['parts_received'],
+            'under_repair': ['complete_repair','repair_failed'], 'technician_testing': ['test'],
+            'awaiting_return': ['receive'], 'return_unrepaired': ['receive'] if away else ['qc'],
+            'final_qc': ['qc'], 'testing': ['qc'], 'billing': ['bill'],
+            'ready_repaired': ['handover','notify','payment','rework'], 'ready_unrepaired': ['handover','notify','payment'],
+            'collected': ['close'], 'closed': []}
+        actions = by_stage.get(stage, [])[:]
+        if stage=='approved' and quote.get('state')!='approved' and self.db.one("SELECT 1 FROM repair_parts WHERE job_id=? AND status!='removed'",(j['id'],)):
+            actions.insert(0,'quote')
+        if stage in ('awaiting_estimate','approved') and j['route'] == 'in_house':
+            actions.append('wait_parts')
+        if j['route'] == 'warranty_centre' and stage in ('awaiting_estimate','approved'):
+            if stage == 'awaiting_estimate' and not data.get('warranty_decided'):
+                actions.insert(0,'warranty_result')
+            else:
+                actions.append('warranty_result')
+        if j['route'] != 'in_house' and stage == 'under_repair':
+            actions.append('replacement')
+        if stage in ('diagnosis','awaiting_estimate','approved','ready_dispatch','return_unrepaired','final_qc') and not away:
+            actions.append('change_route')
+        if stage not in ('received','inspection','warranty_check','collected','closed','ready_repaired','ready_unrepaired','billing','final_qc','testing','return_unrepaired','awaiting_return'):
+            actions.append('decline')
+        if stage not in ('closed','collected'):
+            actions.append('details')
+            if self.s.user['role']=='owner':
+                actions.append('resolve_item')
+            if away and stage in ('final_qc','billing','ready_repaired','ready_unrepaired'):
+                actions.append('receive')
+        return actions
+
+    def tracker(self, j, data, events):
+        steps = [('received','Received'),('inspection','Initial inspection'),('warranty_check','Warranty check'),('route_selection','Route selected')]
+        if j['route'] != 'in_house':
+            steps += [('ready_dispatch','Service center dispatch' if j['route']=='warranty_centre' else 'Third-party dispatch'),('external_diagnosis','Service center diagnosis' if j['route']=='warranty_centre' else 'Vendor diagnosis')]
+        else:
+            steps += [('diagnosis','In-house diagnosis')]
+        if j['lifecycle_version'] and j['stage'] in ('received','inspection','warranty_check','route_selection'):
+            return [{'step':title,'state':'● CURRENT' if key==j['stage'] else '✓' if key in {'received','inspection','warranty_check'} and any(json.loads(e['payload']).get('before')==key and json.loads(e['payload']).get('before')!=json.loads(e['payload']).get('after') for e in events if e['action']=='lifecycle') else '○','key':key} for key,title in steps[:4]]
+        if not data.get('unrepaired'):
+            if not data.get('warranty_covered'):
+                steps += [('awaiting_estimate','Estimate'),('awaiting_approval','Customer approval')]
+            if data.get('parts_order'):
+                steps += [('waiting_parts','Parts')]
+            steps += [('under_repair','Repair')]
+            if j['route']=='in_house':
+                steps += [('technician_testing','Technician test')]
+        else:
+            steps += [('return_unrepaired','Return without repair')]
+        if j['route'] != 'in_house':
+            steps += [('awaiting_return','Device returned to shop')]
+        steps += [('final_qc','Return condition check' if data.get('unrepaired') else 'Final shop QC'),('billing','Billing'),('ready_repaired','Ready for delivery'),('collected','Delivered'),('closed','Closed')]
+        reached = set()
+        for e in events:
+            p = json.loads(e['payload'])
+            if e['action'] == 'lifecycle' and p.get('action') != 'adopt' and p.get('before') != p.get('after'):
+                reached.add(p.get('before'))
+                if p.get('action') == 'decision':
+                    reached.add('awaiting_approval')
+                if p.get('action') in ('rework','change_route') or p.get('action') in ('qc','test') and p.get('after') in ('diagnosis','ready_dispatch'):
+                    reached -= {'final_qc','technician_testing','billing','ready_repaired','ready_unrepaired','under_repair'}
+        current = {'ready_unrepaired':'ready_repaired','testing':'final_qc'}.get(j['stage'],j['stage'])
+        if 'ready_unrepaired' in reached:
+            reached.add('ready_repaired')
+        return [{'step': title,'state': '● CURRENT' if key==current else '✓' if key in reached else '○', 'key':key} for key,title in steps]
+
+    def rows(self, search='', filter_key='', offset=0, limit=50):
+        with self.db.read_snapshot():
+            return self._rows(search,filter_key,offset,limit)
+
+    def _rows(self, search='', filter_key='', offset=0, limit=50):
+        self.s.require()
+        today=date.today().isoformat()
+        filters={
+            'external_centre':"EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location LIKE 'centre:%')",
+            'external_vendor':"EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location LIKE 'vendor:%')",
+            'diagnosis':"j.stage IN ('diagnosis','inspection','external_diagnosis')",'ready':"j.stage IN ('ready_repaired','ready_unrepaired')",
+            'in_house':"j.route='in_house' AND j.stage NOT IN ('received','inspection','warranty_check','route_selection')",
+            'warranty_claims':"EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.new_job_id=j.id AND wc.status!='CLOSED')",
+            'attention':"""(j.stage IN ('final_qc','testing','waiting_parts','awaiting_approval') OR j.hold_reason!=''
+                OR j.collection_due<date('now','+330 minutes') OR j.repair_due<date('now','+330 minutes') OR j.return_due<date('now','+330 minutes')
+                OR EXISTS(SELECT 1 FROM entries e WHERE e.job_id=j.id AND e.account_type='customer' GROUP BY e.job_id HAVING sum(e.amount)!=0)
+                OR EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))
+                OR NOT EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%'))""",
+            'collected':"j.stage IN ('collected','closed')"}
+        condition=filters.get(filter_key,'j.stage=?' if filter_key in LABELS else '1=1')
+        extra=(filter_key,) if filter_key in LABELS and filter_key not in filters else ()
+        ids = self.db.rows("""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id
+            WHERE (j.number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ? OR j.serial LIKE ? OR j.intake_ref LIKE ?)
+            AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" ORDER BY j.id DESC", ('%'+search+'%',)*6+(filter_key,)+extra)
+        result = []
+        for row in ids:
+            v = self.snapshot(row['id'])
+            matches = not filter_key or filter_key=='history' or filter_key == v['stage'] or (filter_key=='collected' and v['stage']=='closed') or (
+                filter_key=='diagnosis' and v['stage'] in ('inspection','external_diagnosis')) or (
+                filter_key=='in_house' and v['route']=='in_house' and v['stage'] not in ('received','inspection','warranty_check','route_selection')) or (
+                filter_key=='warranty_claims' and v['open_claims']>0) or (
+                filter_key == 'external_centre' and any(h['type']=='device' and h['location'].startswith('centre:') for h in v['holdings'])) or (
+                filter_key == 'external_vendor' and any(h['type']=='device' and h['location'].startswith('vendor:') for h in v['holdings'])) or (
+                filter_key == 'ready' and v['stage'] in ('ready_repaired','ready_unrepaired')) or (
+                filter_key == 'attention' and bool(v['attention'])) or (
+                filter_key == 'overdue' and any('overdue' in a for a in v['attention']))
+            if matches:
+                result.append(dict(id=v['id'], number=v['number'],visit=v['intake_ref'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
+                    route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
+                    pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
+                    balance=v['balance'],estimate=v['quote'].get('total',0),current_card=v['current_card'],warranty_indicator=v['warranty_indicator'],open_claims=v['open_claims'],next_action=v['next_action'],attention='; '.join(v['attention'])))
+                if limit and len(result)>=offset+limit:
+                    break
+        return result[offset:offset+limit] if limit else result
+
+    def dashboard_counts(self):
+        """Aggregate the full ledger in SQL; only project visible job rows in detail."""
+        self.s.require()
+        counts={r['stage']:r['n'] for r in self.db.rows('SELECT stage,count(*) n FROM jobs GROUP BY stage')}
+        result=dict(counts)
+        result['diagnosis']=sum(counts.get(k,0) for k in ('diagnosis','inspection','external_diagnosis'))
+        result['ready']=sum(counts.get(k,0) for k in ('ready_repaired','ready_unrepaired'))
+        result['collected']=sum(counts.get(k,0) for k in ('collected','closed'))
+        for key,prefix in [('external_centre','centre:%'),('external_vendor','vendor:%')]:
+            result[key]=self.db.one("SELECT count(DISTINCT j.id) n FROM jobs j JOIN items i ON i.job_id=j.id JOIN holdings h ON h.item_id=i.id WHERE j.stage NOT IN ('collected','closed') AND i.type='device' AND h.quantity>0 AND h.location LIKE ?",(prefix,))['n']
+        result['warranty_claims']=self.db.one("SELECT count(DISTINCT new_job_id) n FROM warranty_claims WHERE status!='CLOSED'")['n']
+        result['in_house']=self.db.one("SELECT count(*) n FROM jobs WHERE route='in_house' AND stage NOT IN ('received','inspection','warranty_check','route_selection','collected','closed')")['n']
+        today=date.today().isoformat()
+        result['overdue']=self.db.one("""SELECT count(*) n FROM jobs j WHERE stage NOT IN ('collected','closed') AND
+            (collection_due<? OR (repair_due<? AND stage NOT IN ('ready_repaired','ready_unrepaired')) OR (return_due<? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))))""",(today,today,today))['n']
+        return result
+
+    def _set(self, c, j, data, stage, action, evidence):
+        c.execute('UPDATE jobs SET stage=?,lifecycle_data=?,version=version+1 WHERE id=?', (stage,json.dumps(data),j['id']))
+        self.s.audit(c,'job',j['id'],'lifecycle',dict(action=action,before=j['stage'],after=stage,evidence=evidence))
+
+    def execute(self, ident, action, payload=None, version=None):
+        p = payload or {}
+        self.s.require()
+        token = _command.set(True)
+        try:
+            with self.db.transaction() as c:
+                j = dict(self.s._job(c,ident,version))
+                v = self.snapshot(ident)
+                data = v['data'].copy()
+                if action not in v['actions']:
+                    raise RuleError('That action is not available now. Refresh the job and follow the next required step.')
+                if self.s.user['role']=='technician' and action not in ('diagnose','wait_parts','parts_received','start_repair','complete_repair','repair_failed','test','qc','details'):
+                    raise RuleError('Counter staff handles warranty, dispatch, approval and handover.')
+                if j['hold_reason'] and action not in ('details','decline','resolve_item'):
+                    raise RuleError('Resolve the recorded job hold before continuing.')
+                stage = j['stage']
+                notes = str(p.get('notes','')).strip()
+                if action == 'adopt':
+                    self.s.require('owner','counter')
+                    if not p.get('confirmed') or not notes:
+                        raise RuleError('Review the existing history and record why this legacy status is appropriate.')
+                    if stage not in LABELS:
+                        raise RuleError('Unknown legacy status: owner must review the record before conversion.')
+                    c.execute('UPDATE jobs SET lifecycle_version=1 WHERE id=?',(ident,))
+                    data['legacy_stage'] = stage
+                    data['legacy_review'] = notes
+                    # Preserve the stage and do not invent completed inspection/QC/approval evidence.
+                    if stage in ('return_unrepaired','ready_unrepaired'):
+                        data['unrepaired'] = j['outcome'] or notes
+                    if stage in ('ready_repaired','ready_unrepaired'):
+                        # Preserve the recorded legacy stage as evidence, then recheck readiness.
+                        stage='final_qc'
+                    if stage=='collected' and all(h['location']=='customer' or h['location'].startswith('exception:') for h in v['holdings']):
+                        data['legacy_handover_verified']=notes
+                elif action == 'inspect':
+                    stage='inspection'
+                elif action == 'inspection_done':
+                    self._notes(notes)
+                    self.s.record_work(ident,'inspection',p)
+                    data['inspection']=notes
+                    stage='warranty_check'
+                elif action == 'verify_warranty':
+                    status=p.get('warranty_status')
+                    if status not in ('under_warranty','out_of_warranty','unknown'):
+                        raise RuleError('Select the warranty status.')
+                    self._notes(notes)
+                    data['warranty_status']=status
+                    self.s.record_work(ident,'warranty_verification',p)
+                    stage='warranty_check' if status=='unknown' else 'route_selection'
+                elif action in ('select_route','change_route'):
+                    if not p.get('confirmed'):
+                        raise RuleError('Confirm the selected repair route before changing it.')
+                    if not v['at_shop']:
+                        raise RuleError('Receive the physical device at the shop before changing its repair route.')
+                    route=p.get('route')
+                    status=data.get('warranty_status')
+                    if status not in ('under_warranty','out_of_warranty'):
+                        raise RuleError('Verify warranty first. Use the warranty details action for a legacy job.')
+                    if status=='under_warranty' and route!='warranty_centre' and v['warranty'].get('decision') not in ('rejected','partial'):
+                        raise RuleError('Valid manufacturer warranty uses an authorized service center. Record a rejection before selecting a paid route.')
+                    if route=='warranty_centre' and status!='under_warranty':
+                        raise RuleError('Verify manufacturer warranty before selecting its authorized service center.')
+                    if route!='in_house':
+                        party=c.execute('SELECT * FROM masters WHERE id=? AND active=1',(p.get('contact_id'),)).fetchone()
+                        if not party or party['kind']!=('centre' if route=='warranty_centre' else 'vendor'):
+                            raise RuleError('Select an active service center or vendor matching this repair route.')
+                    technician=p.get('technician_id')
+                    if route=='in_house' and not c.execute('SELECT 1 FROM users WHERE id=? AND active=1',(technician,)).fetchone():
+                        raise RuleError('Assign an active shop technician.')
+                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,technician,reference=p.get('reference',''))
+                    data.pop('dispatch',None)
+                    data.pop('diagnosis',None)
+                    data.pop('unrepaired',None)
+                    data.pop('qc',None)
+                    data.pop('warranty_covered',None)
+                    data.pop('warranty_decided',None)
+                    data.pop('parts_order',None)
+                    data.pop('billing_checked',None)
+                    data.pop('notified',None)
+                    stage='diagnosis' if route=='in_house' else 'ready_dispatch'
+                elif action == 'prepare_dispatch':
+                    if not v['assignment'].get('contact_id'):
+                        raise RuleError('Select an external repairer first.')
+                    if not p.get('consent') or not p.get('condition'):
+                        raise RuleError('Record customer dispatch consent and the device condition.')
+                    selected=set(p.get('items',[]))
+                    chosen=[h for h in v['holdings'] if h['id'] in selected and h['location'].startswith('shop:')]
+                    if not any(h['type']=='device' for h in chosen):
+                        raise RuleError('Select the physical device and only the accessories being sent.')
+                    data['dispatch']=dict(p,items=sorted(selected))
+                    c.execute('UPDATE jobs SET assessment_consent=1,return_due=? WHERE id=?',(day(p.get('expected_return')),ident))
+                elif action in ('dispatch','arrive','receive'):
+                    stage=self._custody(c,j,data,v,action,p)
+                elif action == 'diagnose':
+                    self._notes(notes)
+                    if not v['at_shop'] and j['route']=='in_house':
+                        raise RuleError('The device must be in the shop for in-house diagnosis.')
+                    self.s.record_work(ident,'diagnosis',p)
+                    data['diagnosis']=notes
+                    data['parts_required']=p.get('parts','')
+                    data['parts_available']=p.get('parts_available',True)
+                    if p.get('repairable',True):
+                        stage='awaiting_estimate'
+                    else:
+                        data['unrepaired']='Not repairable: '+notes
+                        stage='return_unrepaired'
+                elif action == 'warranty_result':
+                    self.s.record_warranty(ident,p.get('decision'),p.get('rma',''),notes,p.get('covered',''),p.get('excluded',''),p.get('terms',''))
+                    data['warranty_covered']=p.get('decision')=='accepted'
+                    data['warranty_decided']=p.get('decision') in ('accepted','rejected','partial')
+                    stage='approved' if data['warranty_covered'] else 'awaiting_estimate'
+                elif action == 'wait_parts':
+                    self._notes(notes)
+                    data['parts_order']=notes
+                    data['parts_resume']=stage
+                    data['parts_available']=False
+                    self.s.record_work(ident,'parts_order',p)
+                    stage='waiting_parts'
+                elif action == 'parts_received':
+                    self._notes(notes)
+                    data['parts_available']=True
+                    self.s.record_work(ident,'parts_received',p)
+                    stage=data.get('parts_resume','awaiting_estimate')
+                elif action == 'start_repair':
+                    if not data.get('diagnosis') and not c.execute("SELECT 1 FROM work WHERE job_id=? AND kind='diagnosis'",(ident,)).fetchone():
+                        raise RuleError('Record diagnosis before starting repair.')
+                    if j['route']=='in_house' and (not v['at_shop'] or not data.get('parts_available',True)):
+                        raise RuleError('Receive the device and required parts before starting in-house repair.')
+                    if j['route']!='in_house' and not v['away']:
+                        raise RuleError('Dispatch the device to the assigned repairer before authorizing external repair.')
+                    self.s._authorize_repair(c,j)
+                    data['repair_started']=now()
+                    data.pop('qc',None)
+                    c.execute("UPDATE jobs SET test_result='' WHERE id=?",(ident,))
+                    stage='under_repair'
+                elif action in ('complete_repair','replacement'):
+                    self._notes(notes)
+                    if c.execute("SELECT 1 FROM repair_parts WHERE job_id=? AND status='planned'",(ident,)).fetchone():
+                        raise RuleError('Record installation of used parts, or remove unused planned parts and revise approval before completing repair.')
+                    self.s.record_work(ident,'repair',p)
+                    data['repair_summary']=notes
+                    data['parts_used']=p.get('parts','')
+                    data['repair_completed']=now()
+                    data.pop('unrepaired',None)
+                    if action=='replacement':
+                        self.s.require('owner')
+                        original=next((h for h in v['holdings'] if h['type']=='device' and h['location'].startswith(('centre:','vendor:'))),None)
+                        if not original:
+                            raise RuleError('The original device must be recorded with the external repairer.')
+                        self.s.replacement(original['id'],p.get('description',''),p.get('serial',''),original['location'],p.get('terms',''),notes)
+                        self.s.move(original['id'],original['quantity'],original['location'],'exception:Replaced by repairer',v['assignment']['party'],uuid.uuid4().hex,notes=notes)
+                    stage='technician_testing' if j['route']=='in_house' else 'awaiting_return'
+                elif action in ('decline','repair_failed'):
+                    self._notes(notes)
+                    data['unrepaired']=p.get('reason','Repair unsuccessful' if action=='repair_failed' else 'Customer declined')+': '+notes
+                    self.s.record_work(ident,'outcome',dict(p,outcome=data['unrepaired']))
+                    stage='return_unrepaired'
+                elif action == 'test':
+                    self._notes(notes)
+                    result=p.get('result')
+                    if result not in ('passed','failed'):
+                        raise RuleError('Record whether technician testing passed or failed.')
+                    self.s.record_work(ident,'technician_test',p)
+                    data['technician_test']=p
+                    stage='final_qc' if result=='passed' else 'diagnosis'
+                elif action == 'qc':
+                    if not v['at_shop']:
+                        raise RuleError('Receive the physical device back in the shop before final QC.')
+                    self._notes(notes)
+                    if data.get('unrepaired'):
+                        if not p.get('condition_checked'):
+                            raise RuleError('Check the device condition against intake before returning it unrepaired.')
+                        result='checked_unrepaired'
+                    else:
+                        result=p.get('result')
+                        checks=p.get('checks',{})
+                        if result not in ('passed','failed'):
+                            raise RuleError('Record a QC result.')
+                        if result=='passed' and (any(checks.get(k)!='passed' for k in ('functional','power','complaint')) or any(checks.get(k) not in ('passed','not_applicable') for k in ('charging','display','connectivity'))):
+                            raise RuleError('Pass the functional, power and original-complaint checks; record other checks as passed or not applicable.')
+                    data['qc']=dict(p,result=result,created=now(),actor=self.s.user['name'])
+                    data['repair_warranty']=p.get('repair_warranty','')
+                    data['warranty_until']=day(p.get('warranty_until'))
+                    c.execute('UPDATE jobs SET test_result=?,actual_completion=? WHERE id=?',(result,now() if result!='failed' else None,ident))
+                    self.s.record_work(ident,'final_qc',data['qc'])
+                    stage=('diagnosis' if j['route']=='in_house' else 'ready_dispatch') if result=='failed' else 'billing'
+                    if result=='failed':
+                        data.pop('dispatch',None)
+                        data.pop('billing_checked',None)
+                        data.pop('notified',None)
+                elif action == 'bill':
+                    if not data.get('qc') or data['qc']['result']=='failed':
+                        raise RuleError('Complete final QC or the unrepaired return check first.')
+                    self._billing(c,j,data,p)
+                    data['billing_checked']=True
+                    stage='ready_unrepaired' if data.get('unrepaired') else 'ready_repaired'
+                    c.execute('UPDATE jobs SET outcome=? WHERE id=?',(data.get('unrepaired',data.get('repair_summary','')),ident))
+                elif action == 'handover':
+                    self._handover(c,j,data,v,p)
+                    stage='collected'
+                elif action == 'close':
+                    if c.execute("SELECT 1 FROM warranty_claims WHERE new_job_id=? AND status!='CLOSED'",(ident,)).fetchone():
+                        raise RuleError('Resolve and close the warranty claim in the Warranty tab before closing this job.')
+                    if not data.get('handover') and not j['actual_collection'] and not data.get('legacy_handover_verified'):
+                        raise RuleError('Complete and record device handover before closing the job.')
+                    if any(h['location']!='customer' and not h['location'].startswith('exception:') for h in v['holdings']):
+                        raise RuleError('Return or explicitly resolve all accessories before closing.')
+                    stage='closed'
+                elif action == 'rework':
+                    self._notes(notes)
+                    data.pop('qc',None)
+                    data.pop('billing_checked',None)
+                    data.pop('notified',None)
+                    c.execute("UPDATE jobs SET test_result='' WHERE id=?",(ident,))
+                    self.s.record_work(ident,'customer_concern',p)
+                    stage='diagnosis'
+                elif action == 'notify':
+                    self.s.notify(c,ident,'ready_unrepaired' if data.get('unrepaired') else 'ready_repaired', 'Your device is ready for collection '+('without repair. ' if data.get('unrepaired') else 'after final shop QC. ')+ 'Please contact the shop to arrange collection.')
+                    data['notified']=now()
+                elif action == 'details':
+                    if any(not isinstance(p[k],int) or p[k]<0 for k in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price') if k in p):
+                        raise RuleError('Enter nonnegative estimates in whole paise.')
+                    data.setdefault('route_details',{}).update(p)
+                    if p.get('warranty_status') in ('under_warranty','out_of_warranty','unknown') and data.get('legacy_review'):
+                        data['warranty_status']=p['warranty_status']
+                    if 'expected_return' in p:
+                        c.execute('UPDATE jobs SET return_due=? WHERE id=?',(day(p['expected_return']),ident))
+                    self.s.record_work(ident,'route_update',p)
+                elif action == 'resolve_item':
+                    self.s.require('owner')
+                    self._notes(notes)
+                    h=next((h for h in v['holdings'] if h['id']==p.get('item_id') and h['location']==p.get('source')),None)
+                    if not h or h['location']=='customer' or h['location'].startswith('exception:'):
+                        raise RuleError('Select an outstanding item and its actual holder.')
+                    self.s.move(h['id'],p.get('quantity',h['quantity']),h['location'],'exception:Owner resolved',p.get('counterparty','Owner'),uuid.uuid4().hex,notes=notes,reference=p.get('reference',''))
+                else:
+                    raise RuleError('Use the quotation or payment form for this action.')
+                self._set(c,j,data,stage,action,p)
+        finally:
+            _command.reset(token)
+
+    @staticmethod
+    def _notes(notes):
+        if not notes:
+            raise RuleError('Record findings or notes before continuing.')
+
+    def _custody(self,c,j,data,v,action,p):
+        self.s.require('owner','counter')
+        if not p.get('counterparty') or not p.get('condition') or not p.get('acknowledgment'):
+            raise RuleError('Record the receiving person, condition and handover acknowledgment.')
+        party=v['assignment'].get('party')
+        destination=('centre:' if j['route']=='warranty_centre' else 'vendor:')+(party or '')
+        if action=='dispatch':
+            manifest=data.get('dispatch',{})
+            if not manifest:
+                raise RuleError('Create the dispatch record first.')
+            rows=[h for h in v['holdings'] if h['id'] in manifest['items'] and h['location'].startswith('shop:')]
+            if not any(h['type']=='device' for h in rows):
+                raise RuleError('The selected device is no longer at the shop; review dispatch.')
+            if p.get('carrier'):
+                destination='transit:'+p['carrier']
+            data['in_transit']=bool(p.get('carrier'))
+            data['dispatched']=now()
+            stage='external_diagnosis'
+        elif action=='arrive':
+            rows=[h for h in v['holdings'] if h['location'].startswith('transit:')]
+            data['in_transit']=False
+            stage='external_diagnosis'
+        else:
+            rows=[h for h in v['holdings'] if h['location'].startswith(('centre:','vendor:','transit:'))]
+            if not c.execute("SELECT 1 FROM job_cards WHERE job_id=? AND kind IN ('third_party_dispatch','service_center_dispatch')",(j['id'],)).fetchone() and not data.get('legacy_review'):
+                raise RuleError('An outbound Job Card is required before a return can be recorded.')
+            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND m.from_location LIKE 'shop:%' AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():
+                raise RuleError('Only a previously dispatched device can be received from a repairer.')
+            destination=p.get('storage','shop:Front desk')
+            if not destination.startswith('shop:'):
+                raise RuleError('Choose a shop storage location for the return.')
+            data['returned']=now()
+            data['in_transit']=False
+            stage='final_qc'
+        if 'items' in p:
+            selected=set(p['items'])
+            rows=[h for h in rows if h['id'] in selected]
+        if not rows:
+            raise RuleError('No matching items are available for this handover.')
+        if action=='dispatch' and not any(h['type']=='device' for h in rows):
+            raise RuleError('Include the physical device in this dispatch.')
+        movements=[]
+        card_items=[]
+        for h in rows:
+            quantity=p.get('quantities',{}).get(str(h['id']),h['quantity'])
+            movements.append(self.s.move(h['id'],quantity,h['location'],destination,p['counterparty'],uuid.uuid4().hex,
+                reference=p.get('reference',''),condition=p['condition'],notes=p.get('notes',''),acknowledgment=p['acknowledgment']))
+            card_items.append(dict(h,quantity=quantity,condition=p['condition']))
+        from .job_cards import JobCards
+        kind=('service_center_' if j['route']=='warranty_centre' else 'third_party_')+('return' if action=='receive' else 'arrival' if action=='arrive' else 'dispatch')
+        JobCards(self.s).issue(j['id'],kind,'movement:'+str(movements[0]),dict(p,movement_ids=movements),card_items)
+        if action=='receive':
+            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
+            if remaining:
+                stage=j['stage']
+                data.pop('returned',None)
+        if action=='arrive':
+            data['in_transit']=bool(c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND h.quantity>0 AND h.location LIKE 'transit:%'",(j['id'],)).fetchone())
+        return stage
+
+    def _billing(self,c,j,data,p):
+        self.s.require('owner','counter')
+        if not p.get('confirmed'):
+            raise RuleError('Review charges, advances and the balance before marking ready.')
+        invoice=c.execute("SELECT * FROM entries e WHERE job_id=? AND kind='invoice' AND NOT EXISTS(SELECT 1 FROM entries r WHERE r.reverses_id=e.id)",(j['id'],)).fetchone()
+        if data.get('unrepaired'):
+            expected=self.s.decline_balance(j['id'])['agreed_charges']
+            if invoice and invoice['amount']!=expected:
+                raise RuleError('Review and reverse the prior repair invoice before issuing agreed return charges.')
+            if expected and not invoice:
+                # Existing decline billing expects an unrepaired status.
+                c.execute("UPDATE jobs SET stage='return_unrepaired' WHERE id=?",(j['id'],))
+                self.s.bill_decline(j['id'],uuid.uuid4().hex)
+        else:
+            from .parts import Parts
+            Parts(self.s).validate_approval(c,j)
+            q=c.execute('SELECT * FROM quotes WHERE job_id=? ORDER BY version DESC LIMIT 1',(j['id'],)).fetchone()
+            if q:
+                if q['state']!='approved':
+                    raise RuleError('The current customer quote needs approval before final billing.')
+                if invoice and invoice['quote_id']!=q['id']:
+                    raise RuleError('Review the previous bill before billing a revised quote.')
+                if q['total'] and not invoice:
+                    self.s.invoice(q['id'],uuid.uuid4().hex)
+            elif not data.get('warranty_covered'):
+                raise RuleError('Record an approved estimate, including a zero-cost estimate, or an accepted warranty decision.')
+
+    def _handover(self,c,j,data,v,p):
+        self.s.require('owner','counter')
+        if not all(p.get(k) for k in ('demonstrated','accepted','accessories_returned','payment_checked')):
+            raise RuleError('Confirm demonstration, customer acceptance, accessories and payment review.')
+        if not p.get('received_by') or not p.get('acknowledgment'):
+            raise RuleError('Record who received the device and their acknowledgment.')
+        if not data.get('qc') or data['qc']['result']=='failed' or not data.get('billing_checked'):
+            raise RuleError('Complete final QC and billing review before handover.')
+        if v['balance']>0:
+            self.s.require('owner')
+            if not p.get('credit_reason'):
+                raise RuleError('Record remaining payment, or have the owner explicitly approve credit with a reason.')
+        if v['balance']<0:
+            raise RuleError('Resolve the customer refund / credit balance before handover.')
+        rows=[h for h in v['holdings'] if h['location']!='customer' and not h['location'].startswith('exception:')]
+        if not rows or any(not h['location'].startswith('shop:') for h in rows):
+            raise RuleError('Receive every device and accessory at the shop before customer handover.')
+        # Recheck billing even if another screen changed the current quote or invoice.
+        self._billing(c,j,data,{'confirmed':True})
+        for h in rows:
+            self.s.move(h['id'],h['quantity'],h['location'],'customer',p['received_by'],uuid.uuid4().hex,
+                condition=p.get('condition','Checked against intake'),notes=p.get('notes',''),acknowledgment=p['acknowledgment'])
+        data['handover']=dict(p,delivered_at=now(),delivered_by=self.s.user['name'])
+        from .job_cards import JobCards
+        JobCards(self.s).issue(j['id'],'customer_delivery','delivery:'+str(j['id']),p,rows)
+        c.execute('UPDATE jobs SET actual_collection=? WHERE id=?',(data['handover']['delivered_at'],j['id']))
