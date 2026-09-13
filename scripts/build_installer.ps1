@@ -49,8 +49,9 @@ internal static class RepairShopManagerSetup
         "Programs",
         "RepairShopManager");
 
-    internal const string ReadmeText =
-@"RepairShop Manager
+    internal static readonly string ReadmeText =
+@"RepairShop Manager" + Environment.NewLine +
+@"
 
 Offline desktop application for a repair shop counter.
 
@@ -68,7 +69,7 @@ What this setup does not require:
 
 Data storage:
 Shop data is stored separately in:
-%LOCALAPPDATA%\RepairShopManager
+" + Environment.ExpandEnvironmentVariables(@"%LOCALAPPDATA%\RepairShopManager") + @"
 
 Uninstalling the program removes the installed application and shortcuts. It does not remove shop data, backups, customer photos or records.";
 
@@ -257,7 +258,7 @@ internal sealed class SetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(760, 560);
+        ClientSize = new Size(780, 590);
         Font = new Font("Segoe UI", 9F);
         ExitCode = 1;
 
@@ -274,31 +275,35 @@ internal sealed class SetupForm : Form
         subtitle.Location = new Point(27, 56);
         Controls.Add(subtitle);
 
-        TextBox readme = new TextBox();
+        RichTextBox readme = new RichTextBox();
         readme.Multiline = true;
         readme.ReadOnly = true;
-        readme.ScrollBars = ScrollBars.Vertical;
+        readme.BorderStyle = BorderStyle.FixedSingle;
+        readme.BackColor = Color.White;
+        readme.ScrollBars = RichTextBoxScrollBars.Vertical;
+        readme.WordWrap = true;
+        readme.DetectUrls = false;
         readme.Text = RepairShopManagerSetup.ReadmeText;
         readme.Location = new Point(28, 92);
-        readme.Size = new Size(704, 260);
+        readme.Size = new Size(724, 286);
         Controls.Add(readme);
 
         Label pathLabel = new Label();
         pathLabel.Text = "Install folder";
         pathLabel.AutoSize = true;
-        pathLabel.Location = new Point(28, 376);
+        pathLabel.Location = new Point(28, 402);
         Controls.Add(pathLabel);
 
         pathBox = new TextBox();
         pathBox.Text = RepairShopManagerSetup.DefaultInstallDir;
-        pathBox.Location = new Point(28, 400);
-        pathBox.Size = new Size(610, 24);
+        pathBox.Location = new Point(28, 426);
+        pathBox.Size = new Size(620, 24);
         Controls.Add(pathBox);
 
         Button browse = new Button();
         browse.Text = "Browse...";
-        browse.Location = new Point(650, 398);
-        browse.Size = new Size(82, 28);
+        browse.Location = new Point(664, 424);
+        browse.Size = new Size(88, 28);
         browse.Click += BrowseClicked;
         Controls.Add(browse);
 
@@ -306,26 +311,26 @@ internal sealed class SetupForm : Form
         desktopShortcut.Text = "Create Desktop shortcut";
         desktopShortcut.Checked = true;
         desktopShortcut.AutoSize = true;
-        desktopShortcut.Location = new Point(28, 438);
+        desktopShortcut.Location = new Point(28, 464);
         Controls.Add(desktopShortcut);
 
         statusLabel = new Label();
         statusLabel.Text = "";
         statusLabel.AutoSize = false;
-        statusLabel.Location = new Point(28, 474);
-        statusLabel.Size = new Size(704, 24);
+        statusLabel.Location = new Point(28, 502);
+        statusLabel.Size = new Size(724, 24);
         Controls.Add(statusLabel);
 
         installButton = new Button();
         installButton.Text = "Install";
-        installButton.Location = new Point(552, 512);
+        installButton.Location = new Point(572, 542);
         installButton.Size = new Size(86, 30);
         installButton.Click += InstallClicked;
         Controls.Add(installButton);
 
         cancelButton = new Button();
         cancelButton.Text = "Cancel";
-        cancelButton.Location = new Point(646, 512);
+        cancelButton.Location = new Point(666, 542);
         cancelButton.Size = new Size(86, 30);
         cancelButton.Click += delegate { Close(); };
         Controls.Add(cancelButton);
@@ -358,13 +363,10 @@ internal sealed class SetupForm : Form
 
             statusLabel.Text = "Installed successfully.";
             ExitCode = 0;
-            MessageBox.Show(
-                this,
-                "RepairShop Manager has been installed.\n\nUse the Desktop or Start Menu shortcut to open it.",
-                "RepairShop Manager Setup",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            Close();
+            installButton.Visible = false;
+            cancelButton.Text = "Close";
+            cancelButton.Enabled = true;
+            statusLabel.Text = "Installed successfully. Use the Desktop or Start Menu shortcut to open RepairShop Manager.";
         }
         catch (Exception ex)
         {
