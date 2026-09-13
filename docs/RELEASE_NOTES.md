@@ -4,6 +4,8 @@ The desktop UI has been refreshed without changing the working repair, inventory
 
 The main shell, dashboard, repair lists, intake landing page, inventory page and repair workspace now have clearer hierarchy and spacing. Dense parts, cards and warranty tabs are grouped into action panels so staff can scan current state, responsibility and the next action faster. Dialogs now use more comfortable spacing and inline error presentation.
 
+An offline setup EXE is available for pen-drive installation on another Windows PC. It installs per user to LocalAppData Programs, creates Desktop and Start Menu shortcuts, registers an uninstaller, and does not require internet or admin rights. Shop data remains in LocalAppData RepairShopManager and is not removed by the uninstaller.
+
 No schema migration is required. Validation: 166 automated tests passed in 53.76 seconds. A seeded synthetic demo launch smoke test exited successfully.
 
 # RepairShop Manager 1.4.0
