@@ -10,39 +10,27 @@ class Parts:
 
     def rows(self, job_id):
         self.s.require()
-        return self.db.rows('SELECT p.*,w.expiry warranty_expiry,(p.customer_price-p.purchase_cost)*p.quantity margin FROM repair_parts p LEFT JOIN part_warranties w ON w.part_id=p.id WHERE p.job_id=? ORDER BY p.id',(job_id,))
+        with self.db.read() as c:self.s._job(c,job_id)
+        rows=self.db.rows('SELECT p.*,w.expiry warranty_expiry,(p.customer_price-p.purchase_cost)*p.quantity margin FROM repair_parts p LEFT JOIN part_warranties w ON w.part_id=p.id WHERE p.job_id=? ORDER BY p.id',(job_id,))
+        from .inventory import public_values
+        return rows if self.s.user['role']=='owner' else public_values(rows)
 
     def stock(self):
-        self.s.require()
-        return self.db.rows('SELECT s.*,COALESCE(sum(m.delta),0) available FROM stock_items s LEFT JOIN stock_movements m ON m.stock_id=s.id GROUP BY s.id ORDER BY s.name')
+        from .inventory import Inventory
+        return Inventory(self.s).rows()
 
     def stock_item(self, name, purchase_cost=0, customer_price=0, **fields):
-        self.s.require('owner')
-        if not name.strip() or any(type(v)!=int or v<0 for v in (purchase_cost,customer_price)) or not set(fields)<={'brand','model','part_number'}:
-            raise RuleError('Enter a stock name and nonnegative prices in paise.')
-        with self.db.transaction() as c:
-            ident=insert(c,'stock_items',name=name.strip(),purchase_cost=purchase_cost,customer_price=customer_price,**fields)
-            self.s.audit(c,'stock',ident,'stock_item_created',{'name':name})
-            return ident
+        from .inventory import Inventory
+        return Inventory(self.s).save(dict(name=name,purchase_cost=purchase_cost,customer_price=customer_price,**fields))
 
     def adjust_stock(self, stock_id, quantity, reference, notes=''):
-        self.s.require('owner')
-        if type(quantity)!=int or not quantity or not reference.strip():
-            raise RuleError('Enter a nonzero whole quantity and purchase/correction reference.')
-        with self.db.transaction() as c:
-            if not c.execute('SELECT 1 FROM stock_items WHERE id=? AND active=1',(stock_id,)).fetchone():
-                raise RuleError('Select an active stock item.')
-            balance=c.execute('SELECT COALESCE(sum(delta),0) FROM stock_movements WHERE stock_id=?',(stock_id,)).fetchone()[0]
-            if balance+quantity<0:
-                raise RuleError('Stock cannot become negative.')
-            ident=insert(c,'stock_movements',stock_id=stock_id,delta=quantity,reference=reference,notes=notes,created=now(),actor=self.s.user['id'])
-            self.s.audit(c,'stock',stock_id,'stock_adjusted',{'quantity':quantity,'reference':reference,'notes':notes})
-            return ident
+        from .inventory import Inventory
+        return Inventory(self.s).adjust(stock_id,quantity,reference,notes)
 
     def save(self, job_id, values, part_id=None):
         self.s.require('owner','counter')
         defaults=dict(name='',part_type='',brand='',model='',part_number='',serial='',quantity=1,source='supplier',inventory_id=None,supplier_id=None,
-            invoice='',purchase_date=None,purchase_cost=0,customer_price=0,warranty_duration=0,warranty_unit='months',warranty_provider='',warranty_terms='',notes='')
+            invoice='',purchase_date=None,purchase_cost=0,customer_price=0,warranty_duration=0,warranty_unit='months',warranty_provider='',warranty_terms='',notes='',requested_by='',request_notes='')
         if not set(values)<=set(defaults):
             raise RuleError('Unknown part field.')
         with self.db.transaction() as c:
@@ -51,9 +39,26 @@ class Parts:
             old=self.db.one('SELECT * FROM repair_parts WHERE id=? AND job_id=?',(part_id,job_id)) if part_id else None
             if part_id and (not old or old['status']!='planned'):
                 raise RuleError('Only an uninstalled planned part may be edited.')
+            if old and old['stock_state'] in ('reserved','issued'):
+                raise RuleError('Release the reservation or return the issued part before changing its specification or price.')
+            if self.s.user['role']!='owner' and 'purchase_cost' in values:
+                raise RuleError('Only the owner may enter or change internal purchase costs.')
             if old:
                 defaults.update({k:old[k] for k in defaults})
             p=dict(defaults,**values)
+            if p['source']=='stock':
+                stock=self.db.one('SELECT * FROM stock_items WHERE id=? AND active=1',(p['inventory_id'],))
+                if not stock:raise RuleError('Select the shop stock item.')
+                for key in ('name','brand','model','part_number','serial','supplier_id','invoice','purchase_date','customer_price','warranty_duration','warranty_unit','warranty_provider','warranty_terms'):
+                    if (not old or old['inventory_id']!=p['inventory_id']) and key not in values:p[key]=stock[key]
+                p['supplier_id']=stock['supplier_id']
+                p['purchase_cost']=stock['purchase_cost'] if not old or old['inventory_id']!=p['inventory_id'] else old['purchase_cost']
+                if stock['serialized'] and (p['quantity']!=1 or p['serial']!=stock['serial']):raise RuleError('Use the inventory serial and a quantity of one for this serialized part.')
+            if p['source']=='technician':
+                assigned=c.execute('SELECT contact_id FROM assignments WHERE id=? AND route=\'third_party\'',(j['assignment_id'],)).fetchone()
+                if j['route']!='third_party' or not assigned or not assigned[0]:raise RuleError('Assign the repairing third-party vendor before choosing this part source.')
+                if p['supplier_id'] and p['supplier_id']!=assigned[0]:raise RuleError('Repairing third-party parts must use the currently assigned vendor. Choose External supplier for another company.')
+                p['supplier_id']=assigned[0]
             if not p['name'].strip() or p['source'] not in ('stock','supplier','technician','other'):
                 raise RuleError('Enter the part name and source.')
             if any(type(p[k])!=int or p[k]<0 for k in ('purchase_cost','customer_price','warranty_duration')) or type(p['quantity'])!=int or p['quantity']<1:
@@ -74,6 +79,8 @@ class Parts:
             if p['source']=='other' and not p['notes'].strip():
                 raise RuleError('Explain the other part source in notes.')
             p['supplier_snapshot']=json.dumps(dict(supplier)) if supplier else ''
+            if not old or old['source']!=p['source']:
+                p['procurement_status']='not_ordered' if p['source']=='supplier' else 'provided_by_repairer' if p['source']=='technician' else 'available'
             if part_id:
                 p['revision']=old['revision']+1
                 c.execute('UPDATE repair_parts SET '+','.join(k+'=?' for k in p)+' WHERE id=?',(*p.values(),part_id))
@@ -92,6 +99,8 @@ class Parts:
             if not p or p['status']!='planned':
                 raise RuleError('Installed parts remain in repair history and cannot be removed.')
             j=self.s._job(c,p['job_id']);self._editable(j)
+            if p['stock_state'] in ('reserved','issued'):
+                raise RuleError('Release or return the physical stock before removing the planned part.')
             c.execute("UPDATE repair_parts SET status='removed',revision=revision+1 WHERE id=?",(part_id,))
             self._revise(c,j)
             self.s.audit(c,'job',j['id'],'part_removed',{'part_id':part_id,'reason':reason})
@@ -115,7 +124,20 @@ class Parts:
             self.s._touch(c,j['id'])
 
     def quote_lines(self,job_id):
-        return [dict(part_id=p['id'],revision=p['revision'],description=f"{p['name']} · {p['brand']} {p['model']} · Qty {p['quantity']} · Warranty {p['warranty_duration']} {p['warranty_unit']} ({p['warranty_provider']})",amount=p['quantity']*p['customer_price']) for p in self.rows(job_id) if p['status']!='removed']
+        return [dict(part_id=p['id'],revision=p['revision'],description=f"{p['name']} · {p['brand']} {p['model']} · Qty {p['quantity']} · "+(f"Warranty {p['warranty_duration']} {p['warranty_unit']} ({p['warranty_provider']})" if p['warranty_duration'] else 'Warranty not recorded'),amount=p['quantity']*p['customer_price']) for p in self.rows(job_id) if p['status']!='removed']
+
+    def procure(self,part_id,action,reference):
+        self.s.require('owner','counter')
+        if not reference.strip():raise RuleError('Record the order or receipt reference.')
+        with self.db.transaction() as c:
+            p=self.db.one('SELECT * FROM repair_parts WHERE id=?',(part_id,))
+            if not p or p['status']!='planned' or p['source']!='supplier':raise RuleError('Select an external-supplier planned part.')
+            j=self.s._job(c,p['job_id']);self._editable(j)
+            if action=='order' and p['procurement_status']=='not_ordered':state='ordered'
+            elif action=='receive' and p['procurement_status'] in ('not_ordered','ordered','legacy'):state='received'
+            else:raise RuleError('That procurement action is not available now.')
+            c.execute('UPDATE repair_parts SET procurement_status=? WHERE id=?',(state,part_id))
+            self.s._touch(c,j['id']);self.s.audit(c,'job',j['id'],'external_part_'+state,{'part_id':part_id,'supplier_id':p['supplier_id'],'reference':reference})
 
     def validate_approval(self,c,j):
         parts=self.quote_lines(j['id'])
@@ -144,11 +166,11 @@ class Parts:
                 raise RuleError('Start the approved repair before recording parts installed.')
             self.s._authorize_repair(c,j)
             self.validate_approval(c,j)
+            if p['source']=='supplier' and p['procurement_status'] not in ('received','legacy'):
+                raise RuleError('Record receipt of the external part before installing it.')
             if p['source']=='stock':
-                available=c.execute('SELECT COALESCE(sum(delta),0) FROM stock_movements WHERE stock_id=?',(p['inventory_id'],)).fetchone()[0]
-                if available<p['quantity']:
-                    raise RuleError('Insufficient shop stock. Receive stock or revise the part source first.')
-                insert(c,'stock_movements',stock_id=p['inventory_id'],delta=-p['quantity'],part_id=part_id,job_id=j['id'],reference=j['number'],notes='Installed on device',created=now(),actor=self.s.user['id'])
+                from .inventory import Inventory
+                Inventory(self.s).installed(c,p)
             card=c.execute('SELECT id FROM job_cards WHERE job_id=? ORDER BY sequence DESC LIMIT 1',(j['id'],)).fetchone()
             q=c.execute('SELECT id FROM quotes WHERE job_id=? ORDER BY version DESC LIMIT 1',(j['id'],)).fetchone()
             c.execute("UPDATE repair_parts SET status='installed',installed_by=?,installed_at=?,estimate_id=?,card_id=? WHERE id=?",(installed_by,stamp,q[0],card[0] if card else None,part_id))

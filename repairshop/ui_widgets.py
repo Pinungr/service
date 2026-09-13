@@ -8,35 +8,140 @@ from PyQt6.QtGui import QColor
 from .domain import rupees
 
 STYLE = """
-QWidget {font-family:'Segoe UI';font-size:13px;color:#213b39;background:#f5f7f6;}
-QMainWindow {background:#f5f7f6;}
-QWidget#sidebar {background:#133e37;}
-QWidget#sidebar QLabel {background:transparent;color:#c4ded7;}
-QWidget#sidebar QPushButton {background:transparent;color:#dcebe7;text-align:left;padding:12px 18px;border:0;border-radius:7px;}
-QWidget#sidebar QPushButton:hover {background:#20564b;}
-QWidget#sidebar QPushButton[active='true'] {background:#daf0b8;color:#193c32;font-weight:600;}
-QLabel#brand {font-size:23px;font-weight:700;color:white;}
-QLabel#title {font-size:29px;font-weight:650;color:#133e37;}
-QLabel#subtitle {color:#6c7e7a;font-size:13px;}
-QLabel#metric {font-size:28px;font-weight:650;color:#194f43;}
-QWidget#card {background:white;border:1px solid #dde5e2;border-radius:9px;}
-QWidget#card QLabel {background:transparent;}
-QPushButton {background:white;border:1px solid #cddbd5;border-radius:6px;padding:8px 13px;font-weight:500;}
-QPushButton:hover {background:#e8f1ed;border-color:#91b6a8;}
-QPushButton#primary {background:#246a56;color:white;border-color:#246a56;}
-QPushButton#primary:hover {background:#1b5544;}
-QPushButton:disabled {color:#9aa8a2;background:#ecf0ed;}
-QLineEdit,QTextEdit,QComboBox,QDateEdit {background:white;border:1px solid #cedbd5;border-radius:5px;padding:8px;selection-background-color:#c0dccf;}
-QLineEdit:focus,QTextEdit:focus,QComboBox:focus {border:1px solid #2a8065;}
-QTableWidget {background:white;alternate-background-color:#f5f8f6;border:1px solid #dde5e2;border-radius:7px;gridline-color:#edf1ef;selection-background-color:#dfeee6;selection-color:#173f32;}
-QHeaderView::section {background:#edf3f0;color:#526d61;border:0;border-bottom:1px solid #dce5df;padding:11px 9px;font-size:12px;font-weight:600;}
-QTableWidget::item {padding:7px;}
-QTabWidget::pane {border:1px solid #dce5df;border-radius:6px;}
-QTabBar::tab {background:#e8eeea;padding:10px 13px;border:0;}
-QTabBar::tab:selected {background:#d9ebdf;color:#174e35;}
-QScrollArea {border:0;}
-QCheckBox {spacing:8px;padding:3px;}
-QStatusBar {background:#e9f0ec;color:#536f60;}
+QWidget {
+    font-family: 'Segoe UI', 'Noto Sans', Arial;
+    font-size: 13px;
+    color: #1f2937;
+    background: #f6f8fb;
+}
+QMainWindow, QDialog {background: #f6f8fb;}
+QWidget#sidebar {background: #102a43;}
+QWidget#sidebar QLabel {background: transparent;color: #cbd5e1;}
+QWidget#sidebar QPushButton {
+    background: transparent;
+    color: #e2e8f0;
+    text-align: left;
+    padding: 11px 14px;
+    border: 0;
+    border-radius: 8px;
+    font-weight: 600;
+}
+QWidget#sidebar QPushButton:hover {background: #1d3f5f;color: white;}
+QWidget#sidebar QPushButton[active='true'] {
+    background: #dbeafe;
+    color: #0f3057;
+    font-weight: 700;
+}
+QLabel#brand {font-size: 23px;font-weight: 800;color: white;letter-spacing: 0;}
+QLabel#eyebrow {
+    color: #93a4b8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+QLabel#title {font-size: 30px;font-weight: 750;color: #102a43;}
+QLabel#subtitle {color: #64748b;font-size: 13px;}
+QLabel#sectionTitle {font-size: 15px;font-weight: 750;color: #102a43;}
+QLabel#metric {font-size: 30px;font-weight: 800;color: #0f766e;}
+QLabel#muted {color: #64748b;}
+QLabel#badge {
+    background: #e0f2fe;
+    color: #075985;
+    border: 1px solid #bae6fd;
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-weight: 700;
+}
+QLabel#successBadge {background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:8px;padding:5px 10px;font-weight:700;}
+QLabel#warningBadge {background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:5px 10px;font-weight:700;}
+QLabel#errorBadge {background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:8px;padding:5px 10px;font-weight:700;}
+QWidget#card, QWidget#panel {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+}
+QWidget#card QLabel, QWidget#panel QLabel {background: transparent;}
+QPushButton {
+    background: white;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 8px 13px;
+    min-height: 22px;
+    font-weight: 650;
+    color: #1e293b;
+}
+QPushButton:hover {background: #f1f5f9;border-color: #94a3b8;}
+QPushButton:pressed {background: #e2e8f0;}
+QPushButton#primary {
+    background: #0f766e;
+    color: white;
+    border-color: #0f766e;
+}
+QPushButton#primary:hover {background: #115e59;border-color: #115e59;}
+QPushButton#danger {
+    background: #fee2e2;
+    color: #991b1b;
+    border-color: #fecaca;
+}
+QPushButton#danger:hover {background: #fecaca;}
+QPushButton#metricCard {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 0;
+    text-align: left;
+}
+QPushButton#metricCard:hover {background: #f8fafc;border-color: #99f6e4;}
+QPushButton:disabled {color: #94a3b8;background: #f1f5f9;border-color: #e2e8f0;}
+QLineEdit, QTextEdit, QComboBox, QDateEdit, QSpinBox {
+    background: white;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 8px;
+    selection-background-color: #bae6fd;
+}
+QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QDateEdit:hover, QSpinBox:hover {border-color: #94a3b8;}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {
+    border: 1px solid #0f766e;
+}
+QComboBox::drop-down {border: 0;width: 28px;}
+QTableWidget {
+    background: white;
+    alternate-background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    gridline-color: #eef2f7;
+    selection-background-color: #ccfbf1;
+    selection-color: #134e4a;
+}
+QHeaderView::section {
+    background: #f1f5f9;
+    color: #475569;
+    border: 0;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 10px 9px;
+    font-size: 12px;
+    font-weight: 800;
+}
+QTableWidget::item {padding: 8px;border-bottom: 1px solid #f1f5f9;}
+QTableWidget::item:hover {background: #f0fdfa;}
+QTabWidget::pane {border: 1px solid #e2e8f0;border-radius: 10px;background:white;}
+QTabBar::tab {
+    background: #e2e8f0;
+    color: #334155;
+    padding: 10px 14px;
+    border: 0;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    margin-right: 2px;
+    font-weight: 650;
+}
+QTabBar::tab:selected {background: white;color: #0f766e;}
+QScrollArea {border: 0;background: transparent;}
+QCheckBox {spacing: 8px;padding: 4px;background: transparent;}
+QCheckBox::indicator {width: 17px;height: 17px;}
+QDialogButtonBox QPushButton {min-width: 92px;}
+QStatusBar {background: #e2e8f0;color: #475569;}
 """
 
 
@@ -44,8 +149,38 @@ def button(text, callback, primary=False):
     b = QPushButton(text)
     if primary:
         b.setObjectName("primary")
+    if text.lower().startswith(("delete", "remove", "reverse", "restore")) or "write off" in text.lower():
+        b.setObjectName("danger")
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setToolTip(text.replace("&", ""))
+    b.setAccessibleName(text.replace("&", ""))
     b.clicked.connect(callback)
     return b
+
+
+def badge(text, tone="info"):
+    label = QLabel(text)
+    label.setObjectName({"success": "successBadge", "warning": "warningBadge", "error": "errorBadge"}.get(tone, "badge"))
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    return label
+
+
+def panel(title=None, subtitle=None):
+    box = QWidget()
+    box.setObjectName("panel")
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(18, 16, 18, 16)
+    layout.setSpacing(10)
+    if title:
+        heading = QLabel(title)
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+    if subtitle:
+        copy = QLabel(subtitle)
+        copy.setObjectName("subtitle")
+        copy.setWordWrap(True)
+        layout.addWidget(copy)
+    return box, layout
 
 
 def combo(options, selected=None, editable=False):
@@ -115,9 +250,11 @@ class Form(QDialog):
     def __init__(self, title, parent=None, description=""):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(610, 600)
+        self.resize(660, 640)
         self.fields = {}
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(12)
         header = QLabel(title)
         header.setObjectName("title")
         outer.addWidget(header)
@@ -130,16 +267,21 @@ class Form(QDialog):
         scroll.setWidgetResizable(True)
         body = QWidget()
         self.layout = QFormLayout(body)
-        self.layout.setSpacing(12)
+        self.layout.setContentsMargins(2, 2, 10, 2)
+        self.layout.setHorizontalSpacing(18)
+        self.layout.setVerticalSpacing(12)
         self.layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         scroll.setWidget(body)
         outer.addWidget(scroll)
         self.error = QLabel()
         self.error.setWordWrap(True)
-        self.error.setStyleSheet("color:#b04132")
+        self.error.setObjectName("errorBadge")
+        self.error.hide()
         outer.addWidget(self.error)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName("primary")
         outer.addWidget(self.buttons)
 
     def add(self, key, label, widget):
@@ -150,10 +292,10 @@ class Form(QDialog):
     def text(self, key, label, value="", multiline=False, password=False):
         w = QTextEdit() if multiline else QLineEdit()
         if multiline:
-            w.setPlainText(str(value or ""))
+            w.setPlainText(str("" if value is None else value))
             w.setMaximumHeight(100)
         else:
-            w.setText(str(value or ""))
+            w.setText(str("" if value is None else value))
             if password:
                 w.setEchoMode(QLineEdit.EchoMode.Password)
         return self.add(key, label, w)
@@ -201,6 +343,7 @@ class Form(QDialog):
                 self.accept()
             except Exception as exc:
                 self.error.setText(str(exc))
+                self.error.show()
         self.buttons.accepted.connect(save)
         return self.exec()
 
@@ -275,6 +418,7 @@ class Grid(QTableWidget):
         self.verticalHeader().hide()
         self.verticalHeader().setDefaultSectionSize(43)
         self.horizontalHeader().setStretchLastSection(True)
+        self.horizontalHeader().setMinimumSectionSize(96)
         self.setWordWrap(False)
 
     def fill(self, rows, columns=None):
@@ -282,6 +426,15 @@ class Grid(QTableWidget):
         keys = columns or (list(rows[0]) if rows else ["No matching records"])
         self.setColumnCount(len(keys))
         self.setHorizontalHeaderLabels([k.replace("_", " ").title() for k in keys])
+        if not rows:
+            self.clearSpans()
+            self.setRowCount(0)
+            self.setToolTip("No records to show")
+            self.resizeColumnsToContents()
+            self.horizontalHeader().setStretchLastSection(True)
+            return
+        self.setToolTip("")
+        self.clearSpans()
         self.setRowCount(len(rows))
         money_keys = {"purchase_cost", "customer_price", "margin","balance", "amount", "cost", "costs", "revenue", "margin_before_overheads", "total", "estimate", "running_balance", "unapplied", "allocated", "total_expense"}
         for r, row in enumerate(rows):
@@ -300,9 +453,21 @@ class Grid(QTableWidget):
                     text = text.replace("_", " ").title()
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
-                if key == 'stage':
-                    palette = {'diagnosis':'#8a6725','awaiting_estimate':'#8a6725','awaiting_approval':'#8a6725','under_repair':'#326d9d','ready_dispatch':'#a36326','awaiting_return':'#785d98','ready_repaired':'#28704e','ready_unrepaired':'#965347','waiting_parts':'#947134'}
-                    item.setForeground(QColor(palette.get(value,'#355c4c')))
+                if key in ("stage", "state", "status", "procurement_status", "stock_state", "effective_status", "warranty_indicator"):
+                    palette = {
+                        "diagnosis": ("#92400e", "#fef3c7"), "awaiting_estimate": ("#92400e", "#fef3c7"),
+                        "awaiting_approval": ("#92400e", "#fef3c7"), "waiting_parts": ("#92400e", "#fef3c7"),
+                        "under_repair": ("#075985", "#e0f2fe"), "ready_dispatch": ("#9a3412", "#ffedd5"),
+                        "awaiting_return": ("#6d28d9", "#ede9fe"), "ready_repaired": ("#166534", "#dcfce7"),
+                        "ready_unrepaired": ("#991b1b", "#fee2e2"), "installed": ("#166534", "#dcfce7"),
+                        "planned": ("#475569", "#f1f5f9"), "reserved": ("#92400e", "#fef3c7"),
+                        "issued": ("#075985", "#e0f2fe"), "ACTIVE": ("#166534", "#dcfce7"),
+                        "OPEN": ("#92400e", "#fef3c7"), "REJECTED": ("#991b1b", "#fee2e2"),
+                    }
+                    colors = palette.get(value, palette.get(text, None))
+                    if colors:
+                        item.setForeground(QColor(colors[0]))
+                        item.setBackground(QColor(colors[1]))
                 self.setItem(r, col, item)
         self.resizeColumnsToContents()
         for col in range(len(keys)):

@@ -86,6 +86,9 @@ class Queries:
         result["holdings"] = self.db.rows("SELECT i.id,i.type,i.description,i.serial,h.location,h.quantity FROM items i JOIN holdings h ON i.id=h.item_id WHERE i.job_id=? AND h.quantity>0", (job_id,))
         result["movements"] = self.db.rows("SELECT m.* FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? ORDER BY m.id DESC", (job_id,))
         result["audit"] = self.db.rows("SELECT a.created,u.name AS actor,a.action,a.payload FROM audit a LEFT JOIN users u ON a.actor=u.id WHERE a.entity='job' AND a.entity_id=? ORDER BY a.id DESC LIMIT 300", (job_id,)) if self.s.user["role"] == "owner" else []
+        if self.s.user['role']!='owner':
+            from .inventory import public_values
+            result=public_values(result)
         return result
 
     def report(self, kind, start, end, route="", customer_id=None, category_id=None, assignment=None):
@@ -104,7 +107,7 @@ class Queries:
             self.s.require('owner')
             return self.db.rows("SELECT j.number,p.name,p.brand,p.model,p.part_number,p.serial,p.quantity,p.source,p.supplier_snapshot,p.purchase_cost,p.customer_price,(p.customer_price-p.purchase_cost)*p.quantity AS margin,p.installed_by,p.installed_at,p.status"+base.replace(' FROM jobs j',' FROM repair_parts p JOIN jobs j ON j.id=p.job_id')+' ORDER BY j.id,p.id',args)
         if kind == 'part_warranties':
-            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN w.status='ACTIVE' AND w.expiry<date('now','+330 minutes') THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',args)
+            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status IN ('OPEN','ACCEPTED','IN_REPAIR')) THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<date('now','+330 minutes') THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',args)
         if kind == 'warranty_claims':
             return self.db.rows('SELECT j.number,wc.original_job_id,wc.device_id,wc.part_id,wc.complaint,wc.status,wc.resolution,wc.replacement_part_id'+base.replace(' FROM jobs j',' FROM warranty_claims wc JOIN jobs j ON j.id=wc.new_job_id')+' ORDER BY wc.id',args)
         if kind == 'job_cards':

@@ -27,8 +27,14 @@ class Warranties:
         self.s.require()
         rows=self.db.rows('SELECT w.*,j.number original_job FROM part_warranties w JOIN jobs j ON j.id=w.job_id WHERE w.device_id=? ORDER BY w.expiry DESC,w.id DESC',(device_id,))
         for r in rows:
-            r['effective_status']='EXPIRED' if r['status']=='ACTIVE' and r['expiry']<date.today().isoformat() else r['status']
+            claim=self.active_claim(r['id'])
+            r['claim_id']=claim['id'] if claim else None
+            r['claim_state']=claim['status'] if claim else ''
+            r['effective_status']='CLAIM IN PROGRESS' if claim else 'EXPIRED' if r['status']=='ACTIVE' and r['expiry']<date.today().isoformat() else r['status']
         return rows
+
+    def active_claim(self,warranty_id):
+        return self.db.one("SELECT * FROM warranty_claims WHERE warranty_id=? AND status IN ('OPEN','ACCEPTED','IN_REPAIR') ORDER BY id DESC LIMIT 1",(warranty_id,))
 
     def claims(self,device_id):
         self.s.require()
@@ -47,7 +53,7 @@ class Warranties:
             self.s.audit(c,'job',job_id,'repair_warranty_registered',{'warranty_id':ident,'name':name,'expiry':expiry,'provider':provider})
             return ident
 
-    def edit(self,warranty_id,reason,**values):
+    def edit(self,warranty_id,reason,privileged_override=False,**values):
         self.s.require('owner')
         if not reason.strip() or not values or not set(values)<={'duration','unit','start_date','provider','terms','status','notes'}:
             raise RuleError('Record an edit reason and supported warranty details.')
@@ -55,12 +61,15 @@ class Warranties:
             old=self.db.one('SELECT * FROM part_warranties WHERE id=?',(warranty_id,))
             if not old:
                 raise RuleError('Warranty not found.')
+            claim=self.active_claim(warranty_id)
+            if claim and not privileged_override:
+                raise RuleError(f"WARRANTY STATUS MANAGED BY ACTIVE CLAIM WC-{claim['id']:06d} ({claim['status']}). Use the claim workflow or the dedicated owner override.")
             updated=dict(old,**values)
-            if updated['status'] not in ('ACTIVE','VOID','CLAIMED','REPLACED') or not updated['provider'].strip():
+            if updated['status'] not in ('ACTIVE','VOID','REPLACED') or not updated['provider'].strip():
                 raise RuleError('Choose a valid warranty status and provider.')
             values['expiry']=warranty_expiry(updated['start_date'],updated['duration'],updated['unit'])
             c.execute('UPDATE part_warranties SET '+','.join(k+'=?' for k in values)+' WHERE id=?',(*values.values(),warranty_id))
-            self.s.audit(c,'job',old['job_id'],'warranty_edited',{'warranty_id':warranty_id,'previous':old,'changes':values,'reason':reason})
+            self.s.audit(c,'job',old['job_id'],'warranty_admin_override' if privileged_override else 'warranty_edited',{'warranty_id':warranty_id,'previous':old,'changes':values,'reason':reason,'active_claim':claim['id'] if claim else None})
 
     def claim(self,new_job_id,warranty_id,complaint,override_reason=''):
         self.s.require('owner','counter')
@@ -71,7 +80,7 @@ class Warranties:
             w=self.db.one('SELECT * FROM part_warranties WHERE id=?',(warranty_id,))
             if not w or w['job_id']==new_job_id or w['device_id']!=j['device_id'] or j['stage'] in ('closed','collected'):
                 raise RuleError('A warranty claim requires a new active job for the same physical device.')
-            if w['status']!='ACTIVE':
+            if w['status']!='ACTIVE' or self.active_claim(warranty_id):
                 raise RuleError('Only an active, unclaimed warranty can start a claim.')
             if w['expiry']<date.today().isoformat():
                 self.s.require('owner')
@@ -79,8 +88,7 @@ class Warranties:
                     raise RuleError('This warranty expired. The owner must record an explicit override reason.')
             if c.execute('SELECT 1 FROM warranty_claims WHERE new_job_id=? AND warranty_id=?',(new_job_id,warranty_id)).fetchone():
                 raise RuleError('This job already has a claim against that warranty.')
-            ident=insert(c,'warranty_claims',new_job_id=new_job_id,original_job_id=w['job_id'],device_id=w['device_id'],part_id=w['part_id'],warranty_id=warranty_id,complaint=complaint,notes=override_reason,created=now(),actor=self.s.user['id'])
-            c.execute("UPDATE part_warranties SET status='CLAIMED' WHERE id=?",(warranty_id,))
+            ident=insert(c,'warranty_claims',new_job_id=new_job_id,original_job_id=w['job_id'],device_id=w['device_id'],part_id=w['part_id'],warranty_id=warranty_id,complaint=complaint,notes=override_reason,original_status=w['status'],created=now(),actor=self.s.user['id'])
             self.s._touch(c,new_job_id)
             self.s.audit(c,'job',new_job_id,'warranty_claim_opened',{'claim_id':ident,'original_job':w['job_id'],'part_id':w['part_id'],'warranty_id':warranty_id,'complaint':complaint,'override_reason':override_reason})
             return ident
@@ -98,9 +106,38 @@ class Warranties:
             replacement_part_id=replacement_part_id or old['replacement_part_id']
             if status=='REPLACED' and not c.execute("SELECT 1 FROM repair_parts WHERE id=? AND job_id=? AND device_id=? AND status='installed'",(replacement_part_id,old['new_job_id'],old['device_id'])).fetchone():
                 raise RuleError('Select the replacement part installed on this claim job.')
-            c.execute('UPDATE warranty_claims SET status=?,resolution=?,replacement_part_id=? WHERE id=?',(status,resolution,replacement_part_id,claim_id))
+            c.execute('UPDATE warranty_claims SET status=?,resolution=?,replacement_part_id=?,outcome=? WHERE id=?',(status,resolution,replacement_part_id,status if status in ('REJECTED','REPLACED','COMPLETED') else old['outcome'],claim_id))
             if status=='REPLACED':
                 c.execute("UPDATE part_warranties SET status='REPLACED' WHERE id=?",(old['warranty_id'],))
-            if status=='REJECTED' or status=='COMPLETED' and not replacement_part_id:
-                c.execute("UPDATE part_warranties SET status='ACTIVE' WHERE id=?",(old['warranty_id'],))
+            # Opening a claim no longer overwrites the base warranty state. A
+            # rejection/completion therefore preserves an explicit admin void.
             self.s.audit(c,'job',old['new_job_id'],'warranty_claim_updated',{'claim_id':claim_id,'previous_status':old['status'],'status':status,'resolution':resolution,'replacement_part_id':replacement_part_id})
+
+    def manual_checks(self,job_id):
+        self.s.require()
+        with self.db.read() as c:self.s._job(c,job_id)
+        return self.db.rows('SELECT m.*,u.name checked_by FROM manual_warranty_checks m JOIN users u ON u.id=m.actor WHERE job_id=? ORDER BY m.id DESC',(job_id,))
+
+    def manual_check(self,job_id,result,evidence_type,reference,provider,coverage,notes,attachment_id=None):
+        self.s.require('owner','counter')
+        if result not in ('VALID','INVALID','UNVERIFIED') or coverage not in ('manufacturer','shop_part','shop_repair','supplier','vendor'):
+            raise RuleError('Select a verification result and warranty coverage.')
+        if evidence_type not in ('Shop invoice','Warranty slip','Supplier invoice','Manufacturer warranty','Vendor confirmation','Other'):
+            raise RuleError('Select the evidence type.')
+        if not notes.strip() or (result=='VALID' and (not reference.strip() or not provider.strip())):
+            raise RuleError('Record verification notes; accepted warranty needs its evidence reference and provider.')
+        with self.db.transaction() as c:
+            j=self.s._job(c,job_id)
+            if j['stage'] in ('collected','closed'):raise RuleError('Use a new intake for warranty service after delivery.')
+            if attachment_id and not c.execute('SELECT 1 FROM attachments WHERE id=? AND (job_id=? OR device_id=?)',(attachment_id,job_id,j['device_id'])).fetchone():raise RuleError('Select evidence attached to this job or device.')
+            ident=insert(c,'manual_warranty_checks',job_id=job_id,device_id=j['device_id'],result=result,evidence_type=evidence_type,reference=reference,
+                provider=provider,coverage=coverage,notes=notes,attachment_id=attachment_id,checked_at=now(),actor=self.s.user['id'])
+            import json
+            data=json.loads(j['lifecycle_data']);data['manual_warranty_check']=ident
+            data['manual_warranty_result']=result;data['manual_warranty_coverage']=coverage
+            if j['stage']=='warranty_check' and result=='VALID':
+                data['warranty_status']='under_warranty' if coverage=='manufacturer' else 'shop_warranty'
+                c.execute("UPDATE jobs SET stage='route_selection' WHERE id=?",(job_id,))
+            c.execute('UPDATE jobs SET lifecycle_data=?,version=version+1 WHERE id=?',(json.dumps(data),job_id))
+            self.s.audit(c,'job',job_id,'manual_warranty_verified',{'check_id':ident,'result':result,'evidence_type':evidence_type,'reference':reference,'provider':provider,'coverage':coverage,'notes':notes,'attachment_id':attachment_id})
+            return ident

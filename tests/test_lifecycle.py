@@ -18,6 +18,7 @@ def route(s,customer,kind='in_house',warranty=False):
     life.execute(ident,'inspection_done',{'notes':'Power fault confirmed; condition checked'})
     life.execute(ident,'verify_warranty',{'warranty_status':'under_warranty' if warranty else 'out_of_warranty','notes':'Purchase evidence reviewed'})
     p={'route':kind,'confirmed':True,'technician_id':s.user['id']}
+    if kind=='in_house':p.update(handed_over=True,bench='Bench 2',condition='Intact',acknowledgment='Technician received')
     if kind!='in_house':
         p['contact_id']=s.save_master('centre' if kind=='warranty_centre' else 'vendor',kind+' test')
     life.execute(ident,'select_route',p)
@@ -33,6 +34,8 @@ def dispatch(s,ident,life,carrier=''):
 
 
 def diagnosis(life,ident,repairable=True,parts=True):
+    if 'hand_technician' in life.snapshot(ident)['actions']:
+        life.execute(ident,'hand_technician',dict(bench='Bench 2',condition='Intact',acknowledgment='Technician received device'))
     life.execute(ident,'diagnose',dict(notes='Faulty power board',repairable=repairable,parts='Power board',parts_available=parts))
 
 
@@ -52,6 +55,8 @@ def complete(life,ident,external=False):
 
 
 def qc(life,ident,result='passed'):
+    if 'return_technician' in life.snapshot(ident)['actions']:
+        life.execute(ident,'return_technician',dict(condition='Intact',acknowledgment='QC counter received',storage='shop:QC Area'))
     life.execute(ident,'qc',dict(result=result,notes='Original fault verified',condition_checked=True,
         checks={k:'passed' for k in ('functional','power','charging','display','connectivity','complaint')},repair_warranty='90 days workmanship',warranty_until='2099-01-01'))
 
@@ -175,6 +180,7 @@ def test_invalid_transitions_and_old_api_cannot_bypass(service,customer):
 
 def test_qc_pass_requires_checklist_and_staff_permission(service,customer):
     ident,life=route(service,customer);diagnosis(life,ident);approve(service,ident);complete(life,ident)
+    life.execute(ident,'return_technician',dict(condition='Intact',acknowledgment='Returned to QC'))
     with pytest.raises(RuleError,match='checks'):life.execute(ident,'qc',{'result':'passed','notes':'Skipped checks'})
     service.save_staff('other','Other technician','technician','TestPassword123')
     service.login('other','TestPassword123')
@@ -298,16 +304,17 @@ def test_migration5_to6_preserves_photos_finance_custody_and_verified_backup(ser
     with service.db.read() as source:
         with sqlite3.connect(target/'shop.db') as c:source.driver_connection.backup(c)
     with sqlite3.connect(target/'shop.db') as c:
-        for table in ('category_services','warranty_claims','part_warranties','stock_movements','repair_parts','stock_items','job_cards'):
+        for table in ('manual_warranty_checks','category_services','warranty_claims','part_warranties','stock_movements','repair_parts','stock_items','job_cards'):
             c.execute('DROP TABLE '+table)
         c.execute('DROP INDEX ix_job_lifecycle')
         c.execute('ALTER TABLE jobs DROP COLUMN lifecycle_version')
         c.execute('ALTER TABLE jobs DROP COLUMN lifecycle_data')
         c.execute('PRAGMA user_version=5')
     upgraded=Database(target)
-    assert upgraded.one('PRAGMA user_version')['user_version']==8
-    for table in ('customers','devices','items','holdings','movements','quotes','decisions','entries','attachments','audit'):
+    assert upgraded.one('PRAGMA user_version')['user_version']==9
+    for table in ('customers','devices','items','holdings','movements','quotes','decisions','entries','attachments'):
         assert upgraded.rows(f'SELECT * FROM {table}')==service.db.rows(f'SELECT * FROM {table}')
+    assert upgraded.rows("SELECT * FROM audit WHERE entity!='schema'")==service.db.rows("SELECT * FROM audit WHERE entity!='schema'")
     assert upgraded.one('SELECT lifecycle_version FROM jobs')['lifecycle_version']==0
     archives=list((target/'backups').glob('*pre-upgrade-v5*.zip'))
     assert len(archives)==1 and Backups.validate(archives[0])['schema']==5

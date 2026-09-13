@@ -135,9 +135,11 @@ def test_schema7_migration_preserves_existing_job_and_scopes_seed_service(servic
     with service.db.read() as source:
         with sqlite3.connect(target/'shop.db') as c:source.driver_connection.backup(c)
     with sqlite3.connect(target/'shop.db') as c:
+        from schema_fixtures import remove_v9
+        remove_v9(c)
         c.execute('DROP TABLE category_services');c.execute('PRAGMA user_version=7')
     upgraded=Database(target)
     assert upgraded.one('SELECT * FROM jobs WHERE id=?',(job,))==service.db.one('SELECT * FROM jobs WHERE id=?',(job,))
-    assert upgraded.one('PRAGMA user_version')['user_version']==8
+    assert upgraded.one('PRAGMA user_version')['user_version']==9
     archive=list((target/'backups').glob('*pre-upgrade-v7*.zip'))[0]
     assert Backups.validate(archive)['schema']==7

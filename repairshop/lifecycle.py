@@ -21,6 +21,9 @@ LABELS = dict(received='RECEIVED', inspection='INITIAL INSPECTION', warranty_che
     return_unrepaired='RETURN WITHOUT REPAIR', ready_unrepaired='READY FOR DELIVERY · UNREPAIRED',
     collected='DELIVERED', closed='CLOSED')
 ACTIONS = {
+    'hand_technician':'Hand device to technician','return_technician':'Return device from technician to QC',
+    'return_dispatch':'Hand returning device to courier','parts':'Check shop inventory / manage required parts',
+    'costing':'Review internal repair costs','manual_warranty':'Manual warranty check',
     'inspect': 'Perform initial inspection', 'inspection_done': 'Complete initial inspection',
     'verify_warranty': 'Verify warranty', 'select_route': 'Select repair route', 'change_route': 'Change repair route',
     'prepare_dispatch': 'Create dispatch record', 'dispatch': 'Send device', 'arrive': 'Confirm arrival at repairer',
@@ -73,6 +76,9 @@ class Lifecycle:
         for r in rows:
             r['time'] = local_time(r['created'])
             payload = json.loads(r['payload'])
+            if self.s.user['role']!='owner':
+                from .inventory import public_values
+                payload=public_values(payload);r['payload']=json.dumps(payload)
             r['event'] = ACTIONS.get(payload.get('action'), r['action'].replace('_', ' ').title())
             # Financial detail visibility remains owner-only; business events stay readable.
             if self.s.user['role'] != 'owner' and r['action'] in ('expense_allocated', 'finance_posted') and payload.get('account_type') != 'customer':
@@ -98,7 +104,11 @@ class Lifecycle:
 
     def snapshot(self, ident):
         with self.db.read_snapshot():
-            return self._snapshot(ident)
+            value=self._snapshot(ident)
+            if self.s.user['role']!='owner':
+                from .inventory import public_values
+                value=public_values(value)
+            return value
 
     def _snapshot(self, ident):
         j = self.s.job(ident)
@@ -108,6 +118,7 @@ class Lifecycle:
         names = {'shop': 'IN SHOP', 'technician': 'IN SHOP · TECHNICIAN', 'vendor': 'THIRD-PARTY TECHNICIAN',
                  'centre': 'AUTHORIZED SERVICE CENTER', 'transit': 'IN TRANSIT', 'customer': 'WITH CUSTOMER'}
         locations = sorted({h['location'] for h in devices})
+        data['in_transit']=any(h['location'].startswith('transit:') for h in devices)
         location = ' / '.join(names.get(v.split(':')[0], v) + (': ' + v.split(':', 1)[1] if ':' in v else '') for v in locations) or 'LOCATION NEEDS REVIEW'
         assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,u.name AS technician FROM assignments a
             LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE a.id=?''', (j['assignment_id'],)) or {}
@@ -120,8 +131,7 @@ class Lifecycle:
         away = any(not v.startswith(('shop:', 'technician:')) and v != 'customer' for v in locations)
         at_shop = bool(devices) and all(h['location'].startswith(('shop:', 'technician:')) for h in devices)
         responsible = (j['customer'] if locations == ['customer'] else
-            ', '.join(v.split(':', 1)[1] for v in locations if v.startswith('transit:')) if any(v.startswith('transit:') for v in locations) else
-            assignment.get('party') if away else assignment.get('technician')) or 'Shop counter · assignment needed'
+            assignment.get('party') if j['route']!='in_house' else assignment.get('technician')) or 'Shop counter · assignment needed'
         if away and data.get('route_details',{}).get('contact_person') and not any(v.startswith('transit:') for v in locations):
             responsible=data['route_details']['contact_person']+' · '+(assignment.get('party') or 'External repairer')
         elif away and isinstance(profile,dict) and profile.get('contact_person') and not any(v.startswith('transit:') for v in locations):
@@ -147,8 +157,16 @@ class Lifecycle:
         status = LABELS.get(stage, 'LEGACY STATUS: ' + stage)
         if stage == 'external_diagnosis':
             status = 'AT SERVICE CENTER · DIAGNOSIS' if j['route'] == 'warranty_centre' else 'WITH THIRD-PARTY TECHNICIAN · DIAGNOSIS'
-        if any(v.startswith('transit:') for v in locations):
-            status = 'IN TRANSIT · ' + status
+        transit=any(v.startswith('transit:') for v in locations)
+        technician_holds=any(v.startswith('technician:') for v in locations)
+        custodian=' / '.join((self.db.one('SELECT name FROM users WHERE id=?',(v.split(':',1)[1],)) or {}).get('name',v) if v.startswith('technician:') else self.db.setting('shop_name','Shop') if v.startswith('shop:') else j['customer'] if v=='customer' else v.split(':',1)[-1] for v in locations)
+        destination=data.get('transit_destination','') if transit else ''
+        if transit:
+            status='RETURN DISPATCHED TO SHOP' if data.get('transit_direction')=='return' else 'DISPATCHED TO SERVICE CENTER' if j['route']=='warranty_centre' else 'DISPATCHED TO THIRD PARTY'
+            location='IN TRANSIT'
+        elif technician_holds:
+            location='IN SHOP · '+data.get('technician_bench','Technician work area')
+            if stage=='diagnosis':status='WITH IN-HOUSE TECHNICIAN · DIAGNOSIS'
         if not j['lifecycle_version']:
             status += ' · LEGACY'
         next_action = ACTIONS.get(primary, 'Review job history')
@@ -168,6 +186,15 @@ class Lifecycle:
         if stage == 'awaiting_approval' and quotes.get('valid_until') and quotes['valid_until'] < today:
             attention.append('Quotation expired on '+quotes['valid_until']+'; approval needs a revised estimate')
             if primary == 'decision':next_action='Record a decline or issue a revised estimate'
+        if transit:
+            next_action='Receive device from courier' if data.get('transit_direction')=='return' else 'Confirm service center arrival' if j['route']=='warranty_centre' else 'Confirm vendor arrival'
+        if primary=='diagnose' and j['route']!='in_house':next_action='Wait for vendor diagnosis' if j['route']=='third_party' else 'Wait for service center diagnosis'
+        planned=self.db.rows("SELECT name,source,stock_state,procurement_status FROM repair_parts WHERE job_id=? AND status='planned'",(ident,))
+        for part in planned:
+            if part['source']=='stock' and part['stock_state']!='issued':attention.append(part['name']+': '+('reserve shop stock' if part['stock_state'] in ('none','returned') else 'issue reserved stock to repairer'))
+            if part['source']=='supplier' and part['procurement_status'] not in ('received','legacy'):attention.append(part['name']+': '+('order external part' if part['procurement_status']=='not_ordered' else 'receive external part'))
+        if primary=='start_repair' and planned and any(p['source']=='stock' and p['stock_state']!='issued' or p['source']=='supplier' and p['procurement_status'] not in ('received','legacy') for p in planned):
+            primary='parts';next_action='Reserve / issue shop parts or receive external parts'
         if stage not in ('closed','collected'):
             for field, label, relevant in [('return_due','External return overdue',away),('repair_due','Repair overdue',stage not in ('ready_repaired','ready_unrepaired')),('collection_due','Collection overdue',True)]:
                 if relevant and j[field] and j[field] < today:
@@ -203,7 +230,8 @@ class Lifecycle:
             actions.insert(0,'claim')
         return dict(j, data=data, route_label=route_label, current_status=status,
             current_card=f"CARD-{card['sequence']:02d} · {card['kind'].replace('_',' ')}" if card else 'LEGACY · no issued card',
-            warranty_indicator=f"{active} active warranties · {sum(r['effective_status']=='CLAIMED' for r in part_warranties)} claimed · {claims} open claims",open_claims=claims,
+            warranty_indicator=f"{active} active warranties · {sum(r['effective_status']=='CLAIM IN PROGRESS' for r in part_warranties)} claims in progress · {claims} unclosed claims",open_claims=claims,
+            current_custodian=custodian,final_destination=destination,assigned_technician=(assignment.get('technician') or 'Not assigned') if j['route']=='in_house' else 'Not applicable',
             current_location=location, responsible=responsible, pending_since=local_time(pending), pending_raw=pending,
             next_action=next_action, primary=primary, actions=actions, attention=attention, at_shop=at_shop, away=away,
             assignment=assignment, quote=quotes, warranty=warranty, warranty_status=data.get('warranty_status','Unknown / requires verification'),
@@ -247,7 +275,20 @@ class Lifecycle:
                 actions.append('resolve_item')
             if away and stage in ('final_qc','billing','ready_repaired','ready_unrepaired'):
                 actions.append('receive')
-        return actions
+        if j['route']!='in_house' and stage in ('awaiting_return','return_unrepaired') and away:
+            if not data.get('in_transit'):actions.append('return_dispatch')
+        if j['route']=='in_house' and j['assignment_id']:
+            technician_holds=self.db.one("SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location LIKE 'technician:%'",(j['id'],))
+            if stage in ('diagnosis','approved','under_repair','technician_testing') and not away and not technician_holds:actions.insert(0,'hand_technician')
+            if stage in ('final_qc','return_unrepaired') and technician_holds:actions.insert(0,'return_technician')
+            elif stage in ('diagnosis','awaiting_estimate','approved','waiting_parts','under_repair','testing') and technician_holds:actions.append('return_technician')
+        if data.get('in_transit'):
+            if data.get('transit_direction')=='return':actions=['receive','details']
+            elif stage=='external_diagnosis':actions=['arrive','details','decline']
+        if stage not in ('closed','collected'):
+            actions.append('parts');actions.append('manual_warranty')
+            if self.s.user['role']=='owner':actions.append('costing')
+        return list(dict.fromkeys(actions))
 
     def tracker(self, j, data, events):
         steps = [('received','Received'),('inspection','Initial inspection'),('warranty_check','Warranty check'),('route_selection','Route selected')]
@@ -323,6 +364,7 @@ class Lifecycle:
             if matches:
                 result.append(dict(id=v['id'], number=v['number'],visit=v['intake_ref'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
                     route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
+                    current_custodian=v['current_custodian'],final_destination=v['final_destination'],
                     pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
                     balance=v['balance'],estimate=v['quote'].get('total',0),current_card=v['current_card'],warranty_indicator=v['warranty_indicator'],open_claims=v['open_claims'],next_action=v['next_action'],attention='; '.join(v['attention'])))
                 if limit and len(result)>=offset+limit:
@@ -358,7 +400,8 @@ class Lifecycle:
             with self.db.transaction() as c:
                 j = dict(self.s._job(c,ident,version))
                 v = self.snapshot(ident)
-                data = v['data'].copy()
+                data = json.loads(j['lifecycle_data'])
+                data['in_transit']=v['data'].get('in_transit',False)
                 if action not in v['actions']:
                     raise RuleError('That action is not available now. Refresh the job and follow the next required step.')
                 if self.s.user['role']=='technician' and action not in ('diagnose','wait_parts','parts_received','start_repair','complete_repair','repair_failed','test','qc','details'):
@@ -406,7 +449,7 @@ class Lifecycle:
                         raise RuleError('Receive the physical device at the shop before changing its repair route.')
                     route=p.get('route')
                     status=data.get('warranty_status')
-                    if status not in ('under_warranty','out_of_warranty'):
+                    if status not in ('under_warranty','out_of_warranty','shop_warranty'):
                         raise RuleError('Verify warranty first. Use the warranty details action for a legacy job.')
                     if status=='under_warranty' and route!='warranty_centre' and v['warranty'].get('decision') not in ('rejected','partial'):
                         raise RuleError('Valid manufacturer warranty uses an authorized service center. Record a rejection before selecting a paid route.')
@@ -419,7 +462,18 @@ class Lifecycle:
                     technician=p.get('technician_id')
                     if route=='in_house' and not c.execute('SELECT 1 FROM users WHERE id=? AND active=1',(technician,)).fetchone():
                         raise RuleError('Assign an active shop technician.')
-                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,technician,reference=p.get('reference',''))
+                    if any(h['location'].startswith('technician:') for h in v['holdings'] if h['type']=='device'):
+                        raise RuleError('Return the device from the current technician before changing assignment.')
+                    if c.execute("SELECT 1 FROM repair_parts WHERE job_id=? AND stock_state='issued'",(ident,)).fetchone():
+                        raise RuleError('Return issued shop parts before changing repairer.')
+                    for part in c.execute("SELECT supplier_id FROM repair_parts WHERE job_id=? AND source='technician' AND status='planned'",(ident,)):
+                        if route!='third_party' or part[0]!=p.get('contact_id'):raise RuleError('Remove or revise the old repairing-vendor parts before changing vendor.')
+                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,technician if route=='in_house' else None,reference=p.get('reference',''))
+                    data['custody_version']=2
+                    data['in_transit']=False;data.pop('transit_direction',None);data.pop('transit_destination',None)
+                    if route=='in_house' and p.get('handed_over'):
+                        from .custody import DeviceCustody
+                        DeviceCustody(self.s).technician(c,dict(self.s._job(c,ident)),data,p)
                     data.pop('dispatch',None)
                     data.pop('diagnosis',None)
                     data.pop('unrepaired',None)
@@ -441,8 +495,11 @@ class Lifecycle:
                         raise RuleError('Select the physical device and only the accessories being sent.')
                     data['dispatch']=dict(p,items=sorted(selected))
                     c.execute('UPDATE jobs SET assessment_consent=1,return_due=? WHERE id=?',(day(p.get('expected_return')),ident))
-                elif action in ('dispatch','arrive','receive'):
+                elif action in ('dispatch','arrive','receive','return_dispatch'):
                     stage=self._custody(c,j,data,v,action,p)
+                elif action in ('hand_technician','return_technician'):
+                    from .custody import DeviceCustody
+                    DeviceCustody(self.s).technician(c,j,data,p,returning=action=='return_technician')
                 elif action == 'diagnose':
                     self._notes(notes)
                     if not v['at_shop'] and j['route']=='in_house':
@@ -480,6 +537,7 @@ class Lifecycle:
                         raise RuleError('Receive the device and required parts before starting in-house repair.')
                     if j['route']!='in_house' and not v['away']:
                         raise RuleError('Dispatch the device to the assigned repairer before authorizing external repair.')
+                    if j['route']=='in_house' and data.get('custody_version')==2 and not any(h['type']=='device' and h['location'].startswith('technician:') for h in v['holdings']):raise RuleError('Record physical handover to the assigned technician before starting repair.')
                     self.s._authorize_repair(c,j)
                     data['repair_started']=now()
                     data.pop('qc',None)
@@ -500,6 +558,7 @@ class Lifecycle:
                         if not original:
                             raise RuleError('The original device must be recorded with the external repairer.')
                         self.s.replacement(original['id'],p.get('description',''),p.get('serial',''),original['location'],p.get('terms',''),notes)
+                        data['replacement']={'description':p.get('description',''),'serial':p.get('serial',''),'terms':p.get('terms','')}
                         self.s.move(original['id'],original['quantity'],original['location'],'exception:Replaced by repairer',v['assignment']['party'],uuid.uuid4().hex,notes=notes)
                     stage='technician_testing' if j['route']=='in_house' else 'awaiting_return'
                 elif action in ('decline','repair_failed'):
@@ -518,6 +577,7 @@ class Lifecycle:
                 elif action == 'qc':
                     if not v['at_shop']:
                         raise RuleError('Receive the physical device back in the shop before final QC.')
+                    if any(h['type']=='device' and h['location'].startswith('technician:') for h in v['holdings']):raise RuleError('Return the device from the technician to the QC area before final shop QC.')
                     self._notes(notes)
                     if data.get('unrepaired'):
                         if not p.get('condition_checked'):
@@ -570,6 +630,7 @@ class Lifecycle:
                     self.s.notify(c,ident,'ready_unrepaired' if data.get('unrepaired') else 'ready_repaired', 'Your device is ready for collection '+('without repair. ' if data.get('unrepaired') else 'after final shop QC. ')+ 'Please contact the shop to arrange collection.')
                     data['notified']=now()
                 elif action == 'details':
+                    if set(p)&{'vendor_parts','vendor_labour','transport_cost','other_cost','service_center_charge','in_house_cost','estimated_parts','estimated_labour'}:self.s.require('owner')
                     if any(not isinstance(p[k],int) or p[k]<0 for k in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price') if k in p):
                         raise RuleError('Enter nonnegative estimates in whole paise.')
                     data.setdefault('route_details',{}).update(p)
@@ -597,64 +658,8 @@ class Lifecycle:
             raise RuleError('Record findings or notes before continuing.')
 
     def _custody(self,c,j,data,v,action,p):
-        self.s.require('owner','counter')
-        if not p.get('counterparty') or not p.get('condition') or not p.get('acknowledgment'):
-            raise RuleError('Record the receiving person, condition and handover acknowledgment.')
-        party=v['assignment'].get('party')
-        destination=('centre:' if j['route']=='warranty_centre' else 'vendor:')+(party or '')
-        if action=='dispatch':
-            manifest=data.get('dispatch',{})
-            if not manifest:
-                raise RuleError('Create the dispatch record first.')
-            rows=[h for h in v['holdings'] if h['id'] in manifest['items'] and h['location'].startswith('shop:')]
-            if not any(h['type']=='device' for h in rows):
-                raise RuleError('The selected device is no longer at the shop; review dispatch.')
-            if p.get('carrier'):
-                destination='transit:'+p['carrier']
-            data['in_transit']=bool(p.get('carrier'))
-            data['dispatched']=now()
-            stage='external_diagnosis'
-        elif action=='arrive':
-            rows=[h for h in v['holdings'] if h['location'].startswith('transit:')]
-            data['in_transit']=False
-            stage='external_diagnosis'
-        else:
-            rows=[h for h in v['holdings'] if h['location'].startswith(('centre:','vendor:','transit:'))]
-            if not c.execute("SELECT 1 FROM job_cards WHERE job_id=? AND kind IN ('third_party_dispatch','service_center_dispatch')",(j['id'],)).fetchone() and not data.get('legacy_review'):
-                raise RuleError('An outbound Job Card is required before a return can be recorded.')
-            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND m.from_location LIKE 'shop:%' AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():
-                raise RuleError('Only a previously dispatched device can be received from a repairer.')
-            destination=p.get('storage','shop:Front desk')
-            if not destination.startswith('shop:'):
-                raise RuleError('Choose a shop storage location for the return.')
-            data['returned']=now()
-            data['in_transit']=False
-            stage='final_qc'
-        if 'items' in p:
-            selected=set(p['items'])
-            rows=[h for h in rows if h['id'] in selected]
-        if not rows:
-            raise RuleError('No matching items are available for this handover.')
-        if action=='dispatch' and not any(h['type']=='device' for h in rows):
-            raise RuleError('Include the physical device in this dispatch.')
-        movements=[]
-        card_items=[]
-        for h in rows:
-            quantity=p.get('quantities',{}).get(str(h['id']),h['quantity'])
-            movements.append(self.s.move(h['id'],quantity,h['location'],destination,p['counterparty'],uuid.uuid4().hex,
-                reference=p.get('reference',''),condition=p['condition'],notes=p.get('notes',''),acknowledgment=p['acknowledgment']))
-            card_items.append(dict(h,quantity=quantity,condition=p['condition']))
-        from .job_cards import JobCards
-        kind=('service_center_' if j['route']=='warranty_centre' else 'third_party_')+('return' if action=='receive' else 'arrival' if action=='arrive' else 'dispatch')
-        JobCards(self.s).issue(j['id'],kind,'movement:'+str(movements[0]),dict(p,movement_ids=movements),card_items)
-        if action=='receive':
-            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
-            if remaining:
-                stage=j['stage']
-                data.pop('returned',None)
-        if action=='arrive':
-            data['in_transit']=bool(c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND h.quantity>0 AND h.location LIKE 'transit:%'",(j['id'],)).fetchone())
-        return stage
+        from .custody import DeviceCustody
+        return DeviceCustody(self.s).external(c,j,data,v,action,p)
 
     def _billing(self,c,j,data,p):
         self.s.require('owner','counter')

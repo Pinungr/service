@@ -17,16 +17,23 @@ def plan(s,job,source='supplier',duration=3,price=90000):
     if source=='stock':
         stock=parts.stock_item('Battery',40000,price,part_number='PART-B50');parts.adjust_stock(stock,2,'Purchase INV-001');values['inventory_id']=stock
     elif source in ('supplier','technician'):
-        values['supplier_id']=s.save_master('supplier' if source=='supplier' else 'vendor','Battery supply '+source,contact='555',details='Supplier address')
+        values['supplier_id']=s.db.one('SELECT contact_id FROM assignments WHERE id=?',(s.job(job)['assignment_id'],))['contact_id'] if source=='technician' else s.save_master('supplier','Battery supply supplier',contact='555',details='Supplier address')
     else:values['notes']='Customer-supplied part'
-    return parts.save(job,values)
+    ident=parts.save(job,values)
+    if source=='supplier':parts.procure(ident,'receive','Supplier receipt INV-001')
+    return ident
 
 
 def installed(s,customer,source='supplier',kind='in_house'):
     ident,life=route(s,customer,kind)
     if kind!='in_house':dispatch(s,ident,life)
     diagnosis(life,ident);part=plan(s,ident,source)
-    quote=approve(s,ident,10000);life.execute(ident,'start_repair');Parts(s).install(part,'Amit')
+    quote=approve(s,ident,10000)
+    if source=='stock':
+        from repairshop.inventory import Inventory
+        Inventory(s).transfer(part,'reserve','Reserved for job')
+        Inventory(s).transfer(part,'issue','Technician received battery')
+    life.execute(ident,'start_repair');Parts(s).install(part,'Amit')
     life.execute(ident,'complete_repair',{'notes':'Battery installed and tested'})
     if kind!='in_house':life.execute(ident,'receive',dict(counterparty='Shop',condition='Intact',acknowledgment='Return card'))
     else:life.execute(ident,'test',dict(result='passed',notes='Passed technician test'))
@@ -136,7 +143,7 @@ def test_future_job_claim_links_original_and_preserves_history(service,customer)
     assert (r['new_job_id'],r['original_job_id'],r['part_id'],r['device_id'])==(new,old,part,device)
     w.update_claim(claim,'ACCEPTED','Defect accepted');w.update_claim(claim,'IN_REPAIR','Repair being carried out')
     assert service.job(old)==before and Parts(service).rows(old)[0]==oldpart
-    assert '1 open claims' in life.snapshot(new)['warranty_indicator']
+    assert '1 claims in progress' in life.snapshot(new)['warranty_indicator']
     assert life.rows(filter_key='warranty_claims')[0]['id']==new
 
 
@@ -171,7 +178,7 @@ def test_new_tabs_show_parts_cards_and_warranty(qtbot,service,customer):
     dialog=JobWorkspace(w,ident);qtbot.addWidget(dialog)
     names=[dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
     assert {'Job Cards','Parts','Warranty'}<=set(names)
-    assert 'CARD-02' in dialog.heading.text() and '1 active warranties' in dialog.heading.text()
+    assert 'CARD-04' in dialog.heading.text() and '1 active warranties' in dialog.heading.text()
     assert dialog.record_tabs[1].grid.rowCount()==1
 
 
@@ -211,7 +218,7 @@ def test_schema6_upgrade_does_not_invent_cards(service,customer,job,tmp_path):
     with service.db.read() as source:
         with sqlite3.connect(target/'shop.db') as c:source.driver_connection.backup(c)
     with sqlite3.connect(target/'shop.db') as c:
-        for table in ('category_services','warranty_claims','part_warranties','stock_movements','repair_parts','stock_items','job_cards'):c.execute('DROP TABLE '+table)
+        for table in ('manual_warranty_checks','category_services','warranty_claims','part_warranties','stock_movements','repair_parts','stock_items','job_cards'):c.execute('DROP TABLE '+table)
         c.execute('PRAGMA user_version=6')
     upgraded=Database(target)
     assert upgraded.rows('SELECT * FROM job_cards')==[]
@@ -228,7 +235,7 @@ def test_parts_reports_and_customer_folder_history(service,customer):
     reports=Queries(service)
     assert reports.report('repair_parts','2000-01-01','2099-01-01')[0]['margin']==50000
     assert reports.report('part_warranties','2000-01-01','2099-01-01')[0]['status']=='ACTIVE'
-    assert len(reports.report('job_cards','2000-01-01','2099-01-01'))==2
+    assert [r['kind'] for r in reports.report('job_cards','2000-01-01','2099-01-01')]==['customer_receiving','in_house_assignment','in_house_handover','in_house_return']
     assert reports.report('warranty_claims','2000-01-01','2099-01-01')==[]
     folder=CustomerRecords(service).sync_customer(customer)
     text=next(folder.rglob('job-details.txt')).read_text(encoding='utf-8')

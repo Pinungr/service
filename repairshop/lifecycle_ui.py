@@ -3,12 +3,12 @@ import json
 import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QScrollArea,QTabWidget,QCheckBox,QMessageBox,QDialogButtonBox,QSpinBox)
-from .ui_widgets import Form,Grid,button,MasterSelector
+from .ui_widgets import Form,Grid,button,MasterSelector,panel
 from .lifecycle import Lifecycle,ACTIONS,ROUTE_LABELS,local_time
 from .domain import rupees,money,RuleError
 from .customer_ui import DevicePhotos,show_photo
 
-COLUMNS=['number','customer','device','visit','route','current_card','status','location','responsible','pending_since','expected_date','estimate','balance','warranty_indicator','next_action']
+COLUMNS=['number','customer','device','visit','route','current_card','status','location','current_custodian','final_destination','responsible','pending_since','expected_date','estimate','balance','warranty_indicator','next_action']
 
 
 def label(text, large=False):
@@ -16,7 +16,7 @@ def label(text, large=False):
     w.setTextFormat(Qt.TextFormat.PlainText)
     w.setWordWrap(True)
     if large:
-        w.setStyleSheet('font-size:18px;font-weight:650;color:#174e3f;padding:4px')
+        w.setStyleSheet('font-size:18px;font-weight:750;color:#102a43;padding:4px;background:transparent')
     return w
 
 
@@ -28,17 +28,24 @@ class JobWorkspace(QDialog):
         self.resize(1220,840)
         self.setMinimumSize(980,660)
         outer=QVBoxLayout(self)
+        outer.setContentsMargins(18,18,18,16)
+        outer.setSpacing(12)
         self.heading=label('',True)
         outer.addWidget(self.heading)
         self.metrics=QGridLayout()
+        self.metrics.setHorizontalSpacing(12)
+        self.metrics.setVerticalSpacing(12)
         self.values={}
-        for n,(key,title) in enumerate([('route_label','REPAIR ROUTE'),('current_status','CURRENT STATUS'),('current_location','PHYSICAL LOCATION'),('responsible','RESPONSIBLE'),('warranty_status','MANUFACTURER WARRANTY'),('pending_since','PENDING SINCE')]):
-            box=QWidget(); box.setObjectName('card'); layout=QVBoxLayout(box)
-            layout.addWidget(label(title)); self.values[key]=label('',True); layout.addWidget(self.values[key])
+        for n,(key,title) in enumerate([('route_label','REPAIR ROUTE'),('current_status','REPAIR STATUS'),('current_location','PHYSICAL LOCATION'),('current_custodian','CURRENT CUSTODIAN'),('final_destination','FINAL DESTINATION'),('assigned_technician','ASSIGNED TECHNICIAN')]):
+            box=QWidget(); box.setObjectName('card'); layout=QVBoxLayout(box);layout.setContentsMargins(14,12,14,12);layout.setSpacing(4)
+            title_label=label(title);title_label.setObjectName('muted')
+            layout.addWidget(title_label); self.values[key]=label('',True); layout.addWidget(self.values[key])
             self.metrics.addWidget(box,n//3,n%3)
         outer.addLayout(self.metrics)
         nextrow=QHBoxLayout()
-        self.next=label('',True); nextrow.addWidget(self.next,1)
+        next_card,next_layout=panel('Next action')
+        self.next=label('',True); next_layout.addWidget(self.next)
+        nextrow.addWidget(next_card,1)
         self.primary=button('Continue',lambda:self.act(self.view['primary']),True)
         nextrow.addWidget(self.primary)
         outer.addLayout(nextrow)
@@ -62,7 +69,12 @@ class JobWorkspace(QDialog):
         from .parts_ui import RepairRecords
         self.record_tabs=[]
         for kind,title in [('cards','Job Cards'),('parts','Parts'),('warranty','Warranty')]:
-            tab=RepairRecords(self,kind);self.record_tabs.append(tab);self.tabs.addTab(tab,title)
+            tab=RepairRecords(self,kind);self.record_tabs.append(tab)
+            scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(tab);self.tabs.addTab(scroll,title)
+        self.cost_panel=None
+        if window.s.user['role']=='owner':
+            from .costing_ui import CostPanel
+            self.cost_panel=CostPanel(self);self.tabs.addTab(self.cost_panel,'Internal costing')
         footer=QHBoxLayout()
         for text,fn in [('Full records',lambda:window.job_records(ident)),('Same visit',lambda:window.visit_jobs(ident)),('Documents',lambda:window.document_form(ident)),('Expected dates',lambda:window.date_form(ident)),('Hold / release',lambda:window.hold_form(ident))]:
             b=button(text,lambda checked=False,f=fn:self.support(f));footer.addWidget(b)
@@ -79,14 +91,14 @@ class JobWorkspace(QDialog):
         self.setWindowTitle(v['number']+' · Repair lifecycle')
         self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}  ·  DEV-{v['device_id']:06d}  ·  Serial: {v['serial'] or 'Not recorded'}" if v['device_id'] else f"{v['number']} · {v['device']} · {v['customer']}")
         for key,w in self.values.items():
-            w.setText(str(v[key]).replace('_',' '))
+            w.setText(str(v[key] or '—').replace('_',' '))
         self.next.setText('NEXT ACTION\n'+v['next_action'])
         self.primary.setText(ACTIONS.get(v['primary'],'Review history'))
         self.primary.setEnabled(bool(v['primary']) and not self.window.db.readonly)
         self.attention.setText('ATTENTION: '+' · '.join(v['attention']) if v['attention'] else '')
         self.tracker.setText('REPAIR LIFECYCLE\n\n'+'\n\n'.join(r['state']+'  '+r['step'] for r in v['tracker'])+ ('\n\nLegacy steps are not assumed complete.' if not v['lifecycle_version'] or v['data'].get('legacy_review') else ''))
         d=v['data'];a=v['assignment'];quote=v['quote']
-        lines=[('Reported fault',v['complaint']),('Intake condition',v['damage']),('Confirmed diagnosis',d.get('diagnosis')),
+        lines=[('Responsible for work',v['responsible']),('Pending since',v['pending_since']),('Warranty route',v['warranty_status']),('Reported fault',v['complaint']),('Intake condition',v['damage']),('Confirmed diagnosis',d.get('diagnosis')),
             ('Repair performed',d.get('repair_summary')),('Parts required',d.get('parts_required')),('Parts availability','Available' if d.get('parts_available') else 'Pending' if 'parts_available' in d else 'Not recorded'),
             ('Parts used',d.get('parts_used')),('Assigned technician',a.get('technician')),('Repairer',a.get('party')),('Repairer contact',a.get('contact')),('Repairer details',a.get('details')),
             ('Dispatch date',local_time(d.get('dispatched'))),('Expected return',v['return_due']),('Expected collection',v['collection_due']),('Returned to shop',local_time(d.get('returned'))),
@@ -94,12 +106,8 @@ class JobWorkspace(QDialog):
             ('Repair started',local_time(d.get('repair_started'))),('Repair completed',local_time(d.get('repair_completed'))),('QC result',d.get('qc',{}).get('result','Pending')),
             ('Repair warranty',d.get('repair_warranty')),('Warranty until',d.get('warranty_until')),('Unrepaired outcome',d.get('unrepaired'))]
         details=d.get('route_details',{})
-        lines += [(k.replace('_',' ').title(),val) for k,val in details.items() if k not in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price')]
-        if self.window.s.user['role']=='owner' and v['route']!='in_house':
-            cost=sum(details.get(k,0) for k in ('vendor_parts','vendor_labour','transport_cost','other_cost'))
-            customer_price=quote.get('total',details.get('customer_price',0))
-            vendor_due=self.window.db.one("SELECT COALESCE(sum(amount),0) n FROM entries WHERE account_type='vendor' AND job_id=?",(self.ident,))['n']
-            lines += [('Vendor estimate including transport / other cost',rupees(cost)),('Customer price',rupees(customer_price)),('Estimated shop margin',rupees(customer_price-cost)),('Vendor account balance',rupees(vendor_due))]
+        from .inventory import PRIVATE_FIELDS
+        lines += [(k.replace('_',' ').title(),val) for k,val in details.items() if k not in PRIVATE_FIELDS|{'customer_price'}]
         self.summary.setText('\n'.join(f'{k}: {val if val not in (None,"") else "Not recorded"}' for k,val in lines))
         while self.buttons.count():
             item=self.buttons.takeAt(0)
@@ -115,6 +123,7 @@ class JobWorkspace(QDialog):
         self.custody.fill(v['holdings'],['description','type','serial','location','quantity'])
         self.heading.setText(self.heading.text()+'\nCurrent card: '+v['current_card']+'  ·  '+v['warranty_indicator'])
         for tab in self.record_tabs:tab.reload()
+        if self.cost_panel:self.cost_panel.reload()
 
     def act(self,action):
         if not action:return
@@ -123,8 +132,14 @@ class JobWorkspace(QDialog):
 
     def _act(self,action):
         v=self.life.snapshot(self.ident)
+        if action=='parts':
+            self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count()) if self.tabs.tabText(i)=='Parts'));return
+        if action=='manual_warranty':
+            tab=next(t for t in self.record_tabs if t.kind=='warranty');self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count()) if self.tabs.tabText(i)=='Warranty'));tab.manual_warranty();return
+        if action=='costing':
+            self.tabs.setCurrentWidget(self.cost_panel);return
         if action=='claim':
-            self.tabs.setCurrentWidget(next(t for t in self.record_tabs if t.kind=='warranty'))
+            self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count()) if self.tabs.tabText(i)=='Warranty'))
             return
         if action=='quote':return self.window.quote_form(self.ident)
         if action=='decision':return self.window.decision_form(v['quote'])
@@ -152,16 +167,27 @@ class JobWorkspace(QDialog):
             d.check('consent','Customer consent to dispatch and assessment recorded',v['assessment_consent'])
             d.text('notes','Dispatch notes',multiline=True)
             return d.submit(lambda p:self.life.execute(self.ident,action,dict(p,items=[i for i,w in checks if w.isChecked()]),v['version']))
-        elif action in ('dispatch','arrive','receive'):
+        elif action in ('hand_technician','return_technician'):
+            d.text('condition','Device condition',v['damage'],multiline=True)
+            d.text('acknowledgment','Physical handover acknowledgment')
+            if action=='hand_technician':d.text('bench','Technician work area / bench',v['data'].get('technician_bench',''))
+            else:d.select('storage','Shop QC / storage',[('QC Area','shop:QC Area')]+[(r['name'],'shop:'+r['name']) for r in self.window.s.masters('storage')],'shop:QC Area')
+            d.text('notes','Handover notes',multiline=True)
+        elif action in ('dispatch','arrive','receive','return_dispatch'):
             manifest=v['data'].get('dispatch',{})
+            d.layout.addRow(label('Current custodian: '+v['current_custodian']+'\nDestination: '+(v['final_destination'] or v['assignment'].get('party') or 'Shop')))
             d.text('counterparty','Person receiving the items')
             d.text('condition','Condition at handover',manifest.get('condition',''),multiline=True)
             d.text('reference','Tracking / external job reference',manifest.get('reference',''))
             d.text('acknowledgment','Acknowledgment / receipt reference',multiline=True)
-            if action=='dispatch':d.text('carrier','Carrier (leave blank for direct handover)')
+            if action in ('dispatch','return_dispatch'):d.text('carrier','Carrier (blank = direct handover)' if action=='dispatch' else 'Courier receiving the return',manifest.get('carrier','') if action=='dispatch' else '')
             if action=='receive':d.select('storage','Shop storage',[('Shop: '+r['name'],'shop:'+r['name']) for r in self.window.s.masters('storage')])
             d.text('notes','Notes',multiline=True)
             if action=='receive':
+                d.select('repair_result','Repair result',[('Use recorded repair outcome',None)]+[(x,x) for x in ('REPAIRED','PARTIALLY REPAIRED','NOT REPAIRABLE','REPAIR DECLINED','RETURNED WITHOUT REPAIR','REPLACED')])
+                d.text('work_performed','Work performed',v['data'].get('repair_summary',''),multiline=True)
+                d.text('parts_reported','Parts / replacements reported by repairer',v['data'].get('parts_used',''),multiline=True)
+                d.text('vendor_invoice','Vendor / service center invoice',v['data'].get('route_details',{}).get('vendor_invoice',''))
                 controls=[]
                 for h in v['holdings']:
                     if h['location'].startswith(('centre:','vendor:','transit:')):
@@ -203,7 +229,7 @@ class JobWorkspace(QDialog):
                 if self.window.s.user['role']=='owner':
                     for k,title in [('vendor_parts','Vendor parts cost'),('vendor_labour','Vendor labour cost'),('transport_cost','Transport cost'),('other_cost','Other cost'),('customer_price','Proposed customer price')]:
                         d.text(k,title+' (INR)',str(details.get(k,0)/100))
-            else:
+            elif self.window.s.user['role']=='owner':
                 d.text('estimated_parts','Estimated parts cost (INR)',details.get('estimated_parts',''))
                 d.text('estimated_labour','Estimated labour cost (INR)',details.get('estimated_labour',''))
             d.text('notes','Progress notes',details.get('notes',''),multiline=True)
@@ -240,7 +266,11 @@ class JobWorkspace(QDialog):
         def choose(route):
             f=Form(ROUTE_LABELS[route],d,'Assign responsibility here. Physical location changes only when you record an actual handover.')
             if route!='in_house':f.add('contact_id','Service center' if route=='warranty_centre' else 'Vendor / technician',MasterSelector(self.window.s,'centre' if route=='warranty_centre' else 'vendor'))
-            else:f.select('technician_id','Assigned technician',[(r['name'],r['id']) for r in self.window.db.rows('SELECT id,name FROM users WHERE active=1')])
+            else:
+                f.select('technician_id','Assigned technician',[(r['name'],r['id']) for r in self.window.db.rows('SELECT id,name FROM users WHERE active=1')])
+                handed=f.check('handed_over','Device physically handed to this technician now',False)
+                for key,title in [('bench','Technician work area / bench'),('condition','Condition at handover'),('acknowledgment','Physical handover acknowledgment')]:
+                    field=f.text(key,title);field.setEnabled(False);handed.toggled.connect(field.setEnabled)
             f.text('reference','Assignment reference')
             f.check('confirmed','Confirm this repair route and responsible party')
             if f.submit(lambda p:self.life.execute(self.ident,action,dict(p,route=route),v['version'])):d.accept()

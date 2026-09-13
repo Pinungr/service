@@ -1,3 +1,19 @@
+# RepairShop Manager 1.4.1
+
+The desktop UI has been refreshed without changing the working repair, inventory, account, photo or document logic. The shared design system now has a modern enterprise palette, clearer typography, stronger focus states, consistent buttons, danger styling, reusable panels, badges, card metrics and improved table readability.
+
+The main shell, dashboard, repair lists, intake landing page, inventory page and repair workspace now have clearer hierarchy and spacing. Dense parts, cards and warranty tabs are grouped into action panels so staff can scan current state, responsibility and the next action faster. Dialogs now use more comfortable spacing and inline error presentation.
+
+No schema migration is required. Validation: 166 automated tests passed in 53.76 seconds. A seeded synthetic demo launch smoke test exited successfully.
+
+# RepairShop Manager 1.4.0
+
+Shop inventory now tracks available, reserved, physically issued and installed parts, including serials, supplier evidence, defaults and immutable movements. Parts search inventory first; repairing-third-party supply is locked to the assigned vendor. Internal costs are separated from customer prices, with owner-only costing and quotation revision previews.
+
+Courier dispatch/arrival/return and in-house assignment/handover/return now distinguish physical custody from work responsibility. New return cards preserve repair results, parts, warranties, repairer identity and receipt evidence; internal copies are clearly marked. Manual warranty checks support missing historical evidence without inventing records. Active claims control the effective warranty state and lock ordinary edits.
+
+Schema 9 upgrades through the existing verified backup path. Full suite: 166 passed in 60.94 seconds. New UI and printed cards were checked with synthetic data. See `INVENTORY_CUSTODY_IMPLEMENTATION_REPORT.md` for architecture, file changes and limitations; actual extracted-package verification is in `package-verification.json`.
+
 # RepairShop Manager 1.3.1
 
 Fixed the quotation decision failure caused by an accidental expiry date in 1900. New quotations now have an explicit optional expiry checkbox, a date picker starting next week and no selectable past dates. The service also rejects past expiry dates before issuing or superseding a quotation.

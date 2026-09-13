@@ -47,6 +47,7 @@ def populate(s):
         life.execute(j,'verify_warranty',dict(warranty_status='under_warranty' if target=='warranty' else 'out_of_warranty',notes='Purchase date and warranty proof reviewed'))
         route='third_party' if target=='third_party' else 'warranty_centre' if target=='warranty' else 'in_house'
         life.execute(j,'select_route',dict(route=route,confirmed=True,technician_id=s.user['id'],contact_id=centre if target=='warranty' else vendor))
+        if route=='in_house':life.execute(j,'hand_technician',dict(bench='Bench 1',condition='Intact',acknowledgment='Synthetic technician receipt'))
         if route!='in_house':
             life.execute(j,'prepare_dispatch',dict(items=[h['id'] for h in life.holdings(j)],condition='Intact; adapter included',consent=True,expected_return='2026-09-14'))
             life.execute(j,'dispatch',dict(counterparty='Rajesh' if target=='third_party' else 'Service desk',condition='Intact',reference='EXT-DEMO-101',acknowledgment='Synthetic dispatch receipt'))
@@ -64,12 +65,15 @@ def populate(s):
         q=s.issue_quote(j,'Replace power board',[dict(description='Labour',amount=150000)])
         if target=='approval':continue
         s.decide_quote(q,'approved','Rahul Sharma · DEMO','in_person','Synthetic customer approval')
+        from repairshop.inventory import Inventory
+        Inventory(s).transfer(part,'reserve','Synthetic reservation');Inventory(s).transfer(part,'issue','Synthetic issue')
         life.execute(j,'start_repair')
         if target=='repair':continue
         parts.install(part,'Demo Owner')
         life.execute(j,'complete_repair',dict(notes='Power board replaced; device powers on',parts='Power board'))
         life.execute(j,'test',dict(result='passed',notes='Startup, charging and display passed'))
         if target=='qc':continue
+        life.execute(j,'return_technician',dict(condition='Intact',acknowledgment='Synthetic QC receipt'))
         life.execute(j,'qc',dict(result='passed',notes='Original complaint resolved',checks={k:'passed' for k in ('power','functional','charging','display','connectivity','complaint')},repair_warranty='90 days on supplied part'))
         life.execute(j,'bill',dict(confirmed=True))
         if target=='ready':continue
@@ -99,7 +103,7 @@ def main():
         d=JobWorkspace(w,job_id);d.show();app.processEvents()
         d.grab().save(str(output/f'lifecycle-{name}-v12.png'));d.close()
     for job_id,kind in [(10,'cards'),(10,'parts'),(11,'warranty')]:
-        d=JobWorkspace(w,job_id);tab=next(t for t in d.record_tabs if t.kind==kind);d.tabs.setCurrentWidget(tab);d.show();app.processEvents();d.grab().save(str(output/f'lifecycle-{kind}-v12.png'));d.close()
+        d=JobWorkspace(w,job_id);tab=next(t for t in d.record_tabs if t.kind==kind);d.tabs.setCurrentWidget(tab.parentWidget().parentWidget());d.show();app.processEvents();d.grab().save(str(output/f'lifecycle-{kind}-v12.png'));d.close()
     documents=Documents(s)
     pdf_dir=ROOT/'runtime'/'pdf-review';pdf_dir.mkdir(exist_ok=True)
     import shutil

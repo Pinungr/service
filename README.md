@@ -10,6 +10,10 @@ On first launch, enter your shop name and create an owner username and password 
 
 ## Development setup
 
+Version 1.4.0 adds shop inventory, reserved/issued stock, separate internal costing, courier and technician handovers, structured repair returns and manual warranty verification. See [the implementation report](docs/INVENTORY_CUSTODY_IMPLEMENTATION_REPORT.md) for schema changes, validation and limits, and [the user guide](docs/USER_GUIDE.md) for the operating steps.
+
+To build without replacing an application currently running from `dist`, use `scripts/build.ps1 -OutputDirectory 'dist/releases/1.4.0'`. The portable ZIP still contains exactly one EXE.
+
 From this project folder in PowerShell:
 
 ```powershell

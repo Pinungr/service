@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QThreadPool, QTimer, QUrl, QDate
 from PyQt6 import sip
 from PyQt6.QtGui import QDesktopServices, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox)
-from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE
+from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel
 from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS
 from .queries import Queries
 from .documents import Documents
@@ -51,15 +51,18 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main)
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(232)
         nav = QVBoxLayout(sidebar)
-        nav.setContentsMargins(16, 28, 16, 20)
-        brand = QLabel("repairshop")
+        nav.setContentsMargins(18, 28, 18, 20)
+        nav.setSpacing(7)
+        brand = QLabel("RepairShop")
         brand.setObjectName("brand")
         nav.addWidget(brand)
-        nav.addWidget(QLabel("SERVICE & REPAIR MANAGER"))
-        nav.addSpacing(26)
-        names = ["Dashboard", "New Repair Intake", "Active Repairs", "Ready for Delivery", "Repair History", "Customers", "Products sold", "Dispatch & receive", "Directories", "Quotations", "Customer accounts", "Vendor accounts", "Reports", "Notifications", "Backups", "Settings & staff"]
+        nav_label = QLabel("SERVICE & REPAIR MANAGER")
+        nav_label.setObjectName("eyebrow")
+        nav.addWidget(nav_label)
+        nav.addSpacing(18)
+        names = ["Dashboard", "New Repair Intake", "Active Repairs", "Ready for Delivery", "Repair History", "Inventory", "Customers", "Products sold", "Dispatch & receive", "Directories", "Quotations", "Customer accounts", "Vendor accounts", "Reports", "Notifications", "Backups", "Settings & staff"]
         for name in names:
             b = button(name.replace('&', '&&'), lambda checked=False, n=name: self.navigate(n))
             self.nav[name] = b
@@ -69,18 +72,25 @@ class MainWindow(QMainWindow):
             if self.s.user["role"] == "counter" and name in ("Vendor accounts", "Backups", "Settings & staff"):
                 b.hide()
         nav.addStretch()
-        nav.addWidget(QLabel("●  Offline work available"))
-        nav.addWidget(QLabel(service.user["name"] + " · " + service.user["role"].title()))
+        offline = badge("Offline ready", "success")
+        nav.addWidget(offline)
+        user = QLabel(service.user["name"] + " · " + service.user["role"].title())
+        user.setObjectName("subtitle")
+        user.setWordWrap(True)
+        nav.addWidget(user)
         sidebar_scroll = QScrollArea()
         sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setFixedWidth(238)
+        sidebar_scroll.setFixedWidth(250)
         sidebar_scroll.setWidget(sidebar)
         root.addWidget(sidebar_scroll)
         content = QWidget()
         body = QVBoxLayout(content)
-        body.setContentsMargins(28, 25, 28, 18)
+        body.setContentsMargins(30, 24, 30, 20)
+        body.setSpacing(14)
         top = QHBoxLayout()
+        top.setSpacing(16)
         heading = QVBoxLayout()
+        heading.setSpacing(4)
         self.title = QLabel()
         self.title.setObjectName("title")
         self.subtitle = QLabel()
@@ -88,11 +98,9 @@ class MainWindow(QMainWindow):
         heading.addWidget(self.title)
         heading.addWidget(self.subtitle)
         top.addLayout(heading, 1)
-        badge = QLabel("  READ-ONLY ARCHIVE  " if self.db.readonly else "  SYNTHETIC DEMO  " if demo else "  " + self.db.setting("shop_name", "Your shop") + "  ")
-        badge.setStyleSheet("background:#e5edde;color:#456044;border-radius:6px;padding:8px")
-        top.addWidget(badge)
+        state_badge = badge("READ-ONLY ARCHIVE" if self.db.readonly else "SYNTHETIC DEMO" if demo else self.db.setting("shop_name", "Your shop"), "warning" if self.db.readonly else "info")
+        top.addWidget(state_badge)
         body.addLayout(top)
-        body.addSpacing(15)
         self.stack = QStackedWidget()
         body.addWidget(self.stack)
         root.addWidget(content, 1)
@@ -215,7 +223,7 @@ class MainWindow(QMainWindow):
         self.layout = QVBoxLayout(page)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(14)
-        method = {"Dashboard": self.dashboard, "New Repair Intake": self.intake_landing, "Active Repairs": self.active_repairs, "Ready for Delivery": lambda: self.active_repairs('ready'), "Repair History": lambda: self.active_repairs('history'), "Customers": self.customers, "Products sold": self.sales, "Jobs": self.jobs, "Dispatch & receive": self.custody, "Directories": self.directories, "Quotations": self.quotes, "Customer accounts": lambda: self.accounts("customer"), "Vendor accounts": lambda: self.accounts("vendor"), "Reports": self.reports, "Notifications": self.notifications, "Backups": self.backups, "Settings & staff": self.settings}[self.page_name]
+        method = {"Dashboard": self.dashboard, "New Repair Intake": self.intake_landing, "Active Repairs": self.active_repairs, "Ready for Delivery": lambda: self.active_repairs('ready'), "Repair History": lambda: self.active_repairs('history'), "Inventory": self.inventory, "Customers": self.customers, "Products sold": self.sales, "Jobs": self.jobs, "Dispatch & receive": self.custody, "Directories": self.directories, "Quotations": self.quotes, "Customer accounts": lambda: self.accounts("customer"), "Vendor accounts": lambda: self.accounts("vendor"), "Reports": self.reports, "Notifications": self.notifications, "Backups": self.backups, "Settings & staff": self.settings}[self.page_name]
         method()
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
@@ -223,8 +231,13 @@ class MainWindow(QMainWindow):
             self.stack.removeWidget(old)
             old.deleteLater()
 
+    def inventory(self):
+        from .inventory_ui import InventoryPage
+        self.layout.addWidget(InventoryPage(self))
+
     def toolbar(self, actions):
         bar = QHBoxLayout()
+        bar.setSpacing(8)
         for text, call, primary in actions:
             b = button(text, lambda checked=False, fn=call: self.safe(fn), primary)
             if self.db.readonly and text.startswith(("+", "Record", "Issue", "Edit", "Restore", "Retry", "Cancel", "Save", "Collect", "Reverse", "Backup", "Configure")):
@@ -247,18 +260,26 @@ class MainWindow(QMainWindow):
         return row
 
     def intake_landing(self):
-        self.layout.addWidget(QLabel('Search or register the customer, capture their photo, and record the device and received accessories.'))
+        intro, intro_layout = panel('Start a repair intake', 'Search or register the customer, capture the mandatory customer photo, then add one or more physical products for the same visit.')
+        steps = QLabel('1. Customer and photo  |  2. Product details and complaint  |  3. Accessories and received condition')
+        steps.setObjectName('muted')
+        intro_layout.addWidget(steps)
+        self.layout.addWidget(intro)
         self.toolbar([('+ New repair intake', self.intake, True), ('Resume saved intake draft', self.intake_drafts, False), ('Customers', lambda: self.navigate('Customers'), False)])
         self.layout.addStretch()
 
     def active_repairs(self, filter_key=''):
         life = Lifecycle(self.s)
+        filters, filter_layout = panel('Find repair work', 'Use search and status filters together. Double-click any row to open the repair workspace.')
+        row = QHBoxLayout()
         search = QLineEdit()
         search.setPlaceholderText('Search job, customer, phone, device or serial…')
-        self.layout.addWidget(search)
         choices = [('All active repairs',''), ('Ready for delivery','ready'), ('Attention required','attention'), ('At service center','external_centre'), ('With third party','external_vendor'), ('In-house','in_house'), ('Warranty claims','warranty_claims'), ('All repair history','history')] + [(label,key) for key,label in LABELS.items()]
         selector = combo(choices, filter_key)
-        self.layout.addWidget(selector)
+        row.addWidget(search, 3)
+        row.addWidget(selector, 1)
+        filter_layout.addLayout(row)
+        self.layout.addWidget(filters)
         grid = self.table([], COLUMNS)
         offset = [0]
         def reload(): grid.fill(life.rows(search.text(),selector.currentData(),offset[0]),COLUMNS)
@@ -274,22 +295,31 @@ class MainWindow(QMainWindow):
         rows = life.rows(filter_key="attention",limit=50)
         totals = life.dashboard_counts()
         cards = QGridLayout()
+        cards.setHorizontalSpacing(12)
+        cards.setVerticalSpacing(12)
         definitions = [('Received','received'),('Under diagnosis','diagnosis'),('At service center','external_centre'),('With third party','external_vendor'),('Waiting for approval','awaiting_approval'),('Waiting for parts','waiting_parts'),('Repair in progress','under_repair'),('Final QC','final_qc'),('Ready for delivery','ready'),('Overdue','overdue'),('In-house','in_house'),('Warranty claims','warranty_claims'),('Delivered','collected')]
         for index,(title,key) in enumerate(definitions):
             count=totals.get(key,0)
             b=button('',lambda checked=False,k=key:self.lifecycle_list(k))
+            b.setObjectName('metricCard')
             b.setAccessibleName(f'{title}: {count}. Open matching repairs')
-            inside=QVBoxLayout(b);inside.setContentsMargins(12,8,12,8)
+            inside=QVBoxLayout(b);inside.setContentsMargins(14,10,14,10);inside.setSpacing(3)
             caption=QLabel(title);caption.setWordWrap(True)
+            caption.setObjectName('muted')
             metric=QLabel(str(count));metric.setObjectName('metric')
             for text_widget in (caption,metric):
                 text_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 text_widget.setStyleSheet('background:transparent')
                 inside.addWidget(text_widget)
-            b.setMinimumHeight(82);cards.addWidget(b,index//5,index%5)
+            b.setMinimumHeight(86);cards.addWidget(b,index//5,index%5)
         self.layout.addLayout(cards)
         self.toolbar([('+ New intake',self.intake,True),('Active repairs',lambda:self.navigate('Active Repairs'),False),('Resume draft',self.intake_drafts,False)])
-        self.layout.addWidget(QLabel('ATTENTION REQUIRED · latest 50 matching repairs · double-click a job to act'))
+        heading = QLabel('Attention required')
+        heading.setObjectName('sectionTitle')
+        self.layout.addWidget(heading)
+        helper = QLabel('Latest 50 matching repairs. Double-click a job to act.')
+        helper.setObjectName('subtitle')
+        self.layout.addWidget(helper)
         attention=[r for r in rows if r['attention']]
         grid=self.table(attention,['number','device','location','attention','next_action'])
         for col,width in enumerate((135,180,250,240,245)):
@@ -299,8 +329,12 @@ class MainWindow(QMainWindow):
         text=' · '.join(f"{r['account_type'].title()} balance: {rupees(r['balance'])}" for r in data['balances'])
         text += f" · Sold products awaiting collection: {data['sales']} · Loose accessories: {sum(r['units'] for r in data['locations'] if r['type']=='accessory')}"
         backup=data['backup']
-        self.layout.addWidget(QLabel(text+'\nLast verified backup: '+(backup['created'] if backup else 'No backup yet')+' · Messaging: '+self.db.setting('messaging_mode','test')))
-        self.layout.addWidget(QLabel('Location cards show physical custody; progress cards may overlap. They are not separate device totals.'))
+        footer, footer_layout = panel('Shop status')
+        footer_layout.addWidget(QLabel(text+'\nLast verified backup: '+(backup['created'] if backup else 'No backup yet')+' · Messaging: '+self.db.setting('messaging_mode','test')))
+        note = QLabel('Location cards show physical custody; progress cards may overlap. They are not separate device totals.')
+        note.setObjectName('muted')
+        footer_layout.addWidget(note)
+        self.layout.addWidget(footer)
 
     def lifecycle_list(self,key):
         d=QDialog(self);d.setWindowTitle('Matching repairs');d.resize(1150,650)
@@ -982,6 +1016,24 @@ class MainWindow(QMainWindow):
         old_lines=json.loads(source['lines']) if source else []
         lines_text='\n'.join(line['description']+' | '+amount_text(line['amount']) for line in old_lines if 'part_id' not in line)
         d.text("lines", "Itemized customer charges", lines_text if source else "Repair labour | 0.00", multiline=True)
+        preview=QLabel();preview.setWordWrap(True);d.layout.addRow('Quotation review',preview)
+        def update_preview():
+            from .parts import Parts
+            job=ident or d.fields['job_id'].currentData()
+            if not job:return
+            approved=self.db.one("SELECT q.* FROM quotes q JOIN decisions d ON d.quote_id=q.id WHERE q.job_id=? AND d.decision='approved' ORDER BY q.version DESC LIMIT 1",(job,))
+            current=Parts(self.s).quote_lines(job)
+            previous={line['part_id'] for line in json.loads(approved['lines']) if 'part_id' in line} if approved else set()
+            added=[line for line in current if line['part_id'] not in previous]
+            try:
+                charges=sum(money(line.rsplit('|',1)[1].strip()) for line in d.fields['lines'].toPlainText().splitlines() if line.strip())
+                total=charges+sum(line['amount'] for line in current)
+                before=approved['total'] if approved else 0
+                preview.setText(('Previous approved amount: '+rupees(before)+'\n' if approved else '')+'Additional / newly quoted parts: '+('; '.join(line['description']+' · '+rupees(line['amount']) for line in added) or 'None')+'\nRevised total: '+rupees(total)+('\nChange from previous approval: '+rupees(total-before) if approved else '')+'\nThis quotation requires the customer’s explicit decision.')
+            except (ValueError,IndexError,RuleError):preview.setText('Enter each customer charge as Description | amount to preview the total.')
+        d.fields['lines'].textChanged.connect(update_preview)
+        if not ident:d.fields['job_id'].currentIndexChanged.connect(update_preview)
+        update_preview()
         d.text("terms", "Terms / explicitly configured taxes", source.get('terms',"Paid work starts after this version is approved and the required deposit is received."), multiline=True)
         has_expiry=d.check('has_expiry','Set a quotation expiry date',bool(source.get('valid_until')))
         expiry=d.date("valid_until", "Valid through (end of day)",(date.today()+timedelta(days=7)).isoformat())
