@@ -2,7 +2,7 @@
 import uuid
 from datetime import date
 from PyQt6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QDialog,QLabel,QLineEdit,QTabWidget
-from .ui_widgets import Grid,Form,button,combo,panel
+from .ui_widgets import Grid,Form,button,combo,panel,FlowLayout
 from .inventory import Inventory
 from .domain import money,rupees
 
@@ -18,11 +18,11 @@ class InventoryPage(QWidget):
         self.search=QLineEdit();self.search.setPlaceholderText('Search part, SKU, brand, model, compatibility, supplier or serial…');search.addWidget(self.search,1)
         self.filter=combo([('All parts','all'),('Low stock','low'),('Out of stock','out')],'all');search.addWidget(self.filter)
         self.grid=Grid();layout.addWidget(self.grid,1)
-        controls=QGridLayout();layout.addLayout(controls)
+        controls=FlowLayout();layout.addLayout(controls)
         actions=[('Part details',self.detail),('New inventory item',self.edit),('Edit item / warranty defaults',lambda:self.edit(self.w.selected(self.grid))),
             ('Receive / adjust stock',self.adjust),('Stock movements',self.history),('Suppliers',lambda:self.w.navigate('Directories'))]
         for i,(title,fn) in enumerate(actions):
-            b=button(title,lambda checked=False,f=fn:self.w.safe(f));controls.addWidget(b,i//3,i%3)
+            b=button(title,lambda checked=False,f=fn:self.w.safe(f),title=='New inventory item');controls.addWidget(b)
             if i in (1,2,3):b.setEnabled(self.s.user['role']=='owner' and not self.w.db.readonly)
         self.search.textChanged.connect(self.reload);self.filter.currentIndexChanged.connect(self.reload);self.reload()
 

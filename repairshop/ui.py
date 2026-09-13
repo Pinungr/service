@@ -6,8 +6,8 @@ from decimal import Decimal
 from PyQt6.QtCore import Qt, QThreadPool, QTimer, QUrl, QDate
 from PyQt6 import sip
 from PyQt6.QtGui import QDesktopServices, QShortcut, QKeySequence
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox)
-from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox, QProgressBar)
+from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel, MetricCard, CardGrid, FlowLayout
 from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS
 from .queries import Queries
 from .documents import Documents
@@ -33,7 +33,7 @@ class MainWindow(QMainWindow):
         self.demo = demo
         self.setWindowTitle("RepairShop Manager" + (" · DEMONSTRATION DATA" if demo else "") + (" · READ-ONLY ARCHIVE" if self.db.readonly else ""))
         self.resize(1400, 880)
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(900, 600)
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(3)
         self.tasks = set()
@@ -51,9 +51,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main)
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(232)
+        sidebar.setFixedWidth(224)
         nav = QVBoxLayout(sidebar)
-        nav.setContentsMargins(18, 28, 18, 20)
+        nav.setContentsMargins(16, 20, 12, 16)
         nav.setSpacing(7)
         brand = QLabel("RepairShop")
         brand.setObjectName("brand")
@@ -61,28 +61,37 @@ class MainWindow(QMainWindow):
         nav_label = QLabel("SERVICE & REPAIR MANAGER")
         nav_label.setObjectName("eyebrow")
         nav.addWidget(nav_label)
-        nav.addSpacing(18)
+        nav.addSpacing(8)
+        navigation = QWidget()
+        navigation.setObjectName('navContent')
+        links = QVBoxLayout(navigation)
+        links.setContentsMargins(0, 0, 4, 0)
+        links.setSpacing(4)
         names = ["Dashboard", "New Repair Intake", "Active Repairs", "Ready for Delivery", "Repair History", "Inventory", "Customers", "Products sold", "Dispatch & receive", "Directories", "Quotations", "Customer accounts", "Vendor accounts", "Reports", "Notifications", "Backups", "Settings & staff"]
         for name in names:
+            groups = {'Dashboard': 'WORKSHOP', 'Customers': 'PEOPLE & SALES', 'Quotations': 'ACCOUNTS', 'Notifications': 'MANAGEMENT'}
+            if name in groups:
+                group = QLabel(groups[name]); group.setObjectName('navGroup'); links.addWidget(group)
             b = button(name.replace('&', '&&'), lambda checked=False, n=name: self.navigate(n))
             self.nav[name] = b
-            nav.addWidget(b)
+            links.addWidget(b)
             if self.s.user["role"] == "technician" and name not in ("Dashboard", "Active Repairs"):
                 b.hide()
             if self.s.user["role"] == "counter" and name in ("Vendor accounts", "Backups", "Settings & staff"):
                 b.hide()
-        nav.addStretch()
+        links.addStretch()
+        sidebar_scroll = QScrollArea()
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar_scroll.setWidget(navigation)
+        nav.addWidget(sidebar_scroll, 1)
         offline = badge("Offline ready", "success")
         nav.addWidget(offline)
         user = QLabel(service.user["name"] + " · " + service.user["role"].title())
         user.setObjectName("subtitle")
         user.setWordWrap(True)
         nav.addWidget(user)
-        sidebar_scroll = QScrollArea()
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setFixedWidth(250)
-        sidebar_scroll.setWidget(sidebar)
-        root.addWidget(sidebar_scroll)
+        root.addWidget(sidebar)
         content = QWidget()
         body = QVBoxLayout(content)
         body.setContentsMargins(30, 24, 30, 20)
@@ -95,15 +104,23 @@ class MainWindow(QMainWindow):
         self.title.setObjectName("title")
         self.subtitle = QLabel()
         self.subtitle.setObjectName("subtitle")
+        self.subtitle.setWordWrap(True)
         heading.addWidget(self.title)
         heading.addWidget(self.subtitle)
         top.addLayout(heading, 1)
         state_badge = badge("READ-ONLY ARCHIVE" if self.db.readonly else "SYNTHETIC DEMO" if demo else self.db.setting("shop_name", "Your shop"), "warning" if self.db.readonly else "info")
-        top.addWidget(state_badge)
+        top.addWidget(state_badge, 0, Qt.AlignmentFlag.AlignTop)
         body.addLayout(top)
         self.stack = QStackedWidget()
         body.addWidget(self.stack)
         root.addWidget(content, 1)
+        self.busy = QProgressBar()
+        self.busy.setRange(0, 0)
+        self.busy.setTextVisible(False)
+        self.busy.setFixedWidth(110)
+        self.busy.setAccessibleName('Background work in progress')
+        self.statusBar().addPermanentWidget(self.busy)
+        self.busy.hide()
         self.statusBar().showMessage("Ready · All amounts in INR · Event times shown in Asia/Kolkata")
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.intake)
         QShortcut(QKeySequence("F5"), self, activated=self.refresh)
@@ -145,6 +162,7 @@ class MainWindow(QMainWindow):
             return
         task = Task(work)
         self.tasks.add(task)
+        self.busy.show()
         self.statusBar().showMessage(message)
         def done(result):
             self.tasks.discard(task)
@@ -153,7 +171,8 @@ class MainWindow(QMainWindow):
             if self.close_when_idle:
                 if not self.tasks:self.close()
                 return
-            self.statusBar().showMessage("Saved / completed successfully")
+            self.busy.setVisible(bool(self.tasks))
+            self.statusBar().showMessage("Completed · " + message.rstrip('…'), 5000)
             if callback:
                 self.safe(lambda: callback(result))
             if refresh:
@@ -165,6 +184,7 @@ class MainWindow(QMainWindow):
             if self.close_when_idle:
                 if not self.tasks:self.close()
                 return
+            self.busy.setVisible(bool(self.tasks))
             self.statusBar().showMessage("Could not complete: " + error)
             if self.isVisible():
                 notice=QMessageBox(QMessageBox.Icon.Warning,'Action needs attention',error,parent=self)
@@ -199,6 +219,7 @@ class MainWindow(QMainWindow):
         self.page_name = name
         self.title.setText(name)
         descriptions = {"Dashboard": "Your shop at a glance · physical items and work progress", "Jobs": "Track each repair from intake to collection", "Dispatch & receive": "Choose the actual items handed over; accessories can stay at the shop", "Customer accounts": "Bills, receipts and refunds · balances remain after collection", "Vendor accounts": "Confirmed payables and monthly settlement", "Backups": "Verified recovery copies, long-term archives and historical viewing", "Notifications": "Preview and manage updates · provider acceptance is not delivery"}
+        descriptions.update({'New Repair Intake': 'Receive a customer’s devices and create their repair jobs', 'Active Repairs': 'Find a repair and continue its next step', 'Ready for Delivery': 'Repairs ready for customer collection', 'Repair History': 'Look up previous visits and the complete repair record', 'Inventory': 'Track available, reserved and issued repair parts', 'Customers': 'Find customers, their devices and previous visits', 'Products sold': 'Record sales, warranties and customer collection', 'Directories': 'Manage repairers, suppliers, categories and services', 'Quotations': 'Prepare estimates and record customer decisions', 'Reports': 'Review shop activity and export your records', 'Settings & staff': 'Manage your shop, staff access and local preferences'})
         self.subtitle.setText(descriptions.get(name, "Saved records · changes persist on this computer"))
         for n, b in self.nav.items():
             b.setProperty("active", n == name)
@@ -225,8 +246,15 @@ class MainWindow(QMainWindow):
         self.layout.setSpacing(14)
         method = {"Dashboard": self.dashboard, "New Repair Intake": self.intake_landing, "Active Repairs": self.active_repairs, "Ready for Delivery": lambda: self.active_repairs('ready'), "Repair History": lambda: self.active_repairs('history'), "Inventory": self.inventory, "Customers": self.customers, "Products sold": self.sales, "Jobs": self.jobs, "Dispatch & receive": self.custody, "Directories": self.directories, "Quotations": self.quotes, "Customer accounts": lambda: self.accounts("customer"), "Vendor accounts": lambda: self.accounts("vendor"), "Reports": self.reports, "Notifications": self.notifications, "Backups": self.backups, "Settings & staff": self.settings}[self.page_name]
         method()
-        self.stack.addWidget(page)
-        self.stack.setCurrentWidget(page)
+        for index in range(self.layout.count()):
+            widget = self.layout.itemAt(index).widget()
+            if isinstance(widget, QLabel):
+                widget.setWordWrap(True)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        self.stack.addWidget(scroll)
+        self.stack.setCurrentWidget(scroll)
         if old:
             self.stack.removeWidget(old)
             old.deleteLater()
@@ -236,14 +264,13 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(InventoryPage(self))
 
     def toolbar(self, actions):
-        bar = QHBoxLayout()
+        bar = FlowLayout()
         bar.setSpacing(8)
         for text, call, primary in actions:
             b = button(text, lambda checked=False, fn=call: self.safe(fn), primary)
             if self.db.readonly and text.startswith(("+", "Record", "Issue", "Edit", "Restore", "Retry", "Cancel", "Save", "Collect", "Reverse", "Backup", "Configure")):
                 b.setEnabled(False)
             bar.addWidget(b)
-        bar.addStretch()
         self.layout.addLayout(bar)
         return bar
 
@@ -262,6 +289,7 @@ class MainWindow(QMainWindow):
     def intake_landing(self):
         intro, intro_layout = panel('Start a repair intake', 'Search or register the customer, capture the mandatory customer photo, then add one or more physical products for the same visit.')
         steps = QLabel('1. Customer and photo  |  2. Product details and complaint  |  3. Accessories and received condition')
+        steps.setWordWrap(True)
         steps.setObjectName('muted')
         intro_layout.addWidget(steps)
         self.layout.addWidget(intro)
@@ -294,26 +322,20 @@ class MainWindow(QMainWindow):
         life = Lifecycle(self.s)
         rows = life.rows(filter_key="attention",limit=50)
         totals = life.dashboard_counts()
-        cards = QGridLayout()
-        cards.setHorizontalSpacing(12)
-        cards.setVerticalSpacing(12)
-        definitions = [('Received','received'),('Under diagnosis','diagnosis'),('At service center','external_centre'),('With third party','external_vendor'),('Waiting for approval','awaiting_approval'),('Waiting for parts','waiting_parts'),('Repair in progress','under_repair'),('Final QC','final_qc'),('Ready for delivery','ready'),('Overdue','overdue'),('In-house','in_house'),('Warranty claims','warranty_claims'),('Delivered','collected')]
-        for index,(title,key) in enumerate(definitions):
-            count=totals.get(key,0)
-            b=button('',lambda checked=False,k=key:self.lifecycle_list(k))
-            b.setObjectName('metricCard')
-            b.setAccessibleName(f'{title}: {count}. Open matching repairs')
-            inside=QVBoxLayout(b);inside.setContentsMargins(14,10,14,10);inside.setSpacing(3)
-            caption=QLabel(title);caption.setWordWrap(True)
-            caption.setObjectName('muted')
-            metric=QLabel(str(count));metric.setObjectName('metric')
-            for text_widget in (caption,metric):
-                text_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                text_widget.setStyleSheet('background:transparent')
-                inside.addWidget(text_widget)
-            b.setMinimumHeight(86);cards.addWidget(b,index//5,index%5)
-        self.layout.addLayout(cards)
         self.toolbar([('+ New intake',self.intake,True),('Active repairs',lambda:self.navigate('Active Repairs'),False),('Resume draft',self.intake_drafts,False)])
+        heading = QLabel('Your work queue')
+        heading.setObjectName('sectionTitle')
+        self.layout.addWidget(heading)
+        definitions = [('Received','received','info'),('Under diagnosis','diagnosis','info'),('Waiting for approval','awaiting_approval','warning'),('Waiting for parts','waiting_parts','warning'),('Repair in progress','under_repair','info'),('Final quality check','final_qc','info'),('Ready for delivery','ready','success'),('Overdue','overdue','error')]
+        cards = [MetricCard(title, totals.get(key, 0), lambda checked=False, k=key: self.safe(lambda: self.lifecycle_list(k)), tone)
+                 for title, key, tone in definitions]
+        self.layout.addWidget(CardGrid(cards))
+        locations, locations_layout = panel('Location & history', 'These views can include the same repair. Counts are not added together.')
+        location_links = FlowLayout()
+        for title, key in [('In-house','in_house'),('At service center','external_centre'),('With third party','external_vendor'),('Warranty claims','warranty_claims'),('Delivered','collected')]:
+            location_links.addWidget(button(f'{title} · {totals.get(key, 0)}', lambda checked=False, k=key: self.safe(lambda: self.lifecycle_list(k))))
+        locations_layout.addLayout(location_links)
+        self.layout.addWidget(locations)
         heading = QLabel('Attention required')
         heading.setObjectName('sectionTitle')
         self.layout.addWidget(heading)
@@ -322,18 +344,20 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(helper)
         attention=[r for r in rows if r['attention']]
         grid=self.table(attention,['number','device','location','attention','next_action'])
-        for col,width in enumerate((135,180,250,240,245)):
+        grid.set_empty_text('Nothing needs attention right now\nStart a new intake when a customer arrives. Repairs that need action will appear here.')
+        for col,width in enumerate((130,180,170,210,220)):
             grid.setColumnWidth(col,width)
         grid.cellDoubleClicked.connect(lambda *_:self.safe(lambda:self.job_detail(self.selected(grid)['id'])))
         data=self.q.dashboard()
-        text=' · '.join(f"{r['account_type'].title()} balance: {rupees(r['balance'])}" for r in data['balances'])
-        text += f" · Sold products awaiting collection: {data['sales']} · Loose accessories: {sum(r['units'] for r in data['locations'] if r['type']=='accessory')}"
+        details = [f"{r['account_type'].title()} balance: {rupees(r['balance'])}" for r in data['balances']]
+        details += [f"Products awaiting collection: {data['sales']}", f"Loose accessories: {sum(r['units'] for r in data['locations'] if r['type']=='accessory')}"]
+        text=' · '.join(details)
         backup=data['backup']
         footer, footer_layout = panel('Shop status')
-        footer_layout.addWidget(QLabel(text+'\nLast verified backup: '+(backup['created'] if backup else 'No backup yet')+' · Messaging: '+self.db.setting('messaging_mode','test')))
-        note = QLabel('Location cards show physical custody; progress cards may overlap. They are not separate device totals.')
-        note.setObjectName('muted')
-        footer_layout.addWidget(note)
+        from .lifecycle import local_time
+        summary = QLabel(text+'\nLast verified backup: '+(local_time(backup['created']) if backup else 'No backup yet')+' · Messaging: '+self.db.setting('messaging_mode','test'))
+        summary.setWordWrap(True)
+        footer_layout.addWidget(summary)
         self.layout.addWidget(footer)
 
     def lifecycle_list(self,key):
@@ -472,7 +496,7 @@ class MainWindow(QMainWindow):
             self.run(lambda: self.docs.export(path, title, rows), "Exporting report…", callback=lambda p: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))))
 
     def reports(self):
-        controls = QHBoxLayout()
+        controls = FlowLayout()
         kind = combo(["jobs", "custody", "overdue", "warranty", "job_cards", "repair_parts", "part_warranties", "warranty_claims", "customer_dues", "vendor_dues", "payments", "transport", "margins"])
         start = QLineEdit(date.today().replace(day=1).isoformat())
         end = QLineEdit(date.today().isoformat())
@@ -484,7 +508,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(end)
         controls.addWidget(route)
         self.layout.addLayout(controls)
-        filters = QHBoxLayout()
+        filters = FlowLayout()
         customer = QLineEdit()
         customer.setPlaceholderText("Customer ID (optional)")
         category = combo([("All categories", None)] + [(r["name"], r["id"]) for r in self.s.masters("category")])
@@ -678,6 +702,7 @@ class MainWindow(QMainWindow):
             source = dict(source, customer_id=customer_id, device_id=device_id)
         d = IntakeForm("New repair intake", self, "Receive one or several products for this customer. Add each device to the visit list, then save. Cancel keeps your draft. Only checked accessories are received.")
         d.resize(700, 850)
+        d.section('Customer & authorization')
         def register_customer(search):
             initial={'phone':search} if search and search.replace('+','').replace(' ','').isdigit() else {'name':search}
             return self.customer_form(parent=d,initial=initial,refresh=False)
@@ -685,6 +710,7 @@ class MainWindow(QMainWindow):
         d.text("submitter", "Submitted by (if different)")
         d.text("relationship", "Relationship to owner")
         d.add("update_contact_id", "Additional authorized updates to", CustomerSelector(self.s))
+        d.section('Product & reported fault')
         category = MasterSelector(self.s, "category")
         d.add("category_id", "Product category", category)
         service_selector=MasterSelector(self.s,'service')
@@ -735,6 +761,7 @@ class MainWindow(QMainWindow):
             if hasattr(d, 'intake_support'):
                 d.intake_support.watch_accessories()
         category.box.currentIndexChanged.connect(load_accessories)
+        d.section('Accessories & storage')
         d.layout.addRow("Accessories actually received", accessory_box)
         def add_accessory():
             extra = Form("Add reusable accessory", d)
@@ -752,6 +779,7 @@ class MainWindow(QMainWindow):
         storage = MasterSelector(self.s, "storage")
         d.add("storage_id", "Shop storage", storage)
         storage.box.setCurrentIndex(1 if storage.box.count()>1 else 0)
+        d.section('Dates, consent & payments')
         # Route is selected after inspection and warranty verification in the guided workspace.
         d.date("repair_due", "Estimated repair completion")
         d.date("collection_due", "Estimated customer collection")
@@ -806,14 +834,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         info = QLabel(f"{j['customer']} · {j['phone']}   |   {j['stage'].replace('_',' ').title()}   |   {j['route'].replace('_',' ').title()}")
         layout.addWidget(info)
-        actions = QGridLayout()
+        actions = FlowLayout()
         commands = [("Update stage / test", lambda: self.stage_form(ident)), ("Assign / change route", lambda: self.assign_form(ident)), ("Record work", lambda: self.work_form(ident)), ("Warranty decision", lambda: self.warranty_form(ident)), ("Issue quotation", lambda: self.quote_form(ident)), ("Move / collect items", lambda: self.move_form(ident)), ("Revise dates", lambda: self.date_form(ident)), ("Add photo / evidence", lambda: self.attach(job_id=ident)), ("Create document", lambda: self.document_form(ident)), ("Replacement item", lambda: self.replacement_form(ident)), ("Hold / cancellation reason", lambda: self.hold_form(ident)), ("Agreed decline charges", lambda: self.decline_form(ident))]
         for index, (text, fn) in enumerate(commands):
             b = button(text, lambda checked=False, call=fn: self.safe(lambda: (call(), reload())))
             b.setEnabled(not self.db.readonly)
             if self.s.user["role"] == "technician" and text not in ("Record work", "Update stage / test"):
                 b.setEnabled(False)
-            actions.addWidget(b, index // 6, index % 6)
+            actions.addWidget(b)
         layout.addLayout(actions)
         tabs = QTabWidget()
         layout.addWidget(tabs, 1)

@@ -3,7 +3,7 @@ import json
 import uuid
 from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QLabel,QDialogButtonBox,QSizePolicy
-from .ui_widgets import Grid,button
+from .ui_widgets import Grid,button,FlowLayout
 from .domain import RuleError,money
 
 
@@ -17,8 +17,9 @@ class VisitIntake:
         box=QWidget();layout=QVBoxLayout(box);layout.setContentsMargins(0,0,0,0)
         box.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Maximum)
         self.info=QLabel();self.info.setWordWrap(True);layout.addWidget(self.info)
-        self.grid=Grid();self.grid.setMaximumHeight(170);layout.addWidget(self.grid)
-        controls=QHBoxLayout();layout.addLayout(controls)
+        self.grid=Grid();self.grid.setMinimumHeight(100);self.grid.setMaximumHeight(150);layout.addWidget(self.grid)
+        self.grid.set_empty_text('Add each product here. Each device receives its own repair job.')
+        controls=FlowLayout();layout.addLayout(controls)
         self.add=button('+ Add this product to visit',lambda:window.safe(self.add_current),True)
         self.edit=button('Edit selected product',lambda:window.safe(self.edit_selected))
         self.remove=button('Remove selected product',lambda:window.safe(self.remove_selected))

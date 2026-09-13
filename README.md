@@ -6,7 +6,7 @@ Native Windows desktop software for an offline computer/electronics repair count
 
 Extract `RepairShopManager-Windows-x64.zip`, then double-click its only file, `RepairShopManager.exe`. The executable embeds its application and runtime dependencies; no separate `_internal` folder or installed Python is needed. Source files, guides, build scripts and dependency lists stay in the developer workspace and are not included in the end-user ZIP. The package is portable: no administrator rights or Windows service installation is required. The executable temporarily unpacks its runtime when launched; shop data continues to live outside the executable.
 
-For pen-drive installation on another Windows PC, copy `dist\installer\RepairShopManager-Offline-Setup-1.4.1.exe`. The setup runs completely offline, installs per user, creates Desktop and Start Menu shortcuts, and registers an uninstaller while preserving shop data separately.
+For pen-drive installation on another Windows PC, copy `dist\RepairShopManager-Offline-Setup-1.4.3.exe`. The standard Windows setup wizard runs completely offline: Welcome, README, installation folder, Start Menu folder, Desktop shortcut, progress and Finish. Installing an update keeps existing records. **Uninstalling permanently removes the application and all saved local shop data and accounts after confirmation**, so reinstalling starts fresh. Close the application before updating or uninstalling. The `dist` folder contains only this setup file. See [installer details](docs/INSTALLER.md).
 
 On first launch, enter your shop name and create an owner username and password (at least 10 characters). There is no production default password. Production data is kept at `%LOCALAPPDATA%\RepairShopManager`, outside the program folder. Do not place a live SQLite database on a network drive.
 
@@ -57,7 +57,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 
 The reproducible dependency pins are in `requirements-lock.txt`; the PyInstaller build input is `RepairShopManager.spec`. The build creates `dist\RepairShopManager.exe` and a portable ZIP containing exactly that executable. Run `scripts/verify_package.py` to validate its contents and test launch/restart with developer Python paths removed. No websites, cloud infrastructure, bank transfers, or system scheduled tasks are created.
 
-To create the offline setup installer, run `powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1` after the application EXE is built.
+To build the current offline installer without putting intermediate files in `dist`:
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --distpath build\offline-payload RepairShopManager.spec
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
+The installer builder requires the freshly built payload; it never silently packages an older installed application. Remove superseded setup versions from `dist` after checking the new setup. UI rendering review: `.\.venv\Scripts\python.exe scripts\review_ui.py` uses a temporary synthetic shop and saves screenshots under `runtime/ui-review`.
 
 ## Customer photos and repair overview
 

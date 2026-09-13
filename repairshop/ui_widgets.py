@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from PyQt6.QtCore import Qt, QObject, QRunnable, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, QRunnable, pyqtSignal, QSize, QRect, QPoint
+from PyQt6.QtWidgets import QLayout, QSizePolicy, QGridLayout, QApplication
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QTextEdit, QComboBox, QCheckBox, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QScrollArea, QMessageBox)
 from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QColor
@@ -10,18 +12,20 @@ from .domain import rupees
 STYLE = """
 QWidget {
     font-family: 'Segoe UI', 'Noto Sans', Arial;
-    font-size: 13px;
+    font-size: 14px;
     color: #1f2937;
     background: #f6f8fb;
 }
 QMainWindow, QDialog {background: #f6f8fb;}
 QWidget#sidebar {background: #102a43;}
+QWidget#navContent {background: #102a43;}
 QWidget#sidebar QLabel {background: transparent;color: #cbd5e1;}
 QWidget#sidebar QPushButton {
     background: transparent;
     color: #e2e8f0;
     text-align: left;
-    padding: 11px 14px;
+    padding: 8px 12px;
+    min-height: 20px;
     border: 0;
     border-radius: 8px;
     font-weight: 600;
@@ -32,7 +36,8 @@ QWidget#sidebar QPushButton[active='true'] {
     color: #0f3057;
     font-weight: 700;
 }
-QLabel#brand {font-size: 23px;font-weight: 800;color: white;letter-spacing: 0;}
+QWidget#sidebar QLabel#brand {font-size: 24px;font-weight: 700;color: white;}
+QWidget#sidebar QLabel#navGroup {font-size: 11px;font-weight: 700;color: #9fb6cd;padding-top: 12px;}
 QLabel#eyebrow {
     color: #93a4b8;
     font-size: 11px;
@@ -40,10 +45,11 @@ QLabel#eyebrow {
     letter-spacing: 0.8px;
 }
 QLabel#title {font-size: 30px;font-weight: 750;color: #102a43;}
-QLabel#subtitle {color: #64748b;font-size: 13px;}
+QLabel#subtitle {color: #52647b;font-size: 14px;}
 QLabel#sectionTitle {font-size: 15px;font-weight: 750;color: #102a43;}
 QLabel#metric {font-size: 30px;font-weight: 800;color: #0f766e;}
-QLabel#muted {color: #64748b;}
+QLabel#muted {color: #52647b;}
+QLabel {background: transparent;}
 QLabel#badge {
     background: #e0f2fe;
     color: #075985;
@@ -90,8 +96,22 @@ QPushButton#metricCard {
     border-radius: 10px;
     padding: 0;
     text-align: left;
+    min-height: 112px;
 }
 QPushButton#metricCard:hover {background: #f8fafc;border-color: #99f6e4;}
+QPushButton:focus {border: 2px solid #0f766e;}
+QWidget#sidebar QPushButton:focus {border: 2px solid #7dd3fc;}
+QPushButton#metricCard QLabel {background: transparent;}
+QPushButton#metricCard[tone='warning'] QLabel#metric {color: #92400e;}
+QPushButton#metricCard[tone='info'] QLabel#metric {color: #075985;}
+QPushButton#metricCard[tone='error'] QLabel#metric {color: #b91c1c;}
+QLabel#emptyState {color: #52647b;background: white;padding: 24px;}
+QProgressBar {border:0;background:#e2e8f0;max-height:4px;}
+QProgressBar::chunk {background:#0f766e;}
+QScrollBar:vertical {background:transparent;width:12px;margin:0;}
+QScrollBar::handle:vertical {background:#b8c6d5;min-height:32px;border-radius:5px;}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height:0;}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {background:transparent;}
 QPushButton:disabled {color: #94a3b8;background: #f1f5f9;border-color: #e2e8f0;}
 QLineEdit, QTextEdit, QComboBox, QDateEdit, QSpinBox {
     background: white;
@@ -104,7 +124,32 @@ QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QDateEdit:hover, QSpinBox:hov
 QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {
     border: 1px solid #0f766e;
 }
-QComboBox::drop-down {border: 0;width: 28px;}
+QComboBox, QDateEdit {padding-right: 38px;min-height: 22px;}
+QComboBox::drop-down, QDateEdit::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 32px;
+    border-left: 1px solid #cbd5e1;
+    border-top-right-radius: 7px;
+    border-bottom-right-radius: 7px;
+    background: #edf2f7;
+}
+QComboBox::drop-down:hover, QDateEdit::drop-down:hover {background: #dbeafe;}
+QComboBox::down-arrow, QDateEdit::down-arrow {
+    image: url("__ARROW_DOWN__");
+    width: 16px;
+    height: 16px;
+}
+QComboBox:disabled, QDateEdit:disabled {color: #94a3b8;background: #f1f5f9;}
+QComboBox::drop-down:disabled, QDateEdit::drop-down:disabled {background: #f1f5f9;}
+QComboBox QLineEdit {border: 0;padding: 0;background: transparent;}
+QComboBox QAbstractItemView {background: white;selection-background-color: #ccfbf1;selection-color: #134e4a;outline: 0;}
+QSpinBox {padding-right: 32px;min-height: 22px;}
+QSpinBox::up-button, QSpinBox::down-button {subcontrol-origin: border;width: 28px;background: #edf2f7;border-left: 1px solid #cbd5e1;}
+QSpinBox::up-button {subcontrol-position: top right;border-top-right-radius: 7px;}
+QSpinBox::down-button {subcontrol-position: bottom right;border-bottom-right-radius: 7px;}
+QSpinBox::up-arrow {image: url("__ARROW_UP__");width: 12px;height: 12px;}
+QSpinBox::down-arrow {image: url("__ARROW_DOWN__");width: 12px;height: 12px;}
 QTableWidget {
     background: white;
     alternate-background-color: #f8fafc;
@@ -143,6 +188,126 @@ QCheckBox::indicator {width: 17px;height: 17px;}
 QDialogButtonBox QPushButton {min-width: 92px;}
 QStatusBar {background: #e2e8f0;color: #475569;}
 """
+STYLE = STYLE.replace('__ARROW_DOWN__', (Path(__file__).parent / 'assets' / 'chevron-down.svg').as_posix()).replace('__ARROW_UP__', (Path(__file__).parent / 'assets' / 'chevron-up.svg').as_posix())
+
+
+class FlowLayout(QLayout):
+    """Action rows wrap without hiding buttons on smaller displays."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(8)
+
+    def addItem(self, item):
+        self.items.append(item)
+
+    def count(self):
+        return len(self.items)
+
+    def itemAt(self, index):
+        return self.items[index] if 0 <= index < len(self.items) else None
+
+    def takeAt(self, index):
+        return self.items.pop(index) if 0 <= index < len(self.items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._arrange(QRect(0, 0, width, 0), False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._arrange(rect, True)
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self.items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def _arrange(self, rect, apply):
+        x, y, height = rect.x(), rect.y(), 0
+        for item in self.items:
+            if item.isEmpty():
+                continue
+            size = item.sizeHint()
+            if x > rect.x() and x + size.width() > rect.right() + 1:
+                x, y, height = rect.x(), y + height + self.spacing(), 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), size))
+            x += size.width() + self.spacing()
+            height = max(height, size.height())
+        return y + height - rect.y()
+
+
+class MetricCard(QPushButton):
+    """A keyboard-operable card whose size accounts for its child labels."""
+    def __init__(self, title, value, callback, tone="info"):
+        super().__init__()
+        self.setObjectName("metricCard")
+        self.setProperty("tone", tone)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(f"{title}: {value}. Open matching repairs")
+        self.setToolTip(f"View {title.lower()} repairs")
+        self.clicked.connect(callback)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+        self.caption = QLabel(title)
+        self.caption.setObjectName("muted")
+        self.caption.setWordWrap(True)
+        self.value = QLabel(str(value))
+        self.value.setObjectName("metric")
+        for label in (self.caption, self.value):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(label)
+
+    def sizeHint(self):
+        return self.layout().sizeHint().expandedTo(QSize(172, 114))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+
+class CardGrid(QWidget):
+    def __init__(self, cards):
+        super().__init__()
+        self.cards = cards
+        self.columns = 0
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(12)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.reflow(4)
+
+    def reflow(self, columns):
+        if columns == self.columns:
+            return
+        old_columns = self.columns
+        self.columns = columns
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for col in range(max(columns, old_columns)):
+            self.grid.setColumnStretch(col, 1 if col < columns else 0)
+        for index, card in enumerate(self.cards):
+            self.grid.addWidget(card, index // columns, index % columns)
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.reflow(max(1, min(4, (event.size().width() + 12) // 195)))
+
+    def minimumSizeHint(self):
+        return QSize(180, self.grid.minimumSize().height())
 
 
 def button(text, callback, primary=False):
@@ -257,6 +422,7 @@ class Form(QDialog):
         outer.setSpacing(12)
         header = QLabel(title)
         header.setObjectName("title")
+        header.setWordWrap(True)
         outer.addWidget(header)
         if description:
             label = QLabel(description)
@@ -271,6 +437,7 @@ class Form(QDialog):
         self.layout.setHorizontalSpacing(18)
         self.layout.setVerticalSpacing(12)
         self.layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         scroll.setWidget(body)
         outer.addWidget(scroll)
@@ -287,7 +454,23 @@ class Form(QDialog):
     def add(self, key, label, widget):
         self.fields[key] = widget
         self.layout.addRow(label, widget)
+        widget.setAccessibleName(label)
+        field_label = self.layout.labelForField(widget)
+        if field_label:
+            field_label.setBuddy(widget)
         return widget
+
+    def section(self, title):
+        heading = QLabel(title)
+        heading.setObjectName("sectionTitle")
+        self.layout.addRow(heading)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        available = self.screen().availableGeometry()
+        self.resize(min(self.width(), available.width() - 40), min(self.height(), available.height() - 60))
+        self.move(max(available.left(), min(self.x(), available.right() - self.width())),
+                  max(available.top(), min(self.y(), available.bottom() - self.height() - 30)))
 
     def text(self, key, label, value="", multiline=False, password=False):
         w = QTextEdit() if multiline else QLineEdit()
@@ -338,12 +521,22 @@ class Form(QDialog):
 
     def submit(self, callback):
         def save():
+            save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+            if not save_button.isEnabled():
+                return
+            previous_text = save_button.text()
+            save_button.setEnabled(False)
+            save_button.setText("Saving…")
+            self.error.hide()
             try:
                 callback(self.values())
                 self.accept()
             except Exception as exc:
-                self.error.setText(str(exc))
+                self.error.setText("Unable to save. " + str(exc))
                 self.error.show()
+            finally:
+                save_button.setText(previous_text)
+                save_button.setEnabled(True)
         self.buttons.accepted.connect(save)
         return self.exec()
 
@@ -420,9 +613,25 @@ class Grid(QTableWidget):
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setMinimumSectionSize(96)
         self.setWordWrap(False)
+        self.setMinimumHeight(180)
+        self.empty = QLabel("No records yet\nAdd a record using the actions above, or adjust your search and filters.", self.viewport())
+        self.empty.setObjectName("emptyState")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setWordWrap(True)
+        self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.empty.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.empty.setGeometry(self.viewport().rect())
+
+    def set_empty_text(self, text):
+        self.empty.setText(text)
 
     def fill(self, rows, columns=None):
         self.rows = rows
+        self.empty.setVisible(not rows)
+        self.empty.setGeometry(self.viewport().rect())
         keys = columns or (list(rows[0]) if rows else ["No matching records"])
         self.setColumnCount(len(keys))
         self.setHorizontalHeaderLabels([k.replace("_", " ").title() for k in keys])

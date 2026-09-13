@@ -3,7 +3,7 @@ import json
 import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QScrollArea,QTabWidget,QCheckBox,QMessageBox,QDialogButtonBox,QSpinBox)
-from .ui_widgets import Form,Grid,button,MasterSelector,panel
+from .ui_widgets import Form,Grid,button,MasterSelector,panel,FlowLayout
 from .lifecycle import Lifecycle,ACTIONS,ROUTE_LABELS,local_time
 from .domain import rupees,money,RuleError
 from .customer_ui import DevicePhotos,show_photo
@@ -26,8 +26,11 @@ class JobWorkspace(QDialog):
         self.window,self.ident=window,ident
         self.life=Lifecycle(window.s)
         self.resize(1220,840)
-        self.setMinimumSize(980,660)
-        outer=QVBoxLayout(self)
+        self.setMinimumSize(860,560)
+        shell=QVBoxLayout(self);shell.setContentsMargins(0,0,0,0)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);shell.addWidget(scroll)
+        content=QWidget();scroll.setWidget(content)
+        outer=QVBoxLayout(content)
         outer.setContentsMargins(18,18,18,16)
         outer.setSpacing(12)
         self.heading=label('',True)
@@ -58,7 +61,7 @@ class JobWorkspace(QDialog):
         self.tabs=QTabWidget();body.addWidget(self.tabs,1);outer.addLayout(body,1)
         route_scroll=QScrollArea();route_scroll.setWidgetResizable(True)
         route=QWidget();route_layout=QVBoxLayout(route)
-        self.buttons=QGridLayout();route_layout.addLayout(self.buttons)
+        self.buttons=FlowLayout();route_layout.addLayout(self.buttons)
         self.summary=label('');route_layout.addWidget(self.summary);route_layout.addStretch()
         route_scroll.setWidget(route);self.tabs.addTab(route_scroll,'Repair workspace')
         j=window.s.job(ident)
@@ -75,11 +78,11 @@ class JobWorkspace(QDialog):
         if window.s.user['role']=='owner':
             from .costing_ui import CostPanel
             self.cost_panel=CostPanel(self);self.tabs.addTab(self.cost_panel,'Internal costing')
-        footer=QHBoxLayout()
+        footer=FlowLayout()
         for text,fn in [('Full records',lambda:window.job_records(ident)),('Same visit',lambda:window.visit_jobs(ident)),('Documents',lambda:window.document_form(ident)),('Expected dates',lambda:window.date_form(ident)),('Hold / release',lambda:window.hold_form(ident))]:
             b=button(text,lambda checked=False,f=fn:self.support(f));footer.addWidget(b)
             b.setEnabled(not window.db.readonly or text=='Full records')
-        footer.addStretch();footer.addWidget(button('Close window',self.accept));outer.addLayout(footer)
+        footer.addWidget(button('Close window',self.accept));outer.addLayout(footer)
         self.reload()
 
     def support(self,fn):
@@ -92,7 +95,7 @@ class JobWorkspace(QDialog):
         self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}  ·  DEV-{v['device_id']:06d}  ·  Serial: {v['serial'] or 'Not recorded'}" if v['device_id'] else f"{v['number']} · {v['device']} · {v['customer']}")
         for key,w in self.values.items():
             w.setText(str(v[key] or '—').replace('_',' '))
-        self.next.setText('NEXT ACTION\n'+v['next_action'])
+        self.next.setText(v['next_action'])
         self.primary.setText(ACTIONS.get(v['primary'],'Review history'))
         self.primary.setEnabled(bool(v['primary']) and not self.window.db.readonly)
         self.attention.setText('ATTENTION: '+' · '.join(v['attention']) if v['attention'] else '')
@@ -116,9 +119,9 @@ class JobWorkspace(QDialog):
         for index,action in enumerate(actions):
             b=button(ACTIONS[action],lambda checked=False,a=action:self.act(a))
             b.setEnabled(not self.window.db.readonly)
-            self.buttons.addWidget(b,index//3,index%3)
+            self.buttons.addWidget(b)
         if self.window.s.user['role']=='owner' and v['route']!='in_house':
-            self.buttons.addWidget(button('Vendor invoice / payment',lambda:self.support(lambda:self.payment('vendor'))),(len(actions)+2)//3,0)
+            self.buttons.addWidget(button('Vendor invoice / payment',lambda:self.support(lambda:self.payment('vendor'))))
         self.timeline.fill(v['timeline'],['time','event','actor','details'])
         self.custody.fill(v['holdings'],['description','type','serial','location','quantity'])
         self.heading.setText(self.heading.text()+'\nCurrent card: '+v['current_card']+'  ·  '+v['warranty_indicator'])

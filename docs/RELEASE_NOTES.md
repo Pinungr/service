@@ -1,3 +1,21 @@
+# RepairShop Manager 1.4.3
+
+Replaced the custom bootstrapper with a standard offline Inno Setup wizard, including Welcome, README, destination folder, Start Menu selection, Desktop shortcut, progress and Finish with optional launch. Windows Apps/Control Panel now uses the native logged uninstaller instead of a PowerShell script.
+
+Confirmed uninstall removes all default local shop data, photos, accounts, settings, internal backups and messaging credentials, along with the program, shortcuts and uninstall registration. In-place updates preserve records. Exported copies outside the app data folder are not erased. Silent removal requires `/REMOVEALLDATA=1`; without it uninstall is refused. Running app processes or linked data directories block unsafe removal.
+
+Verified the installed payload matches the build; silent uninstall without acknowledgment preserves files; complete uninstall removes app/data/shortcuts/registration; custom-folder reinstall opens the blank first-run shop setup; in-place update preserves a temporary account; final uninstall deletes that account and both dummy messaging credentials. Real wizard Welcome, README and destination pages and the reinstalled first-run window were inspected. Application business logic is unchanged from the 172-test UI release. See `INSTALLER.md` for build and cleanup scope.
+
+# RepairShop Manager 1.4.2
+
+Fixed collapsed dashboard cards caused by shared button styling overriding their minimum height. Cards now size to their contents, reflow with the window and support keyboard activation. The dashboard separates the work queue from location/history filters and explains an empty attention list.
+
+Navigation keeps the brand and user details visible while grouped links scroll. Shared action rows wrap across repair, inventory, parts, warranty and customer screens. Tables explain empty results without inserting selectable placeholder records. Forms wrap long rows, preserve visible save/cancel controls, group intake fields, associate labels with inputs and prevent duplicate save clicks. Background work has a progress indicator and contextual completion feedback.
+
+No database or business-rule changes. Validation: 172 automated tests passed; 11 UI tests also passed at 150% scaling. Rendered all 17 navigation pages at normal and small widths, all repair workspace tabs, customer tabs and both ends of the intake form. No page-level horizontal overflow remained at 1024 logical pixels. Large tables retain horizontal scrolling for their columns.
+
+Offline setup: `dist/RepairShopManager-Offline-Setup-1.4.2.exe`. See `UI_REVIEW_1.4.2.md` for the audit, changed components and remaining improvements.
+
 # RepairShop Manager 1.4.1
 
 The desktop UI has been refreshed without changing the working repair, inventory, account, photo or document logic. The shared design system now has a modern enterprise palette, clearer typography, stronger focus states, consistent buttons, danger styling, reusable panels, badges, card metrics and improved table readability.

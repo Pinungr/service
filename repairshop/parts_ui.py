@@ -4,7 +4,7 @@ from datetime import date
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QDialog
-from .ui_widgets import Grid,Form,button,panel
+from .ui_widgets import Grid,Form,button,panel,FlowLayout
 from .domain import money,rupees,RuleError
 from .parts import Parts
 from .job_cards import JobCards
@@ -21,7 +21,7 @@ class RepairRecords(QWidget):
         info_panel,info_layout=panel({'cards':'Issued job cards','parts':'Parts and stock','warranty':'Warranty control'}[kind])
         self.info=QLabel();self.info.setWordWrap(True);info_layout.addWidget(self.info);layout.addWidget(info_panel)
         actions_panel,actions_layout=panel('Actions')
-        bar=QGridLayout();bar.setHorizontalSpacing(8);bar.setVerticalSpacing(8);actions_layout.addLayout(bar);layout.addWidget(actions_panel);self.action_buttons={}
+        bar=FlowLayout();actions_layout.addLayout(bar);layout.addWidget(actions_panel);self.action_buttons={}
         actions={'cards':[('View card',self.view_card),('Print selected card',self.print_card),('Print receiving receipt',self.print_receipt),('Final invoice',self.print_invoice)],
             'parts':[('Add required part',self.add_part),('Edit planned',lambda:self.add_part(self.selected())),('Remove planned',self.remove),('Mark installed',self.install),('Shop inventory',self.stock),
                 ('Reserve stock',lambda:self.transfer('reserve')),('Issue to repairer',lambda:self.transfer('issue')),('Return unused',lambda:self.transfer('return')),('Release reservation',lambda:self.transfer('release')),
@@ -31,7 +31,7 @@ class RepairRecords(QWidget):
         if kind=='cards' and self.s.user['role']=='owner':actions['cards'].append(('Print internal copy (owner)',lambda:self.print_card(True)))
         if kind=='parts' and self.s.user['role']=='owner':actions['parts'].append(('Write off part (owner)',self.writeoff))
         for i,(title,fn) in enumerate(actions[kind]):
-            b=button(title,lambda checked=False,f=fn:self.ws.support(f));b.setMinimumHeight(36);bar.addWidget(b,i//3,i%3);self.action_buttons[title]=b
+            b=button(title,lambda checked=False,f=fn:self.ws.support(f),i==0);bar.addWidget(b);self.action_buttons[title]=b
             b.setEnabled(not self.w.db.readonly or title=='View card')
             if 'owner' in title and self.s.user['role']!='owner':b.hide()
         self.grid=Grid();self.grid.setMinimumHeight(140);layout.addWidget(self.grid,1)

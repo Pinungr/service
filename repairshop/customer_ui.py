@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, QTimer, QDate, QSize, QUrl
 from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget,
     QFileDialog, QComboBox, QCheckBox, QDateEdit, QTextEdit, QLineEdit)
-from .ui_widgets import Form, Grid, CustomerSelector, MasterSelector, button, combo
+from .ui_widgets import Form, Grid, CustomerSelector, MasterSelector, button, combo, FlowLayout
 from .customer_records import CustomerRecords
 from .camera import CameraDialog
 from .local_files import managed_path
@@ -54,15 +54,17 @@ class IntakePhotos:
         self.ready = False
         self.device_choice = combo([('New physical device', None)])
         form.fields['device_id'] = self.device_choice
-        form.layout.insertRow(4, 'Physical product', self.device_choice)
+        product_row = form.layout.getWidgetPosition(form.fields['category_id'])[0]
+        form.layout.insertRow(product_row, 'Physical product', self.device_choice)
         self.warranty_hint=QLabel();self.warranty_hint.setWordWrap(True)
-        form.layout.insertRow(5,'Existing warranty',self.warranty_hint)
+        form.layout.insertRow(product_row + 1,'Existing warranty',self.warranty_hint)
         self.device_choice.currentIndexChanged.connect(self.select_device)
         self.preview = QLabel()
         self.photo_label = QLabel('Required intake photo')
         self.photo_label.setWordWrap(True)
         self.role = combo([('Device owner', 'owner'), ('Submitting person', 'submitter')])
-        form.layout.insertRow(1, 'Person to photograph', self.role)
+        customer_row = form.layout.getWidgetPosition(form.fields['customer_id'])[0]
+        form.layout.insertRow(customer_row + 1, 'Person to photograph', self.role)
         controls = QWidget()
         line = QHBoxLayout(controls)
         line.addWidget(self.preview)
@@ -71,7 +73,7 @@ class IntakePhotos:
         self.capture_button=button('Capture customer photo', lambda: window.safe(self.capture))
         column.addWidget(self.capture_button)
         line.addLayout(column, 1)
-        form.layout.insertRow(2, 'Customer photo', controls)
+        form.layout.insertRow(customer_row + 2, 'Customer photo', controls)
         form.fields['customer_id'].box.currentIndexChanged.connect(self.customer_changed)
         form.layout.addRow('', button('Save draft', lambda: window.safe(self.save_draft)))
         self.timer = QTimer(form)
@@ -223,7 +225,7 @@ class DevicePhotos(QWidget):
         layout = QVBoxLayout(self)
         self.preview = QLabel()
         layout.addWidget(self.preview)
-        row = QHBoxLayout()
+        row = FlowLayout()
         for title, action in [('Capture product photo', self.capture), ('Attach local product photo', self.attach), ('Recover missing photo', self.recover)]:
             control = button(title, lambda checked=False, action=action: window.safe(action))
             control.setEnabled(not window.db.readonly and window.s.user['role'] in ('owner', 'counter'))
@@ -274,9 +276,10 @@ class CustomerOverview(QDialog):
         header.addWidget(self.photo)
         self.contact = QLabel('Loading customer…')
         self.contact.setTextFormat(Qt.TextFormat.PlainText)
+        self.contact.setWordWrap(True)
         header.addWidget(self.contact, 1)
         layout.addLayout(header)
-        actions = QHBoxLayout()
+        actions = FlowLayout()
         for title, fn in [('New intake', lambda: self.new_intake()), ('Open customer folder / Retry folders', self.open_folder), ('Refresh', self.reload), ('Recover selected customer photo', self.recover)]:
             control = button(title, lambda checked=False, fn=fn: window.safe(fn))
             control.setEnabled(title == 'Refresh' or not window.db.readonly)
