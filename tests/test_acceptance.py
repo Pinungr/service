@@ -19,9 +19,15 @@ def item(s, job, name="ThinkPad T14"):
 
 
 def test_reusable_normalized_directories_restart(service):
-    a = service.save_master("service", "  Laptop   repair ")
-    b = service.save_master("service", "LAPTOP repair")
+    a = service.save_master("service", "  Laptop   repair ", contact="111", details="Original")
+    b = service.save_master("service", "LAPTOP repair", contact="222", details="Updated")
     assert a == b
+    saved = service.db.one("SELECT * FROM masters WHERE id=?", (a,))
+    assert saved["contact"] == "222" and saved["details"] == "Updated" and saved["active"] == 1
+    service.save_master("service", "Laptop repair", ident=a, contact="222", details="Updated", active=False)
+    service.save_master("service", " laptop repair ")
+    saved = service.db.one("SELECT * FROM masters WHERE id=?", (a,))
+    assert saved["contact"] == "222" and saved["details"] == "Updated" and saved["active"] == 1
     cat = service.masters("category")[0]["id"]
     accessory = service.save_master("accessory", "Carry case", category_id=cat)
     vendor = service.save_master("vendor", "Vendor Test")
@@ -34,6 +40,14 @@ def test_reusable_normalized_directories_restart(service):
 def test_shared_phone_does_not_merge_customers(service, customer):
     other = service.save_customer("Different Owner", "9990000001")
     assert other != customer
+
+
+def test_in_house_technician_is_directory_record_not_login(service, customer):
+    tech=service.save_master("technician","Amit Kumar",contact="9990000002")
+    job=service.intake(customer,"Laptop","No power",assessment_consent=True)
+    assignment=service.assign(job,"in_house",technician_master_id=tech)
+    row=service.db.one("SELECT * FROM assignments WHERE id=?",(assignment,))
+    assert row["technician_master_id"]==tech and row["technician_id"] is None
 
 
 def test_device_only_dispatch_accessories_remain(service, job):
@@ -261,9 +275,20 @@ def test_dashboard_units_not_movement_rows(service,job):
     assert counts[("shop","device")]==1 and counts[("shop","accessory")]==3
 
 
+def test_evidence_attachment_allowlist_and_signature(service,job,tmp_path):
+    script=tmp_path/"unsafe.bat";script.write_text("echo unsafe")
+    with pytest.raises(RuleError,match="PDF, JPG/JPEG, or PNG"):
+        Documents(service).attach(script,"Unsafe",job_id=job)
+    renamed=tmp_path/"renamed.pdf";renamed.write_text("echo unsafe")
+    with pytest.raises(RuleError,match="content does not match"):
+        Documents(service).attach(renamed,"Renamed",job_id=job)
+    image=tmp_path/"evidence.png";image.write_bytes(b"\x89PNG\r\n\x1a\nminimal")
+    assert Documents(service).attach(image,"Evidence",job_id=job).suffix==".png"
+
+
 def test_backup_restore_attachments_balances_and_readonly(service,customer,job,tmp_path):
-    source=tmp_path/"proof ü.txt"
-    source.write_text("Evidence",encoding="utf-8")
+    source=tmp_path/"proof ü.pdf"
+    source.write_bytes(b"%PDF-1.4\nEvidence")
     Documents(service).attach(source,"Evidence",job_id=job)
     service.post("customer",customer,"receipt",10000,"advance",job_id=job)
     backup=Backups(service)
@@ -283,7 +308,7 @@ def test_backup_restore_attachments_balances_and_readonly(service,customer,job,t
     assert restored.one("SELECT count(*) n FROM customers")["n"]==1
     assert restored.setting("notifications_paused") is True
     assert restored.one("SELECT state FROM outbox")["state"]=="review_after_restore"
-    assert (restored.root / restored.one("SELECT path FROM attachments WHERE title='Evidence'")["path"]).read_text()=="Evidence"
+    assert (restored.root / restored.one("SELECT path FROM attachments WHERE title='Evidence'")["path"]).read_bytes()==b"%PDF-1.4\nEvidence"
 
 
 def test_missing_external_drive_preserves_local_backup(service,tmp_path):

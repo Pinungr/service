@@ -22,7 +22,10 @@ class JobCards:
         if kind=='shop':return dict(shop,location=name)
         if kind=='stock':return dict(shop,location='Stock: '+name)
         if kind=='technician':
-            user=self.db.one('SELECT id,name FROM users WHERE id=?',(name,))
+            if name.startswith('master-'):
+                user=self.db.one("SELECT id,name FROM masters WHERE id=? AND kind='technician'",(name[7:],))
+            else:
+                user=self.db.one('SELECT id,name FROM users WHERE id=?',(name,))
             return user or {'name':name,'location':'Technician work area'}
         return {'name':name or location,'location':kind}
 
@@ -55,7 +58,7 @@ class JobCards:
             shop = {k: self.db.setting(k, '') for k in ('shop_name', 'address', 'phone', 'email')}
             shop['name'] = shop.pop('shop_name') or 'Repair shop'
             customer = dict(c.execute('SELECT id,name,phone,email,address FROM customers WHERE id=?', (j['customer_id'],)).fetchone())
-            assignment = self.db.one('SELECT a.*,m.name,m.contact,m.details,u.name technician FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE a.id=?', (j['assignment_id'],)) or {}
+            assignment = self.db.one("SELECT a.*,m.name,m.contact,m.details,COALESCE(tm.name,u.name) technician FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?", (j['assignment_id'],)) or {}
             external = kind.startswith(('third_party', 'service_center', 'carrier'))
             if external:
                 movement_ids=p.get('movement_ids',[])
@@ -71,7 +74,7 @@ class JobCards:
             elif kind == 'customer_delivery':
                 sender, receiver = shop, customer
             elif kind == 'in_house_assignment':
-                sender, receiver = shop, {'id': assignment.get('technician_id'), 'name': assignment.get('technician')}
+                sender, receiver = shop, {'id': assignment.get('technician_master_id') or assignment.get('technician_id'), 'name': assignment.get('technician')}
             elif external:
                 if not party['id']:
                     raise RuleError('Select the external repairer before issuing a card.')

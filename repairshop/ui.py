@@ -897,7 +897,7 @@ class MainWindow(QMainWindow):
         d.select("route", "Route", ROUTES, self.s.job(ident)["route"])
         options = [("No external repairer", None)] + [(r["name"] + " · " + r["kind"], r["id"]) for r in self.db.rows("SELECT * FROM masters WHERE kind IN ('vendor','centre') AND active=1 ORDER BY name")]
         d.select("contact_id", "Vendor / service centre", options)
-        d.select("technician_id", "Internal technician", [("Unassigned", None)] + [(r["name"], r["id"]) for r in self.db.rows("SELECT id,name FROM users WHERE active=1")])
+        d.select("technician_master_id", "Internal technician", [("Unassigned", None)] + [(r["name"], r["id"]) for r in self.db.rows("SELECT id,name FROM masters WHERE kind='technician' AND active=1 ORDER BY name")])
         d.text("reference", "External work reference")
         d.text("estimate", "Vendor estimate (INR; not a bill)", "0")
         d.submit(lambda v: self.s.assign(ident, **{**v, "estimate": money(v["estimate"])}))
@@ -955,7 +955,7 @@ class MainWindow(QMainWindow):
         d.submit(lambda v: self.s.replacement(**v))
 
     def attach(self, job_id=None, sale_id=None):
-        path, _ = QFileDialog.getOpenFileName(self, "Attach condition photo, purchase proof or evidence")
+        path, _ = QFileDialog.getOpenFileName(self, "Attach condition photo, purchase proof or evidence", "", "Evidence (*.pdf *.jpg *.jpeg *.png)")
         if path:
             self.run(lambda: self.docs.attach(path, Path(path).name, job_id, sale_id), "Saving managed attachment…")
 

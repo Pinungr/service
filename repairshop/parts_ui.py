@@ -189,7 +189,7 @@ class RepairRecords(QWidget):
         picker=d.select('attachment_id','Evidence attachment (optional)',[('No attachment',None)]+[(a['title'],a['id']) for a in attachments])
         def attach():
             from PyQt6.QtWidgets import QFileDialog
-            path,_=QFileDialog.getOpenFileName(d,'Attach warranty evidence')
+            path,_=QFileDialog.getOpenFileName(d,'Attach warranty evidence','','Evidence (*.pdf *.jpg *.jpeg *.png)')
             if path:
                 saved=self.w.docs.attach(path,'Manual warranty evidence',job_id=self.ident)
                 ident=self.w.db.one('SELECT id FROM attachments WHERE path=?',(saved.relative_to(self.w.db.root).as_posix(),))['id']

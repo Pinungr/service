@@ -286,7 +286,10 @@ class JobWorkspace(QDialog):
             f=Form(ROUTE_LABELS[route],d,'Assign responsibility here. Physical location changes only when you record an actual handover.')
             if route!='in_house':f.add('contact_id','Service center' if route=='warranty_centre' else 'Vendor / technician',MasterSelector(self.window.s,'centre' if route=='warranty_centre' else 'vendor'))
             else:
-                f.select('technician_id','Assigned technician',[(r['name'],r['id']) for r in self.window.db.rows('SELECT id,name FROM users WHERE active=1')])
+                opts = [(r['name'],r['id']) for r in self.window.db.rows("SELECT id,name FROM masters WHERE kind='technician' AND active=1 ORDER BY name")]
+                if not opts:
+                    opts = [("Unassigned", None)]
+                f.select('technician_master_id','Assigned technician', opts)
                 handed=f.check('handed_over','Device physically handed to this technician now',False)
                 for key,title in [('bench','Technician work area / bench'),('condition','Condition at handover'),('acknowledgment','Physical handover acknowledgment')]:
                     field=f.text(key,title);field.setEnabled(False);handed.toggled.connect(field.setEnabled)

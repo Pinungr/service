@@ -9,13 +9,14 @@ class DeviceCustody:
     def technician(self,c,j,data,p,returning=False):
         self.s.require('owner','counter')
         if j['route']!='in_house':raise RuleError('This handover requires the in-house route.')
-        a=self.db.one('SELECT a.*,u.name FROM assignments a JOIN users u ON u.id=a.technician_id WHERE a.id=?',(j['assignment_id'],))
+        a=self.db.one("SELECT a.*,COALESCE(tm.name,u.name) name FROM assignments a LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?",(j['assignment_id'],))
         if not a:raise RuleError('Assign a technician first.')
         if not p.get('condition') or not p.get('acknowledgment'):raise RuleError('Record the physical condition and handover acknowledgment.')
-        destination=p.get('storage','shop:QC Area') if returning else 'technician:'+str(a['technician_id'])
+        tech_location='technician:master-'+str(a['technician_master_id']) if a.get('technician_master_id') else 'technician:'+str(a['technician_id'])
+        destination=p.get('storage','shop:QC Area') if returning else tech_location
         if returning and (not destination.startswith('shop:') or not destination[5:].strip()):raise RuleError('Choose the shop QC / storage destination.')
         rows=self.db.rows('SELECT i.*,h.quantity held,h.location FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0',(j['id'],))
-        rows=[h for h in rows if h['location']=='technician:'+str(a['technician_id'])] if returning else [h for h in rows if h['location'].startswith('shop:')]
+        rows=[h for h in rows if h['location']==tech_location] if returning else [h for h in rows if h['location'].startswith('shop:')]
         if 'items' in p:rows=[h for h in rows if h['id'] in p['items']]
         if not any(h['type']=='device' for h in rows):raise RuleError('Include the physical device currently held by this sender.')
         # Different shop bins are separate actual handovers and therefore cards.

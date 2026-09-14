@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.pool import NullPool
 from .domain import RuleError
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 SCHEMA = """
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','counter','technician')), active INTEGER NOT NULL DEFAULT 1);
@@ -171,6 +171,10 @@ class Database:
                     version = 8
                 if version == 8:
                     from .migration9 import migrate
+                    migrate(c)
+                    version = 9
+                if version == 9:
+                    from .migration10 import migrate
                     migrate(c)
             finally:
                 c.close()

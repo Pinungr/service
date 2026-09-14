@@ -311,7 +311,7 @@ def test_migration5_to6_preserves_photos_finance_custody_and_verified_backup(ser
         c.execute('ALTER TABLE jobs DROP COLUMN lifecycle_data')
         c.execute('PRAGMA user_version=5')
     upgraded=Database(target)
-    assert upgraded.one('PRAGMA user_version')['user_version']==9
+    assert upgraded.one('PRAGMA user_version')['user_version']==10
     for table in ('customers','devices','items','holdings','movements','quotes','decisions','entries','attachments'):
         assert upgraded.rows(f'SELECT * FROM {table}')==service.db.rows(f'SELECT * FROM {table}')
     assert upgraded.rows("SELECT * FROM audit WHERE entity!='schema'")==service.db.rows("SELECT * FROM audit WHERE entity!='schema'")
@@ -334,3 +334,14 @@ def test_read_snapshot_is_consistent_and_never_accepts_writes(service,customer):
         assert service.db.one('SELECT id FROM customers')['id']==customer
         with pytest.raises(RuleError,match='read-only'):service.save_customer('Must not save')
     assert service.db.one('SELECT count(*) n FROM customers')['n']==1
+
+
+def test_rows_projects_only_requested_page(service,customer):
+    for i in range(12):
+        service.intake(customer,f"Paging device {i}","Fault",assessment_consent=True)
+    life=Lifecycle(service);calls=[];original=life.snapshot
+    def counted(ident):
+        calls.append(ident);return original(ident)
+    life.snapshot=counted
+    rows=life.rows(limit=5)
+    assert len(rows)==5 and len(calls)==5

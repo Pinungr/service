@@ -87,7 +87,7 @@ class Inventory:
             self.s.audit(c,'stock',ident,'inventory_updated' if old else 'stock_item_created',{'previous':old,'values':p})
             return ident
 
-    def _movement(self,c,stock,kind,quantity,delta=0,reserved=0,issued=0,part=None,source='',destination='',reference='',reason='',notes='',party_id=None,technician_id=None,operation_id=None):
+    def _movement(self,c,stock,kind,quantity,delta=0,reserved=0,issued=0,part=None,source='',destination='',reference='',reason='',notes='',party_id=None,technician_id=None,technician_master_id=None,operation_id=None):
         if type(quantity)!=int or quantity<1:raise RuleError('Enter a positive whole stock quantity.')
         balance=self.balance(c,stock['id'])
         result=dict(stock=balance['stock']+delta,reserved=balance['reserved']+reserved,issued=balance['issued']+issued)
@@ -100,7 +100,7 @@ class Inventory:
             for key in ('name','serial','purchase_cost','customer_price','supplier_id','warranty_duration','warranty_unit','warranty_provider','warranty_terms'):snapshot[key]=part[key]
             snapshot['supplier']=json.loads(part.get('supplier_snapshot') or '{}').get('name',snapshot['supplier'])
         ident=insert(c,'stock_movements',stock_id=stock['id'],kind=kind,quantity=quantity,delta=delta,reserved_delta=reserved,issued_delta=issued,
-            part_id=part['id'] if part else None,job_id=job_id,from_location=source,to_location=destination,party_id=party_id,technician_id=technician_id,
+            part_id=part['id'] if part else None,job_id=job_id,from_location=source,to_location=destination,party_id=party_id,technician_id=technician_id,technician_master_id=technician_master_id,
             reference=reference,reason=reason,notes=notes,snapshot=json.dumps(snapshot),operation_id=operation_id or uuid.uuid4().hex,created=stamp,actor=self.s.user['id'])
         evidence=dict(movement_id=ident,inventory_id=stock['id'],part_id=part['id'] if part else None,part=stock['name'],quantity=quantity,kind=kind,
             from_location=source,to_location=destination,reference=reference,reason=reason,notes=notes)
@@ -145,11 +145,14 @@ class Inventory:
                 kind='RESERVED_FOR_JOB';newstate='reserved';kwargs['reserved']=qty
             elif action=='issue':
                 if state!='reserved':raise RuleError('Reserve this part before issuing it.')
-                a=self.db.one('SELECT a.*,m.name party,u.name technician FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE a.id=?',(j['assignment_id'],)) or {}
+                a=self.db.one("SELECT a.*,m.name party,COALESCE(tm.name,u.name) technician FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?",(j['assignment_id'],)) or {}
                 if j['route']=='in_house':
-                    if not a.get('technician_id'):raise RuleError('Assign a technician before issuing stock.')
-                    destination='technician:'+str(a['technician_id'])
-                    kwargs['technician_id']=a['technician_id'];kind='ISSUED_TO_TECHNICIAN'
+                    if not (a.get('technician_master_id') or a.get('technician_id')):raise RuleError('Assign a technician before issuing stock.')
+                    if a.get('technician_master_id'):
+                        destination='technician:master-'+str(a['technician_master_id']);kwargs['technician_master_id']=a['technician_master_id']
+                    else:
+                        destination='technician:'+str(a['technician_id']);kwargs['technician_id']=a['technician_id']
+                    kind='ISSUED_TO_TECHNICIAN'
                 elif j['route']=='third_party':
                     if not a.get('contact_id'):raise RuleError('Assign the third-party repairer before issuing stock.')
                     destination='vendor:'+a['party'];kwargs['party_id']=a['contact_id'];kind='ISSUED_TO_VENDOR'

@@ -88,7 +88,7 @@ class Warranties:
         return rows
 
     def active_claim(self,warranty_id):
-        return self.db.one("SELECT * FROM warranty_claims WHERE warranty_id=? AND status IN ('OPEN','ACCEPTED','IN_REPAIR') ORDER BY id DESC LIMIT 1",(warranty_id,))
+        return self.db.one("SELECT * FROM warranty_claims WHERE warranty_id=? AND status!='CLOSED' ORDER BY id DESC LIMIT 1",(warranty_id,))
 
     def claims(self,device_id):
         self.s.require()

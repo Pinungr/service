@@ -120,8 +120,8 @@ class Lifecycle:
         locations = sorted({h['location'] for h in devices})
         data['in_transit']=any(h['location'].startswith('transit:') for h in devices)
         location = ' / '.join(names.get(v.split(':')[0], v) + (': ' + v.split(':', 1)[1] if ':' in v else '') for v in locations) or 'LOCATION NEEDS REVIEW'
-        assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,u.name AS technician FROM assignments a
-            LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE a.id=?''', (j['assignment_id'],)) or {}
+        assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,COALESCE(tm.name,u.name) AS technician FROM assignments a
+            LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?''', (j['assignment_id'],)) or {}
         try:
             profile=json.loads(assignment.get('details') or '{}')
         except ValueError:
@@ -159,7 +159,14 @@ class Lifecycle:
             status = 'AT SERVICE CENTER · DIAGNOSIS' if j['route'] == 'warranty_centre' else 'WITH THIRD-PARTY TECHNICIAN · DIAGNOSIS'
         transit=any(v.startswith('transit:') for v in locations)
         technician_holds=any(v.startswith('technician:') for v in locations)
-        custodian=' / '.join((self.db.one('SELECT name FROM users WHERE id=?',(v.split(':',1)[1],)) or {}).get('name',v) if v.startswith('technician:') else self.db.setting('shop_name','Shop') if v.startswith('shop:') else j['customer'] if v=='customer' else v.split(':',1)[-1] for v in locations)
+        def technician_name(location):
+            token=location.split(':',1)[1]
+            if token.startswith('master-'):
+                row=self.db.one("SELECT name FROM masters WHERE id=? AND kind='technician'",(token[7:],))
+            else:
+                row=self.db.one('SELECT name FROM users WHERE id=?',(token,))
+            return (row or {}).get('name',location)
+        custodian=' / '.join(technician_name(v) if v.startswith('technician:') else self.db.setting('shop_name','Shop') if v.startswith('shop:') else j['customer'] if v=='customer' else v.split(':',1)[-1] for v in locations)
         destination=data.get('transit_destination','') if transit else ''
         if transit:
             status='RETURN DISPATCHED TO SHOP' if data.get('transit_direction')=='return' else 'DISPATCHED TO SERVICE CENTER' if j['route']=='warranty_centre' else 'DISPATCHED TO THIRD PARTY'
@@ -331,45 +338,64 @@ class Lifecycle:
 
     def _rows(self, search='', filter_key='', offset=0, limit=50):
         self.s.require()
-        today=date.today().isoformat()
+        attention_days = int(self.db.setting('lifecycle_attention_days', 3))
+        external_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
+        live_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%')"
+        device_outside_shop = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%' AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'technician:%')"
+        external_accessory = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
+        customer_balance = "COALESCE((SELECT sum(e.amount) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer'),0)"
+        pending_since = "COALESCE((SELECT a.created FROM audit a WHERE a.entity='job' AND a.entity_id=j.id AND a.action IN ('received','lifecycle','stage_changed','quote_issued','quote_decision','custody_moved') AND (a.action!='lifecycle' OR json_extract(a.payload,'$.before') IS NOT json_extract(a.payload,'$.after')) ORDER BY a.created DESC,a.id DESC LIMIT 1),j.received)"
+        overdue = f"(j.collection_due<date('now','+330 minutes') OR (j.repair_due<date('now','+330 minutes') AND j.stage NOT IN ('ready_repaired','ready_unrepaired')) OR (j.return_due<date('now','+330 minutes') AND {external_device}))"
+        attention = f"""(
+            {overdue}
+            OR j.stage IN ('final_qc','testing')
+            OR (j.stage IN ('awaiting_approval','waiting_parts') AND julianday('now')-julianday({pending_since})>=?)
+            OR (j.stage='awaiting_approval' AND (SELECT q.valid_until FROM quotes q WHERE q.job_id=j.id ORDER BY q.version DESC LIMIT 1)<date('now','+330 minutes'))
+            OR {customer_balance}>0
+            OR (j.stage IN ('billing','ready_unrepaired','ready_repaired') AND {customer_balance}<0)
+            OR j.hold_reason!=''
+            OR NOT {live_device}
+            OR ({live_device} AND NOT {device_outside_shop} AND {external_accessory})
+            OR EXISTS(SELECT 1 FROM repair_parts p WHERE p.job_id=j.id AND p.status='planned' AND ((p.source='stock' AND p.stock_state!='issued') OR (p.source='supplier' AND p.procurement_status NOT IN ('received','legacy'))))
+        )"""
         filters={
             'external_centre':"EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location LIKE 'centre:%')",
             'external_vendor':"EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location LIKE 'vendor:%')",
-            'diagnosis':"j.stage IN ('diagnosis','inspection','external_diagnosis')",'ready':"j.stage IN ('ready_repaired','ready_unrepaired')",
+            'diagnosis':"j.stage IN ('diagnosis','inspection','external_diagnosis')",
+            'ready':"j.stage IN ('ready_repaired','ready_unrepaired')",
             'in_house':"j.route='in_house' AND j.stage NOT IN ('received','inspection','warranty_check','route_selection')",
             'warranty_claims':"EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.new_job_id=j.id AND wc.status!='CLOSED')",
-            'attention':"""(j.stage IN ('final_qc','testing','waiting_parts','awaiting_approval') OR j.hold_reason!=''
-                OR j.collection_due<date('now','+330 minutes') OR j.repair_due<date('now','+330 minutes') OR j.return_due<date('now','+330 minutes')
-                OR EXISTS(SELECT 1 FROM entries e WHERE e.job_id=j.id AND e.account_type='customer' GROUP BY e.job_id HAVING sum(e.amount)!=0)
-                OR EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))
-                OR NOT EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%'))""",
-            'collected':"j.stage IN ('collected','closed')"}
+            'attention':attention,
+            'overdue':overdue,
+            'collected':"j.stage IN ('collected','closed')",
+            'history':'1=1',
+        }
         condition=filters.get(filter_key,'j.stage=?' if filter_key in LABELS else '1=1')
-        extra=(filter_key,) if filter_key in LABELS and filter_key not in filters else ()
-        ids = self.db.rows("""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id
+        condition_args=[]
+        if filter_key=='attention':
+            condition_args.append(attention_days)
+        elif filter_key in LABELS and filter_key not in filters:
+            condition_args.append(filter_key)
+        # Every supported filter is now expressed in SQL. Apply LIMIT/OFFSET before
+        # building expensive per-job snapshots so a 50-row screen does not project
+        # every matching job in the database first.
+        params=list(('%'+search+'%',)*6)+( [filter_key] )+condition_args
+        sql="""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id
             WHERE (j.number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ? OR j.serial LIKE ? OR j.intake_ref LIKE ?)
-            AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" ORDER BY j.id DESC", ('%'+search+'%',)*6+(filter_key,)+extra)
-        result = []
+            AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" ORDER BY j.id DESC"
+        if limit:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend((limit,offset))
+        ids=self.db.rows(sql,tuple(params))
+        result=[]
         for row in ids:
-            v = self.snapshot(row['id'])
-            matches = not filter_key or filter_key=='history' or filter_key == v['stage'] or (filter_key=='collected' and v['stage']=='closed') or (
-                filter_key=='diagnosis' and v['stage'] in ('inspection','external_diagnosis')) or (
-                filter_key=='in_house' and v['route']=='in_house' and v['stage'] not in ('received','inspection','warranty_check','route_selection')) or (
-                filter_key=='warranty_claims' and v['open_claims']>0) or (
-                filter_key == 'external_centre' and any(h['type']=='device' and h['location'].startswith('centre:') for h in v['holdings'])) or (
-                filter_key == 'external_vendor' and any(h['type']=='device' and h['location'].startswith('vendor:') for h in v['holdings'])) or (
-                filter_key == 'ready' and v['stage'] in ('ready_repaired','ready_unrepaired')) or (
-                filter_key == 'attention' and bool(v['attention'])) or (
-                filter_key == 'overdue' and any('overdue' in a for a in v['attention']))
-            if matches:
-                result.append(dict(id=v['id'], number=v['number'],visit=v['intake_ref'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
-                    route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
-                    current_custodian=v['current_custodian'],final_destination=v['final_destination'],
-                    pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
-                    balance=v['balance'],estimate=v['quote'].get('total',0),current_card=v['current_card'],warranty_indicator=v['warranty_indicator'],open_claims=v['open_claims'],next_action=v['next_action'],attention='; '.join(v['attention'])))
-                if limit and len(result)>=offset+limit:
-                    break
-        return result[offset:offset+limit] if limit else result
+            v=self.snapshot(row['id'])
+            result.append(dict(id=v['id'], number=v['number'],visit=v['intake_ref'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
+                route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
+                current_custodian=v['current_custodian'],final_destination=v['final_destination'],
+                pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
+                balance=v['balance'],estimate=v['quote'].get('total',0),current_card=v['current_card'],warranty_indicator=v['warranty_indicator'],open_claims=v['open_claims'],next_action=v['next_action'],attention='; '.join(v['attention'])))
+        return result
 
     def dashboard_counts(self):
         """Aggregate the full ledger in SQL; only project visible job rows in detail."""
@@ -459,16 +485,21 @@ class Lifecycle:
                         party=c.execute('SELECT * FROM masters WHERE id=? AND active=1',(p.get('contact_id'),)).fetchone()
                         if not party or party['kind']!=('centre' if route=='warranty_centre' else 'vendor'):
                             raise RuleError('Select an active service center or vendor matching this repair route.')
-                    technician=p.get('technician_id')
-                    if route=='in_house' and not c.execute('SELECT 1 FROM users WHERE id=? AND active=1',(technician,)).fetchone():
-                        raise RuleError('Assign an active shop technician.')
+                    technician_master=p.get('technician_master_id')
+                    legacy_technician=p.get('technician_id')
+                    if route=='in_house':
+                        if technician_master:
+                            if not c.execute("SELECT 1 FROM masters WHERE id=? AND kind='technician' AND active=1",(technician_master,)).fetchone():
+                                raise RuleError('Assign an active technician from the Technician directory.')
+                        elif not legacy_technician or not c.execute('SELECT 1 FROM users WHERE id=? AND active=1',(legacy_technician,)).fetchone():
+                            raise RuleError('Assign an active shop technician.')
                     if any(h['location'].startswith('technician:') for h in v['holdings'] if h['type']=='device'):
                         raise RuleError('Return the device from the current technician before changing assignment.')
                     if c.execute("SELECT 1 FROM repair_parts WHERE job_id=? AND stock_state='issued'",(ident,)).fetchone():
                         raise RuleError('Return issued shop parts before changing repairer.')
                     for part in c.execute("SELECT supplier_id FROM repair_parts WHERE job_id=? AND source='technician' AND status='planned'",(ident,)):
                         if route!='third_party' or part[0]!=p.get('contact_id'):raise RuleError('Remove or revise the old repairing-vendor parts before changing vendor.')
-                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,technician if route=='in_house' else None,reference=p.get('reference',''))
+                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,legacy_technician if route=='in_house' else None,technician_master_id=technician_master if route=='in_house' else None,reference=p.get('reference',''))
                     data['custody_version']=2
                     data['in_transit']=False;data.pop('transit_direction',None);data.pop('transit_destination',None)
                     if route=='in_house' and p.get('handed_over'):

@@ -142,6 +142,6 @@ def test_schema7_migration_preserves_existing_job_and_scopes_seed_service(servic
         c.execute('DROP TABLE category_services');c.execute('PRAGMA user_version=7')
     upgraded=Database(target)
     assert upgraded.one('SELECT * FROM jobs WHERE id=?',(job,))==service.db.one('SELECT * FROM jobs WHERE id=?',(job,))
-    assert upgraded.one('PRAGMA user_version')['user_version']==9
+    assert upgraded.one('PRAGMA user_version')['user_version']==10
     archive=list((target/'backups').glob('*pre-upgrade-v7*.zip'))[0]
     assert Backups.validate(archive)['schema']==7

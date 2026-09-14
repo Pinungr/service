@@ -35,11 +35,11 @@ class Queries:
             args.extend([date.today().isoformat()] * 3)
         args.append(offset)
         return self.db.rows("""SELECT j.id,j.number,c.name AS customer,c.phone,j.device,j.serial,j.stage,j.route,
-            COALESCE(m.name,u.name,'Unassigned') AS responsible,j.repair_due,j.collection_due,j.return_due,
+            COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,j.repair_due,j.collection_due,j.return_due,
             (SELECT group_concat(h.location || ' (' || h.quantity || ')', ', ') FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0) AS custody,
             (SELECT COALESCE(sum(e.amount),0) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer') AS balance,
             (SELECT state FROM outbox o WHERE o.job_id=j.id ORDER BY o.id DESC LIMIT 1) AS message
-            FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id WHERE """ + " AND ".join(where) + " ORDER BY j.id DESC LIMIT 50 OFFSET ?", args)
+            FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE """ + " AND ".join(where) + " ORDER BY j.id DESC LIMIT 50 OFFSET ?", args)
 
     def dashboard(self):
         self.s.require()
@@ -107,7 +107,7 @@ class Queries:
             self.s.require('owner')
             return self.db.rows("SELECT j.number,p.name,p.brand,p.model,p.part_number,p.serial,p.quantity,p.source,p.supplier_snapshot,p.purchase_cost,p.customer_price,(p.customer_price-p.purchase_cost)*p.quantity AS margin,p.installed_by,p.installed_at,p.status"+base.replace(' FROM jobs j',' FROM repair_parts p JOIN jobs j ON j.id=p.job_id')+' ORDER BY j.id,p.id',args)
         if kind == 'part_warranties':
-            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status IN ('OPEN','ACCEPTED','IN_REPAIR')) THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<date('now','+330 minutes') THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',args)
+            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status!='CLOSED') THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<date('now','+330 minutes') THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',args)
         if kind == 'warranty_claims':
             return self.db.rows('SELECT j.number,wc.original_job_id,wc.device_id,wc.part_id,wc.complaint,wc.status,wc.resolution,wc.replacement_part_id'+base.replace(' FROM jobs j',' FROM warranty_claims wc JOIN jobs j ON j.id=wc.new_job_id')+' ORDER BY wc.id',args)
         if kind == 'job_cards':

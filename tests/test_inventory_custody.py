@@ -280,8 +280,17 @@ def test_active_claim_locks_normal_edits_and_rejection_restores_effective_warran
 def test_rejected_claim_does_not_permanently_mark_warranty_claimed(service,customer):
     old,life,_,_=installed(service,customer);deliver(service,customer,old,life,100000)
     w=Warranties(service);device=service.job(old)['device_id'];wid=w.rows(device)[0]['id']
-    new=service.intake(customer,'Same device','Fault',device_id=device,guided=True);claim=w.claim(new,wid,'Fault')
+    new=service.intake(customer,'Same device','Fault',device_id=device);claim=w.claim(new,wid,'Fault')
     w.update_claim(claim,'REJECTED','Reported symptom is not a covered defect')
+    assert w.rows(device)[0]['effective_status']=='CLAIM IN PROGRESS' and w.active_claim(wid)['status']=='REJECTED'
+    with pytest.raises(RuleError,match='MANAGED BY ACTIVE CLAIM'):
+        w.edit(wid,'Before formal claim closure',terms='Original coverage')
+    # A rejected/completed claim remains exclusive until it is formally CLOSED.
+    service.stage(new,'ready_unrepaired',reason='Warranty claim rejected; return without repair')
+    holding=service.db.one("SELECT i.id,h.location,h.quantity FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND i.type='device' AND h.quantity>0",(new,))
+    service.move(holding['id'],holding['quantity'],holding['location'],'customer','Customer','claim-return-'+str(new),acknowledgment='Returned after warranty decision')
+    service.stage(new,'collected',reason='Returned after warranty decision')
+    w.update_claim(claim,'CLOSED','Claim formally closed after return')
     assert w.rows(device)[0]['effective_status']=='ACTIVE' and not w.active_claim(wid)
     w.edit(wid,'After rejection coverage correction',terms='Original coverage')
 
@@ -297,7 +306,7 @@ def test_v8_migration_preserves_installed_history_and_balances(service,customer,
         before_cards=c.execute('SELECT snapshot FROM job_cards ORDER BY id').fetchall()
         before_stock=c.execute('SELECT sum(delta) FROM stock_movements').fetchone()[0]
     upgraded=Database(target)
-    assert upgraded.one('PRAGMA user_version')['user_version']==9
+    assert upgraded.one('PRAGMA user_version')['user_version']==10
     assert [r['snapshot'] for r in upgraded.rows('SELECT snapshot FROM job_cards ORDER BY id')]==[r[0] for r in before_cards]
     assert upgraded.one('SELECT sum(delta) n FROM stock_movements')['n']==before_stock
     assert upgraded.one('SELECT stock_state FROM repair_parts WHERE id=?',(part,))['stock_state']=='installed'

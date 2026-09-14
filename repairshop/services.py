@@ -130,10 +130,19 @@ class Service:
         if kind not in MASTER_KINDS or not norm(name):
             raise RuleError("Choose a directory and enter a name.")
         with self.db.transaction() as c:
-            existing = c.execute("SELECT id FROM masters WHERE kind=? AND normalized=?", (kind, norm(name))).fetchone()
+            existing = c.execute("SELECT * FROM masters WHERE kind=? AND normalized=?", (kind, norm(name))).fetchone()
             new_record=not existing and not ident
             if existing and not ident:
-                ident = existing[0]
+                # Re-adding an existing normalized directory entry means the owner
+                # intends to reuse/update that entry, not create a silent no-op.
+                # Preserve existing display name and optional text when quick-add omitted it, while
+                # always applying the requested active state (so an inactive entry
+                # can be reactivated simply by adding it again).
+                ident = existing["id"]
+                merged_contact = contact if contact.strip() else existing["contact"]
+                merged_details = details if details.strip() else existing["details"]
+                c.execute("UPDATE masters SET contact=?,details=?,active=? WHERE id=?",
+                          (merged_contact, merged_details, int(active), ident))
             elif ident:
                 c.execute("UPDATE masters SET name=?,normalized=?,contact=?,details=?,active=? WHERE id=?", (name.strip(), norm(name), contact, details, int(active), ident))
             else:
@@ -202,7 +211,16 @@ class Service:
             for channel, destination, consent in (("whatsapp", contact["phone"], contact["whatsapp_consent"]), ("email", contact["email"], contact["email_consent"])):
                 if destination:
                     c.execute("INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,contact_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (key, job_id, quote_id, contact_id, channel, destination, event, json.dumps(payload), "pending" if consent else "blocked_consent", now(), now()))
-        internal = c.execute("SELECT r.* FROM recipients r JOIN users u ON u.id=r.entity_id WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND (u.role='owner' OR u.id=(SELECT technician_id FROM assignments WHERE id=?))", (j['assignment_id'],)).fetchall()
+        # Notify owners and assigned technicians (both legacy user-based and new directory-based)
+        internal = c.execute("""SELECT r.* FROM recipients r JOIN users u ON u.id=r.entity_id
+            WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND u.role='owner'
+            UNION ALL
+            SELECT r.* FROM recipients r JOIN users u ON u.id=r.entity_id
+            WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND u.id=(SELECT technician_id FROM assignments WHERE id=? AND technician_id IS NOT NULL)
+            UNION ALL
+            SELECT r.* FROM recipients r JOIN masters m ON m.id=r.entity_id
+            WHERE r.kind='staff' AND r.active=1 AND m.active=1 AND m.id=(SELECT technician_master_id FROM assignments WHERE id=? AND technician_master_id IS NOT NULL)""",
+            (j['assignment_id'], j['assignment_id'])).fetchall()
         for recipient in internal:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,recipient_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',(key,job_id,quote_id,recipient['id'],recipient['channel'],recipient['destination'],event,json.dumps(payload),'pending' if recipient['consent'] else 'blocked_consent',now(),now()))
 
@@ -214,8 +232,11 @@ class Service:
         if not destination or (channel=='email' and ('@' not in destination or '\n' in destination or '\r' in destination)):
             raise RuleError('Enter a valid destination.')
         with self.db.transaction() as c:
-            table = 'users' if kind=='staff' else 'masters'
-            if not c.execute(f'SELECT id FROM {table} WHERE id=?',(entity_id,)).fetchone():
+            if kind == 'staff':
+                exists = c.execute('SELECT id FROM users WHERE id=?', (entity_id,)).fetchone()
+            else:
+                exists = c.execute('SELECT id FROM masters WHERE id=?', (entity_id,)).fetchone()
+            if not exists:
                 raise RuleError('Recipient account does not exist.')
             c.execute('INSERT INTO recipients(kind,entity_id,channel,destination,consent,active) VALUES (?,?,?,?,?,?) ON CONFLICT(kind,entity_id,channel) DO UPDATE SET destination=excluded.destination,consent=excluded.consent,active=excluded.active',(kind,entity_id,channel,destination,int(consent),int(active)))
             self.audit(c,'recipient',entity_id,'configured',{'kind':kind,'channel':channel,'destination':destination,'consent':consent,'active':active})
@@ -356,8 +377,8 @@ class Service:
         if version is not None and j["version"] != version:
             raise RuleError("This job changed. Refresh and review before saving.")
         if self.user["role"] == "technician":
-            assignment = c.execute("SELECT technician_id FROM assignments WHERE id=?", (j["assignment_id"],)).fetchone()
-            if not assignment or assignment[0] != self.user["id"]:
+            assignment = c.execute("SELECT technician_id, technician_master_id FROM assignments WHERE id=?", (j["assignment_id"],)).fetchone()
+            if not assignment or (assignment[0] != self.user["id"] and assignment[1] is None):
                 raise RuleError("Technicians can update only their assigned work.")
         return j
 
@@ -408,7 +429,7 @@ class Service:
             self.notify(c, item["job_id"], event, f"{item['description']}: {quantity} unit(s) handed to {counterparty}. Reference: {reference}.")
         return ident
 
-    def assign(self, job_id, route, contact_id=None, technician_id=None, reference="", estimate=0):
+    def assign(self, job_id, route, contact_id=None, technician_id=None, technician_master_id=None, reference="", estimate=0):
         self.require("owner", "counter")
         if route not in ROUTES or (route != "in_house" and not contact_id):
             raise RuleError("Choose a route and its responsible repairer.")
@@ -418,10 +439,26 @@ class Service:
             guard(j, 'change the repair route')
             if j['stage'] in ('closed', 'collected'):
                 raise RuleError('Use a linked follow-up job after collection.')
-            ident = insert(c, "assignments", job_id=job_id, route=route, contact_id=contact_id, technician_id=technician_id, reference=reference, estimate=estimate, created=now(), actor=self.user["id"])
+            if route == 'in_house':
+                if technician_master_id:
+                    technician = c.execute("SELECT id FROM masters WHERE id=? AND kind='technician' AND active=1", (technician_master_id,)).fetchone()
+                    if not technician:
+                        raise RuleError('Assign an active technician from the Technician directory.')
+                    technician_id = None
+                elif technician_id:
+                    # Backward compatibility for existing databases/assignments that used a login user as technician.
+                    if not c.execute("SELECT id FROM users WHERE id=? AND active=1", (technician_id,)).fetchone():
+                        raise RuleError('Assign an active technician.')
+                else:
+                    raise RuleError('Assign an active shop technician.')
+            else:
+                technician_id = technician_master_id = None
+            ident = insert(c, "assignments", job_id=job_id, route=route, contact_id=contact_id, technician_id=technician_id,
+                           technician_master_id=technician_master_id, reference=reference, estimate=estimate, created=now(), actor=self.user["id"])
             c.execute("UPDATE jobs SET assignment_id=?,route=?,version=version+1 WHERE id=?", (ident, route, job_id))
-            self.audit(c, "job", job_id, "assigned", {"assignment": ident, "route": route, "contact_id": contact_id, "technician_id": technician_id})
-            if route == 'in_house' and technician_id:
+            self.audit(c, "job", job_id, "assigned", {"assignment": ident, "route": route, "contact_id": contact_id,
+                "technician_id": technician_id, "technician_master_id": technician_master_id})
+            if route == 'in_house' and (technician_id or technician_master_id):
                 from .job_cards import JobCards
                 JobCards(self).issue(job_id, 'in_house_assignment', f'assignment:{ident}')
         return ident

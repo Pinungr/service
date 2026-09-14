@@ -87,12 +87,25 @@ class Documents:
     def attach(self, source, title, job_id=None, sale_id=None, kind="evidence"):
         self.s.require("owner", "counter")
         source = Path(source)
+        allowed = {'.pdf', '.jpg', '.jpeg', '.png'}
+        suffix = source.suffix.lower()
         if not source.is_file() or source.stat().st_size > 50 * 1024 * 1024:
             raise RuleError("Choose a file up to 50 MB.")
-        relative = CustomerRecords(self.s).document_folder(job_id, sale_id) + '/' + uuid.uuid4().hex + source.suffix.lower()
+        if suffix not in allowed:
+            raise RuleError("Attach evidence as PDF, JPG/JPEG, or PNG.")
+        content = source.read_bytes()
+        signatures = {
+            '.pdf': lambda b: b.startswith(b'%PDF-'),
+            '.jpg': lambda b: b.startswith(b'\xff\xd8\xff'),
+            '.jpeg': lambda b: b.startswith(b'\xff\xd8\xff'),
+            '.png': lambda b: b.startswith(b'\x89PNG\r\n\x1a\n'),
+        }
+        if not signatures[suffix](content):
+            raise RuleError("The selected file content does not match its PDF/JPG/PNG extension.")
+        relative = CustomerRecords(self.s).document_folder(job_id, sale_id) + '/' + uuid.uuid4().hex + suffix
         with self.db.guard:
             target = managed_path(self.db.root, relative)
-            publish(target, source.read_bytes())
+            publish(target, content)
             try:
                 with self.db.transaction() as c:
                     ident = insert(c, "attachments", job_id=job_id, sale_id=sale_id, kind=kind, path=relative, title=title, created=now(), actor=self.s.user["id"])

@@ -188,10 +188,10 @@ class CustomerRecords:
         customer = self.db.one('SELECT * FROM customers WHERE id=?', (customer_id,))
         if not customer:
             raise RuleError('Customer not found.')
-        jobs = self.db.rows('''SELECT j.*,COALESCE(m.name,u.name,'Unassigned') AS responsible,
+        jobs = self.db.rows('''SELECT j.*,COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,
             (SELECT COALESCE(sum(amount),0) FROM entries WHERE job_id=j.id AND account_type='customer') AS balance,
             (SELECT path FROM attachments WHERE device_id=j.device_id AND kind='product_photo' ORDER BY id DESC LIMIT 1) AS thumbnail
-            FROM jobs j LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id
+            FROM jobs j LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id
             WHERE j.customer_id=? ORDER BY j.id DESC''', (customer_id,))
         holdings = self.db.rows('''SELECT i.job_id,i.type,h.location,h.quantity FROM items i JOIN holdings h ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id WHERE j.customer_id=? AND h.quantity>0''', (customer_id,))
         by_job = {}
