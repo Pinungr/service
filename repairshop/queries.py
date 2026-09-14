@@ -9,7 +9,7 @@ class Queries:
 
     def customers(self, search="", offset=0):
         self.s.require()
-        return self.db.rows("SELECT id,name,phone,email,address FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY name LIMIT 50 OFFSET ?", (search + "%", "%" + search + "%", offset))
+        return self.db.rows("SELECT id,name,phone,email,address FROM customers WHERE name LIKE ? OR phone LIKE ? OR alternate LIKE ? ORDER BY name LIMIT 50 OFFSET ?", ("%" + search + "%", "%" + search + "%", "%" + search + "%", offset))
 
     def jobs(self, search="", stage="", route="", location="", offset=0, customer_id=None, category_id=None, assignment=None, start=None, end=None, overdue=False):
         self.s.require()

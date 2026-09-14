@@ -89,6 +89,7 @@ def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypa
         form.fields['category_id'].box.setCurrentIndex(form.fields['category_id'].box.findData(master(service,'category',category)))
         svc=form.fields['service_id'].box;svc.setCurrentIndex(svc.findData(master(service,'service',category+' repair')))
         form.fields['device'].setText(name);form.fields['complaint'].setPlainText('Fault on '+name);form.fields['advance'].setText(amount)
+        form.fields['brand'].setText('Test brand');form.fields['model'].setText('Test model')
     def first():
         form=QApplication.activeModalWidget()
         try:
@@ -116,6 +117,7 @@ def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypa
             assert form.fields['device'].text()=='Printer B'
             assert form.fields['service_id'].value()==master(service,'service','Printer repair')
             form.fields['complaint'].setPlainText('Revised printer fault')
+            form.wizard.go(3)
             form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
         except BaseException:form.reject();raise
     QTimer.singleShot(30,resumed);w.intake(draft=draft)

@@ -1,3 +1,17 @@
+# RepairShop Manager 1.5.0
+
+Customer registration now groups required name, phone and address with optional alternate/email and camera/upload photo preview. Phone matches require an explicit existing/new customer choice. New intake uses four steps, inline registration, shop sales autofill, recorded-date warranty status, optional external warranty details, searchable category/brand/model/service masters, category-specific accessories, quick due dates, optional charges and a final summary. Multiple devices and durable drafts remain supported.
+
+External warranty is a customer report, not verified coverage or permission to start repair. The existing Warranty tab shows the recorded intake snapshot separately. No schema migration or reset; existing service, financial, photo and repair approval checks remain in force. Install over the current application to preserve records. See `INTAKE_UX.md` for scope and validation.
+
+# RepairShop Manager 1.4.4
+
+Fixed invisible dropdown arrows throughout the shared theme. Ordinary, editable and disabled selectors now show a separate arrow button; date pickers and quantity controls also have explicit chevrons. Icons ship inside the offline executable and resolve beside the package, including when the installation path contains spaces.
+
+No database or business-rule changes. Validation: 177 tests passed, including rendered-glyph and click/keyboard regression tests; all five control checks also passed at 150% scaling. Independent code/security review found no issues in this fix. The existing explicit `--smoke-test` mode now also renders a synthetic control sheet to its selected test folder to verify icons inside the frozen application.
+
+Install 1.4.4 over the existing application to preserve shop records. Uninstall behavior is unchanged from 1.4.3.
+
 # RepairShop Manager 1.4.3
 
 Replaced the custom bootstrapper with a standard offline Inno Setup wizard, including Welcome, README, destination folder, Start Menu selection, Desktop shortcut, progress and Finish with optional launch. Windows Apps/Control Panel now uses the native logged uninstaller instead of a PowerShell script.

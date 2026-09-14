@@ -2,7 +2,7 @@
 import json
 import uuid
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QScrollArea,QTabWidget,QCheckBox,QMessageBox,QDialogButtonBox,QSpinBox)
+from PyQt6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QScrollArea,QTabWidget,QCheckBox,QMessageBox,QDialogButtonBox,QSpinBox,QSplitter)
 from .ui_widgets import Form,Grid,button,MasterSelector,panel,FlowLayout
 from .lifecycle import Lifecycle,ACTIONS,ROUTE_LABELS,local_time
 from .domain import rupees,money,RuleError
@@ -26,7 +26,7 @@ class JobWorkspace(QDialog):
         self.window,self.ident=window,ident
         self.life=Lifecycle(window.s)
         self.resize(1220,840)
-        self.setMinimumSize(860,560)
+        self.setMinimumSize(720,520)
         shell=QVBoxLayout(self);shell.setContentsMargins(0,0,0,0)
         scroll=QScrollArea();scroll.setWidgetResizable(True);shell.addWidget(scroll)
         content=QWidget();scroll.setWidget(content)
@@ -35,34 +35,40 @@ class JobWorkspace(QDialog):
         outer.setSpacing(12)
         self.heading=label('',True)
         outer.addWidget(self.heading)
-        self.metrics=QGridLayout()
-        self.metrics.setHorizontalSpacing(12)
-        self.metrics.setVerticalSpacing(12)
+        context=QWidget();context.setObjectName('card')
+        self.metrics=QGridLayout(context)
+        self.metrics.setContentsMargins(12,9,12,9)
+        self.metrics.setHorizontalSpacing(18)
+        self.metrics.setVerticalSpacing(6)
         self.values={}
         for n,(key,title) in enumerate([('route_label','REPAIR ROUTE'),('current_status','REPAIR STATUS'),('current_location','PHYSICAL LOCATION'),('current_custodian','CURRENT CUSTODIAN'),('final_destination','FINAL DESTINATION'),('assigned_technician','ASSIGNED TECHNICIAN')]):
-            box=QWidget(); box.setObjectName('card'); layout=QVBoxLayout(box);layout.setContentsMargins(14,12,14,12);layout.setSpacing(4)
-            title_label=label(title);title_label.setObjectName('muted')
-            layout.addWidget(title_label); self.values[key]=label('',True); layout.addWidget(self.values[key])
-            self.metrics.addWidget(box,n//3,n%3)
-        outer.addLayout(self.metrics)
-        nextrow=QHBoxLayout()
-        next_card,next_layout=panel('Next action')
-        self.next=label('',True); next_layout.addWidget(self.next)
-        nextrow.addWidget(next_card,1)
-        self.primary=button('Continue',lambda:self.act(self.view['primary']),True)
-        nextrow.addWidget(self.primary)
-        outer.addLayout(nextrow)
-        self.attention=label(''); self.attention.setStyleSheet('color:#9b4521;font-weight:600')
-        outer.addWidget(self.attention)
-        body=QHBoxLayout()
-        tracker_scroll=QScrollArea();tracker_scroll.setWidgetResizable(True);tracker_scroll.setFixedWidth(215)
-        self.tracker=label(''); self.tracker.setStyleSheet('font-size:14px;padding:10px;line-height:1.8')
-        tracker_scroll.setWidget(self.tracker);body.addWidget(tracker_scroll)
-        self.tabs=QTabWidget();body.addWidget(self.tabs,1);outer.addLayout(body,1)
+            title_label=label(title.title());title_label.setObjectName('muted')
+            self.values[key]=label('')
+            self.metrics.addWidget(title_label,n//2,(n%2)*2)
+            self.metrics.addWidget(self.values[key],n//2,(n%2)*2+1)
+        self.metrics.setColumnStretch(1,1);self.metrics.setColumnStretch(3,1)
+        outer.addWidget(context)
+        from .repair_journey import RepairJourney
+        self.splitter=QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setMinimumHeight(520)
+        self.journey=RepairJourney(self);self.journey.action_requested.connect(self.act)
+        self.tracker=self.journey  # Readable compatibility view, backed by the same nodes.
+        self.primary=self.journey.primary
+        self.splitter.addWidget(self.journey)
+        self.tabs=QTabWidget();self.tabs.setMinimumWidth(360)
+        self.splitter.addWidget(self.tabs);self.splitter.setSizes([370,800])
+        outer.addWidget(self.splitter,1)
         route_scroll=QScrollArea();route_scroll.setWidgetResizable(True)
         route=QWidget();route_layout=QVBoxLayout(route)
+        self.actions_caption=label('Other actions for this stage')
+        route_layout.addWidget(self.actions_caption)
         self.buttons=FlowLayout();route_layout.addLayout(self.buttons)
-        self.summary=label('');route_layout.addWidget(self.summary);route_layout.addStretch()
+        self.tools_caption=label('Tools');self.tools_caption.setObjectName('muted')
+        route_layout.addWidget(self.tools_caption)
+        self.tools=FlowLayout();route_layout.addLayout(self.tools)
+        from .repair_details import RepairDetails
+        self.summary=RepairDetails();route_layout.addWidget(self.summary);route_layout.addStretch()
         route_scroll.setWidget(route);self.tabs.addTab(route_scroll,'Repair workspace')
         j=window.s.job(ident)
         if j['device_id']:
@@ -78,12 +84,29 @@ class JobWorkspace(QDialog):
         if window.s.user['role']=='owner':
             from .costing_ui import CostPanel
             self.cost_panel=CostPanel(self);self.tabs.addTab(self.cost_panel,'Internal costing')
-        footer=FlowLayout()
+        utility_toggle=button('Utilities && administrative actions',lambda:self.utilities.setVisible(not self.utilities.isVisible()))
+        outer.addWidget(utility_toggle)
+        self.utilities=QWidget();utility_layout=QVBoxLayout(self.utilities);utility_layout.setContentsMargins(0,0,0,0)
+        footer=FlowLayout();utility_layout.addLayout(footer)
         for text,fn in [('Full records',lambda:window.job_records(ident)),('Same visit',lambda:window.visit_jobs(ident)),('Documents',lambda:window.document_form(ident)),('Expected dates',lambda:window.date_form(ident)),('Hold / release',lambda:window.hold_form(ident))]:
             b=button(text,lambda checked=False,f=fn:self.support(f));footer.addWidget(b)
             b.setEnabled(not window.db.readonly or text=='Full records')
-        footer.addWidget(button('Close window',self.accept));outer.addLayout(footer)
+        self.exception_buttons=FlowLayout();utility_layout.addLayout(self.exception_buttons)
+        outer.addWidget(self.utilities);self.utilities.hide()
+        shell.addWidget(button('Close window',self.accept))
         self.reload()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,'splitter'):
+            orientation=Qt.Orientation.Vertical if self.width()<1050 else Qt.Orientation.Horizontal
+            if self.splitter.orientation()!=orientation:
+                self.splitter.setOrientation(orientation)
+                self.splitter.setMinimumHeight(830 if orientation==Qt.Orientation.Vertical else 520)
+                self.splitter.setSizes([440,420] if orientation==Qt.Orientation.Vertical else [370,800])
+                # Stacked above the tabs the journey has width but little height,
+                # so it switches to the wrapping rail; beside them it stays a column.
+                self.journey.set_orientation(Qt.Orientation.Horizontal if orientation==Qt.Orientation.Vertical else Qt.Orientation.Vertical)
 
     def support(self,fn):
         self.window.safe(fn)
@@ -95,33 +118,26 @@ class JobWorkspace(QDialog):
         self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}  ·  DEV-{v['device_id']:06d}  ·  Serial: {v['serial'] or 'Not recorded'}" if v['device_id'] else f"{v['number']} · {v['device']} · {v['customer']}")
         for key,w in self.values.items():
             w.setText(str(v[key] or '—').replace('_',' '))
-        self.next.setText(v['next_action'])
-        self.primary.setText(ACTIONS.get(v['primary'],'Review history'))
-        self.primary.setEnabled(bool(v['primary']) and not self.window.db.readonly)
-        self.attention.setText('ATTENTION: '+' · '.join(v['attention']) if v['attention'] else '')
-        self.tracker.setText('REPAIR LIFECYCLE\n\n'+'\n\n'.join(r['state']+'  '+r['step'] for r in v['tracker'])+ ('\n\nLegacy steps are not assumed complete.' if not v['lifecycle_version'] or v['data'].get('legacy_review') else ''))
-        d=v['data'];a=v['assignment'];quote=v['quote']
-        lines=[('Responsible for work',v['responsible']),('Pending since',v['pending_since']),('Warranty route',v['warranty_status']),('Reported fault',v['complaint']),('Intake condition',v['damage']),('Confirmed diagnosis',d.get('diagnosis')),
-            ('Repair performed',d.get('repair_summary')),('Parts required',d.get('parts_required')),('Parts availability','Available' if d.get('parts_available') else 'Pending' if 'parts_available' in d else 'Not recorded'),
-            ('Parts used',d.get('parts_used')),('Assigned technician',a.get('technician')),('Repairer',a.get('party')),('Repairer contact',a.get('contact')),('Repairer details',a.get('details')),
-            ('Dispatch date',local_time(d.get('dispatched'))),('Expected return',v['return_due']),('Expected collection',v['collection_due']),('Returned to shop',local_time(d.get('returned'))),
-            ('Customer estimate',rupees(quote.get('total')) if quote else 'Not issued'),('Approval',quote.get('state','Not recorded')),('Advance / payments retained',rupees(v['paid'])),('Balance due',rupees(v['balance'])),
-            ('Repair started',local_time(d.get('repair_started'))),('Repair completed',local_time(d.get('repair_completed'))),('QC result',d.get('qc',{}).get('result','Pending')),
-            ('Repair warranty',d.get('repair_warranty')),('Warranty until',d.get('warranty_until')),('Unrepaired outcome',d.get('unrepaired'))]
-        details=d.get('route_details',{})
-        from .inventory import PRIVATE_FIELDS
-        lines += [(k.replace('_',' ').title(),val) for k,val in details.items() if k not in PRIVATE_FIELDS|{'customer_price'}]
-        self.summary.setText('\n'.join(f'{k}: {val if val not in (None,"") else "Not recorded"}' for k,val in lines))
-        while self.buttons.count():
-            item=self.buttons.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self.journey.set_snapshot(v,readonly=self.window.db.readonly)
+        self.next=self.journey.current_action
+        self.summary.set_snapshot(v)
+        for group in (self.buttons,self.tools,self.exception_buttons):
+            while group.count():
+                item=group.takeAt(0)
+                if item.widget():item.widget().hide();item.widget().deleteLater()
         actions=v['actions'][:]
         for index,action in enumerate(actions):
+            if action==v['primary']:continue
             b=button(ACTIONS[action],lambda checked=False,a=action:self.act(a))
             b.setEnabled(not self.window.db.readonly)
-            self.buttons.addWidget(b)
+            group=(self.exception_buttons if action in ('adopt','change_route','decline','repair_failed','rework','resolve_item','details')
+                   else self.tools if action in ('parts','manual_warranty','costing') else self.buttons)
+            group.addWidget(b)
         if self.window.s.user['role']=='owner' and v['route']!='in_house':
-            self.buttons.addWidget(button('Vendor invoice / payment',lambda:self.support(lambda:self.payment('vendor'))))
+            self.tools.addWidget(button('Vendor invoice / payment',lambda:self.support(lambda:self.payment('vendor'))))
+        # A caption with no buttons under it reads as a missing feature.
+        self.actions_caption.setVisible(self.buttons.count()>0)
+        self.tools_caption.setVisible(self.tools.count()>0)
         self.timeline.fill(v['timeline'],['time','event','actor','details'])
         self.custody.fill(v['holdings'],['description','type','serial','location','quantity'])
         self.heading.setText(self.heading.text()+'\nCurrent card: '+v['current_card']+'  ·  '+v['warranty_indicator'])

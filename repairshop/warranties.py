@@ -5,6 +5,60 @@ from .domain import RuleError,now,day
 from .persistence import insert
 
 
+def sale_warranty(sale, on=None):
+    """Describe recorded sale dates, without granting repair coverage."""
+    sale = dict(sale)
+    today = on or date.today()
+    if isinstance(today, str):
+        today = date.fromisoformat(today)
+    start, expiry = sale.get('warranty_start'), sale.get('warranty_end')
+    status = 'UNKNOWN'
+    duration = None
+    if expiry:
+        end = date.fromisoformat(expiry)
+        begin = date.fromisoformat(start) if start else None
+        if begin and begin > end:
+            status = 'UNKNOWN'
+        elif end < today:
+            status = 'EXPIRED'
+        elif begin and begin > today:
+            status = 'NOT_STARTED'
+        else:
+            status = 'VALID'
+        if begin and end >= begin:
+            duration = (end - begin).days
+    return dict(source='shop', status=status, sale_id=sale['id'],
+                sale_date=sale.get('sale_date'), start_date=start, expiry=expiry,
+                provider=sale.get('provider', ''), terms=sale.get('warranty_terms', ''),
+                duration_days=duration, checked_on=today.isoformat(),
+                verification='sale_dates_only')
+
+
+def reported_intake_warranty(values):
+    """Validate a customer's report; it never substitutes for a verified claim."""
+    allowed = {'source', 'status', 'expiry', 'provider', 'notes'}
+    if not isinstance(values, dict) or not set(values) <= allowed:
+        raise RuleError('Enter supported intake warranty details.')
+    if values.get('source') != 'external' or values.get('status') not in ('VALID', 'EXPIRED', 'NONE', 'UNKNOWN'):
+        raise RuleError('Choose the reported external warranty status.')
+    result = dict(source='external', status=values['status'], expiry=None, provider='', notes='',
+                  checked_on=date.today().isoformat(), verification='customer_reported')
+    # Hidden valid-warranty fields must not leak into another status.
+    if result['status'] == 'VALID':
+        for key in ('provider', 'notes'):
+            value = values.get(key) or ''
+            if not isinstance(value, str):
+                raise RuleError('Warranty provider and notes must be text.')
+            result[key] = value.strip()
+        try:
+            result['expiry'] = date.fromisoformat(values['expiry']).isoformat() if values.get('expiry') else None
+        except (ValueError, TypeError):
+            raise RuleError('Enter a valid warranty expiry date.')
+        if result['expiry'] and result['expiry'] < result['checked_on']:
+            raise RuleError('This warranty expiry has passed. Choose Expired or correct the expiry date.')
+    return result
+
+
 def warranty_expiry(start,duration,unit):
     d=date.fromisoformat(start)
     if type(duration)!=int or duration<0 or unit not in ('days','months','years'):

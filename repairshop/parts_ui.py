@@ -1,7 +1,7 @@
 """Parts, issued cards and warranties inside the existing repair workspace."""
 import json
 from datetime import date
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QUrl,Qt
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QDialog
 from .ui_widgets import Grid,Form,button,panel,FlowLayout
@@ -20,6 +20,11 @@ class RepairRecords(QWidget):
         layout=QVBoxLayout(self);layout.setSpacing(12)
         info_panel,info_layout=panel({'cards':'Issued job cards','parts':'Parts and stock','warranty':'Warranty control'}[kind])
         self.info=QLabel();self.info.setWordWrap(True);info_layout.addWidget(self.info);layout.addWidget(info_panel)
+        if kind=='warranty':
+            self.intake_warranty_info=QLabel()
+            self.intake_warranty_info.setWordWrap(True)
+            self.intake_warranty_info.setTextFormat(Qt.TextFormat.PlainText)
+            info_layout.addWidget(self.intake_warranty_info)
         actions_panel,actions_layout=panel('Actions')
         bar=FlowLayout();actions_layout.addLayout(bar);layout.addWidget(actions_panel);self.action_buttons={}
         actions={'cards':[('View card',self.view_card),('Print selected card',self.print_card),('Print receiving receipt',self.print_receipt),('Final invoice',self.print_invoice)],
@@ -60,7 +65,16 @@ class RepairRecords(QWidget):
             if self.s.user['role']=='owner':columns[3:3]=['purchase_cost','margin']
             self.grid.fill(rows,columns)
         else:
-            device=self.s.job(self.ident)['device_id']
+            job=self.s.job(self.ident)
+            device=job['device_id']
+            intake=json.loads(job['lifecycle_data']).get('intake_warranty')
+            self.intake_warranty_info.setVisible(bool(intake))
+            if intake:
+                source='Recorded shop sale dates' if intake['source']=='shop' else 'Customer-reported external warranty'
+                details=[f"{source} at intake: {intake['status']}", 'Coverage must be verified before repair authorization.']
+                for key,label in (('checked_on','Recorded'),('sale_date','Sale date'),('start_date','Starts'),('expiry','Expires'),('provider','Provider'),('terms','Sale terms'),('notes','Customer notes')):
+                    if intake.get(key):details.append(f"{label}: {intake[key]}")
+                self.intake_warranty_info.setText('\n'.join(details))
             self.info.setText('Warranties follow this physical device across repair jobs. Create a new intake for a returning device, then claim its original warranty here. No previous repair is overwritten.')
             checks=self.warranties.manual_checks(self.ident)
             if checks:

@@ -56,6 +56,11 @@ def main():
         window = MainWindow(s, demo=args.demo)
         window.show()
         if args.smoke_test:
+            from .smoke_controls import capture_controls
+            capture_controls(root / 'ui-controls-smoke.png')
+            if args.demo:
+                from .smoke_intake import capture_intake
+                capture_intake(window, root)
             QTimer.singleShot(1500, app.quit)
         result = app.exec()
         window.pool.waitForDone(30000)

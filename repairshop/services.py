@@ -233,7 +233,7 @@ class Service:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,recipient_id,attachment_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)',(operation_id,recipient_id,attachment_id,r['channel'],r['destination'],'statement',json.dumps(payload),'pending' if r['consent'] else 'blocked_consent',now(),now()))
             self.audit(c,'document',attachment_id,'queued_for_recipient',{'recipient_id':recipient_id,'subject':subject})
 
-    def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, **fields):
+    def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, **fields):
         self.require("owner", "counter")
         if not device.strip() or not complaint.strip() or not storage.startswith("shop:"):
             raise RuleError("Device, complaint and shop storage are required.")
@@ -271,6 +271,14 @@ class Service:
                     if not linked or linked['customer_id'] != customer_id or (device_id and device_id != linked['device_id']):
                         raise RuleError('The linked repair/product must belong to this customer and device.')
                     device_id = linked['device_id']
+            warranty_snapshot = None
+            if fields.get('sale_id'):
+                from .warranties import sale_warranty
+                sale = c.execute('SELECT * FROM sales WHERE id=?', (fields['sale_id'],)).fetchone()
+                warranty_snapshot = sale_warranty(sale)
+            elif intake_warranty is not None:
+                from .warranties import reported_intake_warranty
+                warranty_snapshot = reported_intake_warranty(intake_warranty)
             device_id = device_record(c, customer_id, device, fields.get('category_id'), fields.get('serial', ''), device_id)
             for key,value in (('brand',brand),('model',model)):
                 if value is not None:
@@ -279,6 +287,11 @@ class Service:
             if active:
                 raise RuleError('This physical device still has outstanding items on ' + active[0] + '. Complete that handover first, or select New physical device.')
             ident = insert(c, "jobs", customer_id=customer_id, device=device, device_id=device_id, photo_id=photo_id, complaint=complaint, received=now(), actor=self.user["id"], lifecycle_version=int(guided), **fields)
+            if warranty_snapshot is not None:
+                data = json.loads(c.execute('SELECT lifecycle_data FROM jobs WHERE id=?', (ident,)).fetchone()[0])
+                data['intake_warranty'] = warranty_snapshot
+                c.execute('UPDATE jobs SET lifecycle_data=? WHERE id=?', (json.dumps(data), ident))
+                self.audit(c, 'job', ident, 'intake_warranty_recorded', warranty_snapshot)
             if draft_id:
                 c.execute('DELETE FROM intake_drafts WHERE id=? AND actor=?', (draft_id, self.user['id']))
             number = f"REP-{date.today().year}-{ident:06d}"

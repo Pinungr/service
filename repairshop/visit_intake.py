@@ -14,7 +14,7 @@ class VisitIntake:
         self.products=payload.get('visit_products',[])
         form.visit_intake=self
         if not form.fields['intake_ref'].text():form.fields['intake_ref'].setText('VIS-'+uuid.uuid4().hex[:10].upper())
-        box=QWidget();layout=QVBoxLayout(box);layout.setContentsMargins(0,0,0,0)
+        box=QWidget();self.box=box;layout=QVBoxLayout(box);layout.setContentsMargins(0,0,0,0)
         box.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Maximum)
         self.info=QLabel();self.info.setWordWrap(True);layout.addWidget(self.info)
         self.grid=Grid();self.grid.setMinimumHeight(100);self.grid.setMaximumHeight(150);layout.addWidget(self.grid)
@@ -41,6 +41,12 @@ class VisitIntake:
 
     def prepare(self,payload):
         p=dict(payload)
+        if 'warranty_status' in p:
+            p['intake_warranty'] = dict(source='shop') if p.get('sale_id') else dict(
+                source='external',status=p.get('warranty_status','UNKNOWN'),
+                expiry=p.get('warranty_expiry'),provider=p.get('warranty_provider',''),notes=p.get('warranty_notes',''))
+            for key in ('warranty_status','warranty_expiry','warranty_provider','warranty_notes','identity_unknown','no_accessories'):
+                p.pop(key,None)
         if not p.get('customer_id'):
             raise RuleError('Select or register the device owner first.')
         if not p.get('photo_id'):
@@ -53,7 +59,7 @@ class VisitIntake:
         p['storage']='shop:'+storage['name']
         p.pop('photo_role',None);p.pop('visit_products',None)
         for key in ('advance','deposit','transport_agreed','assessment_agreed'):
-            p[key]=money(p[key])
+            p[key]=money(p[key] or '0')
             if p[key]<0:raise RuleError('Intake amounts cannot be negative.')
         p['accessories']=[dict(type='accessory',description=a['description'],quantity=a['quantity'],serial=a.get('serial','')) for a in p.get('accessories',[]) if a.get('checked')]
         p['guided']=True
@@ -61,6 +67,7 @@ class VisitIntake:
 
     def add_current(self):
         self.w.s.require('owner','counter')
+        if hasattr(self.form,'wizard'):self.form.wizard.validate_all()
         if len(self.products)>=50:raise RuleError('Receive up to 50 products in one visit.')
         p=self.current();self.prepare(p)
         if self.products and p['customer_id']!=self.products[0]['customer_id']:
@@ -83,6 +90,7 @@ class VisitIntake:
         self.form.fields['assessment_consent'].setChecked(False)
         self.form.fields['origin'].setCurrentIndex(self.form.fields['origin'].findData('elsewhere'))
         for check in self.checks:check.setChecked(False)
+        if hasattr(self.form,'wizard'):self.form.wizard.reset_product()
 
     def edit_selected(self):
         row=self.w.selected(self.grid)
@@ -91,6 +99,8 @@ class VisitIntake:
         self.support.parent=p.get('parent_id')
         self.support.sale=self.w.db.one('SELECT * FROM sales WHERE id=?',(p.get('sale_id'),)) if p.get('sale_id') else None
         self.support.restore(p)
+        if hasattr(self.form,'wizard'):
+            self.form.wizard.go(1)
         self.reload();self.support.save_draft()
 
     def remove_selected(self):
@@ -105,8 +115,10 @@ class VisitIntake:
         self.form.fields['customer_id'].setEnabled(not count)
         self.form.fields['intake_ref'].setReadOnly(bool(count))
         self.form.buttons.button(QDialogButtonBox.StandardButton.Save).setText('Save visit' if count else 'Save')
+        if hasattr(self.form,'wizard'):self.form.wizard.go(self.form.wizard.step)
 
     def save(self):
+        if hasattr(self.form,'wizard'):self.form.wizard.validate_all()
         self.support.save_draft()
         products=list(self.products)
         if self.entered() or not products:products.append(self.current())

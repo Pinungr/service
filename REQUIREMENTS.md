@@ -367,3 +367,25 @@ Deliver:
 The product is complete only when the specified business rules are implemented end to end, persisted across restarts, and meaningfully verified. External accounts and an unavailable Windows host may remain explicitly listed setup/validation dependencies; they must not be hidden behind a claim that live messaging or a Windows installer was tested.
 
 Start by inspecting the repository, briefly state the architecture and assumptions, and then build the application through the stages above.
+# Customer registration and intake UX — September 2026
+
+Implement the attached four-step Customer → Product → Repair → Confirm workflow. Registration requires name, phone and address with optional alternate/email and camera/upload photo preview. Detect matching phones and require an explicit existing/new customer choice. Intake supports sales-history autofill, dated warranty badges, external warranty details, category-specific reusable accessories, service recommendations, optional due dates and currency inputs. Preserve mandatory intake photos, multi-product visits, draft recovery, consent and all existing financial/workflow rules. Limit redesign to these forms; retain schema 9.
+# Repair journey presentation — September 2026
+
+Redesign only JobWorkspace presentation. Derive a connected journey from the existing lifecycle snapshot, tracker and audit; show completed/current/upcoming/blocked/outcome states with text and icons, route-specific future paths only when known, and the existing primary handler within the current node. Historical nodes are read-only details. Keep tabs, authorization, transitions, payments and all existing data unchanged. Compact the operational summary and group workspace details. Verify guided and legacy jobs, rework, all routes, held/unrepaired outcomes, resizing and action dispatch.
+
+# Repair journey presentation, second pass — September 2026
+
+Close the presentation gaps in the first pass without touching business logic.
+The journey must adapt to the window: connected stage cards when it has height,
+a wrapping horizontal rail when it has width instead. At the route decision point
+show the routes the application actually defines as still open, and no route's
+stages until one is chosen. Lifecycle stages are clickable for history only and
+carry stage, status, time, staff, location, route and blocking reason on hover.
+Status colour, icon and wording must have a single definition in the shared
+design system. Separate the current-stage primary action, stage-relevant actions,
+general tools and administrative utilities so they are not equally weighted.
+Group workspace detail so responsibility includes current custodian and physical
+location, and show stored codes in the words staff already read elsewhere.
+Verify every lifecycle stage, both branch routes, held and unrepaired outcomes,
+legacy records, resizing, tabs and action dispatch. Retain schema 9.

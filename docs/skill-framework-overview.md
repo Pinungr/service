@@ -27,7 +27,7 @@ The App Orchestrator is the default starting point for work requests. It classif
 
 ```mermaid
 flowchart TD
-    A[User Request] --> B[App Orchestrator]
+    A[User Request] --> B[App Orchestrator\nCustom Agent]
     B --> C[Requirements Analyst]
     B --> D[Offline Solution Architect]
     D --> E[UI/UX Designer]
@@ -42,6 +42,66 @@ flowchart TD
     K --> L[Build/Release Engineer]
     D -. consults .-> M[Offline Desktop App Expert]
     B -. monitors quality gates .-> N[Requirements / Architecture / DB / UI / Testing / Security / Release]
+
+    subgraph SharedSkills[Reusable Shared Skills]
+        S1[Offline Desktop Expert]
+        S2[Safe DB Migration]
+        S3[UI/UX Standards]
+        S4[Regression Testing]
+        S5[Windows Packaging]
+        S6[Backup & Recovery]
+    end
+
+    M --> S1
+    F --> S2
+    E --> S3
+    I --> S4
+    L --> S5
+    G --> S6
+```
+
+### Visual orchestration view
+
+```text
+YOU
+                     │
+                     ▼
+            ┌─────────────────┐
+            │ App Orchestrator│
+            │ Custom Agent    │
+            └────────┬────────┘
+                     │
+           invokes specialist agents
+                     │
+    ┌────────────────┼────────────────────┐
+    │                │                    │
+    ▼                ▼                    ▼
+ Architect      UI/UX Designer      Requirements
+    │                │                    │
+    ├──────────┬─────┴───────┐            │
+    ▼          ▼             ▼            │
+ Backend    Frontend      Database         │
+    │          │             │            │
+    └──────────┴──────┬──────┘            │
+                      ▼                   │
+                    Tester ◄──────────────┘
+                      │
+               Security Review
+                      │
+                 Code Review
+                      │
+                Build/Release
+
+        All agents can load reusable SKILLS
+
+        ┌─────────────────────────────┐
+        │ Offline Desktop Expert      │
+        │ Safe DB Migration           │
+        │ UI/UX Standards             │
+        │ Regression Testing          │
+        │ Windows Packaging           │
+        │ Backup & Recovery           │
+        └─────────────────────────────┘
 ```
 
 ## Handoff rules

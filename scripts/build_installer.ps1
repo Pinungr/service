@@ -1,7 +1,7 @@
 param(
     [string]$InputExe = 'build\offline-payload\RepairShopManager.exe',
     [string]$OutputDirectory = 'dist',
-    [string]$Version = '1.4.4',
+    [string]$Version = '1.5.0',
     [string]$Compiler = 'build\installer-tools\inno-6.4.3\ISCC.exe'
 )
 $ErrorActionPreference = 'Stop'

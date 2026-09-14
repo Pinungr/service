@@ -188,6 +188,20 @@ QCheckBox::indicator {width: 17px;height: 17px;}
 QDialogButtonBox QPushButton {min-width: 92px;}
 QStatusBar {background: #e2e8f0;color: #475569;}
 """
+# Single source of lifecycle status semantics for every screen that draws one.
+# Each entry is (icon, wording, ink, surface, border). Icons and wording carry
+# the meaning on their own so nothing depends on colour alone.
+STATUS_STATES = {
+    'completed': ('\u2713', 'Completed', '#166534', '#edf9f0', '#b7dec2'),
+    'current': ('\u25cf', 'Current', '#0f766e', '#eaf7f5', '#0f766e'),
+    'upcoming': ('\u25cb', 'Upcoming', '#64748b', '#f8fafc', '#dde5ee'),
+    'waiting': ('!', 'Waiting / blocked', '#92400e', '#fff7e6', '#e9bd69'),
+    'failed': ('\u00d7', 'Failed', '#b42318', '#fff1f0', '#efb4ad'),
+    'cancelled': ('\u00d7', 'Cancelled', '#b42318', '#fff1f0', '#efb4ad'),
+    'skipped': ('\u2014', 'Skipped / N/A', '#64748b', '#f1f5f9', '#d7dfe8'),
+}
+
+
 STYLE = STYLE.replace('__ARROW_DOWN__', (Path(__file__).parent / 'assets' / 'chevron-down.svg').as_posix()).replace('__ARROW_UP__', (Path(__file__).parent / 'assets' / 'chevron-up.svg').as_posix())
 
 
@@ -317,8 +331,11 @@ def button(text, callback, primary=False):
     if text.lower().startswith(("delete", "remove", "reverse", "restore")) or "write off" in text.lower():
         b.setObjectName("danger")
     b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setToolTip(text.replace("&", ""))
-    b.setAccessibleName(text.replace("&", ""))
+    # Qt reads "&" as a mnemonic and "&&" as a literal ampersand; strip the same
+    # way so the tooltip matches the caption the user actually sees.
+    plain = text.replace("&&", "\0").replace("&", "").replace("\0", "&")
+    b.setToolTip(plain)
+    b.setAccessibleName(plain)
     b.clicked.connect(callback)
     return b
 
@@ -548,7 +565,7 @@ class CustomerSelector(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Find existing customer by name or phone…")
+        self.search.setPlaceholderText("Find customer by name, phone or alternate number…")
         self.box = QComboBox()
         layout.addWidget(self.search)
         layout.addWidget(self.box)

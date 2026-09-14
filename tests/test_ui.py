@@ -54,7 +54,11 @@ def test_real_intake_accessories_start_unchecked_and_persist(qtbot,service,custo
             if check.text() in ('Adapter','Mouse'):
                 check.setChecked(True)
         form.fields['device'].setText('UI Laptop')
+        form.fields['brand'].setText('Test brand');form.fields['model'].setText('Test model')
+        service_box=form.fields['service_id'].box
+        service_box.setCurrentIndex(service_box.findText('Laptop repair'))
         form.fields['complaint'].setPlainText('UI fault')
+        for _ in range(3):form.wizard.next_step()
         form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
     QTimer.singleShot(30,fill_intake)
     window.intake()
@@ -75,6 +79,7 @@ def test_intake_registers_customer_inline_and_enables_photo(qtbot,service,monkey
         try:
             assert form.fields['name'].text()=='Bibhu Test'
             form.fields['phone_number'].setText('9990007788')
+            form.fields['address'].setPlainText('123 Test Street')
             form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
         except BaseException:
             form.reject();raise
@@ -96,6 +101,10 @@ def test_intake_registers_customer_inline_and_enables_photo(qtbot,service,monkey
             photo=QImage(64,64,QImage.Format.Format_RGB32);photo.fill(QColor('#68a398'))
             form.intake_support.photo_id=CustomerRecords(service).save_photo(photo,customer)
             form.intake_support.update_photo()
+            category=form.fields['category_id'].box;category.setCurrentIndex(category.findText('Laptop'))
+            svc=form.fields['service_id'].box;svc.setCurrentIndex(svc.findText('Laptop repair'))
+            form.fields['brand'].setText('Test brand');form.fields['model'].setText('Test model')
+            for _ in range(3):form.wizard.next_step()
             form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
         except BaseException:
             form.reject();raise

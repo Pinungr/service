@@ -440,16 +440,11 @@ class MainWindow(QMainWindow):
     def customer_form(self, row=None, *, parent=None, initial=None, refresh=True):
         if row:
             row = self.db.one("SELECT * FROM customers WHERE id=?", (row["id"],))
-        row = row or initial or {}
-        d = Form("Customer details", parent or self, "Search existing customers before creating a new record. Shared phone numbers are allowed.")
-        for key, label in (("name", "Full name"), ("phone_number", "Phone / WhatsApp"), ("email", "Email"), ("address", "Address"), ("alternate", "Alternate contacts")):
-            d.text(key, label, row.get("phone" if key == "phone_number" else key, ""), multiline=key in ("address", "alternate"))
-        d.check("whatsapp_consent", "Agreed to WhatsApp updates", row.get("whatsapp_consent"))
-        d.check("email_consent", "Agreed to email updates", row.get("email_consent"))
-        saved=[]
-        if d.submit(lambda v: saved.append(self.s.save_customer(**v, ident=row.get("id")))):
+        from .customer_registration import register_customer
+        ident = register_customer(self, row, parent=parent, initial=initial)
+        if ident:
             if refresh:self.refresh()
-            return saved[0]
+            return ident
 
     def customer_history(self, ident):
         CustomerOverview(self, ident).exec()
@@ -700,7 +695,7 @@ class MainWindow(QMainWindow):
         source = self.s.job(parent) if parent else sale or {}
         if customer_id:
             source = dict(source, customer_id=customer_id, device_id=device_id)
-        d = IntakeForm("New repair intake", self, "Receive one or several products for this customer. Add each device to the visit list, then save. Cancel keeps your draft. Only checked accessories are received.")
+        d = IntakeForm("New repair intake", self, "Select the customer and product, record the problem, then review. Receive several products in one visit. Your progress is saved as a draft.")
         d.resize(700, 850)
         d.section('Customer & authorization')
         def register_customer(search):
@@ -717,8 +712,9 @@ class MainWindow(QMainWindow):
         d.add('service_id','Repair / service',service_selector)
         category.box.currentIndexChanged.connect(lambda:service_selector.set_category(category.value()))
         d.text("device", "Brand / model / device", source.get("device", ""))
-        d.text('brand','Device brand',source.get('brand',''))
-        d.text('model','Device model',source.get('model',''))
+        from .intake_fields import MasterNameField
+        d.add('brand','Device brand',MasterNameField(self.s,'brand',source.get('brand','')))
+        d.add('model','Device model',MasterNameField(self.s,'model',source.get('model','')))
         d.text("serial", "Serial (unknown is allowed)", source.get("serial", ""))
         d.select("origin", "Originally purchased", [("This shop", "shop"), ("Elsewhere", "elsewhere")], "shop" if sale else "elsewhere")
         d.text("complaint", "Reported fault", multiline=True)
@@ -743,23 +739,32 @@ class MainWindow(QMainWindow):
                 quantity = QSpinBox()
                 quantity.setRange(1,999)
                 quantity.setValue(1)
-                quantity.setMaximumWidth(85)
+                quantity.setMaximumWidth(105)
+                quantity.setStyleSheet('QSpinBox QLineEdit {padding:0;border:0;background:transparent;}')
+                quantity.lineEdit().setStyleSheet('padding:0;border:0;min-height:0;background:transparent;')
                 quantity.setEnabled(False)
+                quantity.setVisible(False)
                 check.toggled.connect(quantity.setEnabled)
+                check.toggled.connect(quantity.setVisible)
                 check.quantity_control = quantity
                 serial = QLineEdit()
                 serial.setPlaceholderText('Serial / identifying mark (optional)')
                 serial.setEnabled(False)
+                serial.setVisible(False)
                 check.toggled.connect(serial.setEnabled)
+                check.toggled.connect(serial.setVisible)
                 check.serial_control=serial
                 controls.addWidget(check,1)
-                controls.addWidget(QLabel('Qty'))
+                quantity_label=QLabel('Qty');quantity_label.hide();check.toggled.connect(quantity_label.setVisible)
+                controls.addWidget(quantity_label)
                 controls.addWidget(quantity)
                 controls.addWidget(serial,1)
                 accessories_layout.addWidget(line)
                 checks.append(check)
             if hasattr(d, 'intake_support'):
                 d.intake_support.watch_accessories()
+            if hasattr(d, 'wizard'):
+                d.wizard.category_changed()
         category.box.currentIndexChanged.connect(load_accessories)
         d.section('Accessories & storage')
         d.layout.addRow("Accessories actually received", accessory_box)
@@ -770,6 +775,7 @@ class MainWindow(QMainWindow):
                 if not category.value():
                     raise RuleError("Choose the product category first.")
                 selected_names = {x.text() for x in checks if x.isChecked()}
+                selected_names.add(v['name'].strip())
                 self.s.save_master("accessory", v["name"], category_id=category.value())
                 load_accessories()
                 for check in checks:
@@ -793,6 +799,8 @@ class MainWindow(QMainWindow):
         support = IntakePhotos(self, d, checks, source, sale, parent, draft)
         from .visit_intake import VisitIntake
         visit=VisitIntake(self,d,support,checks,storage,draft)
+        from .intake_wizard import IntakeWizard
+        IntakeWizard(self,d,support,visit,checks,draft)
         result = []
         def save(v):
             result.extend(visit.save())

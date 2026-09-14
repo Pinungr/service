@@ -1,8 +1,9 @@
 """Photo-aware intake and consolidated customer views using existing Qt widgets."""
 import json
 import uuid
+from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QDate, QSize, QUrl
-from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
+from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices, QImageReader
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget,
     QFileDialog, QComboBox, QCheckBox, QDateEdit, QTextEdit, QLineEdit)
 from .ui_widgets import Form, Grid, CustomerSelector, MasterSelector, button, combo, FlowLayout
@@ -72,6 +73,8 @@ class IntakePhotos:
         column.addWidget(self.photo_label)
         self.capture_button=button('Capture customer photo', lambda: window.safe(self.capture))
         column.addWidget(self.capture_button)
+        self.upload_button=button('Upload customer photo', lambda: window.safe(self.upload))
+        column.addWidget(self.upload_button)
         line.addLayout(column, 1)
         form.layout.insertRow(customer_row + 2, 'Customer photo', controls)
         form.fields['customer_id'].box.currentIndexChanged.connect(self.customer_changed)
@@ -126,8 +129,18 @@ class IntakePhotos:
         self.photo_label.setToolTip('Intake draft saved on this computer. Resume it from Jobs → Intake drafts.')
 
     def restore(self, payload):
-        # Restore owner/category first so dependent device and accessory choices exist.
-        keys = ['customer_id', 'category_id'] + [k for k in self.form.fields if k not in ('customer_id', 'category_id')]
+        wizard = getattr(self.form, 'wizard', None)
+        if wizard: wizard.restoring = True
+        try:
+            self._restore_payload(payload)
+        finally:
+            if wizard: wizard.restoring = False
+        if wizard: wizard.restore(payload)
+
+    def _restore_payload(self, payload):
+        # Load device defaults before restoring the draft's edited category/identity.
+        first = ('customer_id', 'device_id', 'category_id')
+        keys = list(first) + [k for k in self.form.fields if k not in first]
         for key in keys:
             if key not in payload:
                 continue
@@ -214,6 +227,23 @@ class IntakePhotos:
             self.photo_id = dialog.photo_id
             self.update_photo()
             self.save_draft()
+
+    def upload(self):
+        customer = self.form.fields['customer_id'].text()
+        role, name = self.role.currentData(), self.form.fields['submitter'].text().strip()
+        if not customer: raise RuleError('Select the device owner before uploading a photo.')
+        if role == 'submitter' and not name: raise RuleError('Enter Submitted by before uploading their photo.')
+        path, _ = QFileDialog.getOpenFileName(self.form, 'Choose customer photo', '', 'Photos (*.jpg *.jpeg *.png *.bmp *.webp)')
+        if not path: return
+        source = Path(path)
+        if not source.is_file() or source.stat().st_size > 50 * 1024**2:
+            raise RuleError('Choose a local photo smaller than 50 MB.')
+        reader = QImageReader(str(source)); reader.setAutoTransform(True)
+        size = reader.size()
+        if not size.isValid() or size.width() * size.height() > 80_000_000:
+            raise RuleError('Choose a supported photo with at most 80 million pixels.')
+        self.photo_id = self.records.save_photo(reader.read(), customer, role, name)
+        self.update_photo(); self.save_draft()
 
 
 class DevicePhotos(QWidget):

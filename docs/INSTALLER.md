@@ -1,6 +1,6 @@
 # Offline setup and complete uninstall
 
-The distribution is a single `dist/RepairShopManager-Offline-Setup-1.4.3.exe`. It uses the standard Inno Setup wizard: Welcome, information/README, destination folder, Start Menu folder, Desktop shortcut, Ready to Install, progress and Finish (with optional launch).
+The distribution is a single `dist/RepairShopManager-Offline-Setup-1.5.0.exe`. It uses the standard Inno Setup wizard: Welcome, information/README, destination folder, Start Menu folder, Desktop shortcut, Ready to Install, progress and Finish (with optional launch).
 
 The app and Python/Qt runtime are embedded; the destination PC needs no internet, Python, source tree or compiler. Installation is per Windows user. Upgrading in place keeps existing records. Uninstalling is different: after a permanent-deletion confirmation, it removes program files, shortcuts, the Apps/Control Panel entry, credentials and the complete default local data folder (`%LOCALAPPDATA%/RepairShopManager`), including accounts and internal backups. A subsequent install starts at shop/account creation.
 
