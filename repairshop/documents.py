@@ -241,6 +241,8 @@ class Documents:
                     raise RuleError('Complete QC and final billing before generating the final invoice.')
                 sections.append(('Final account',f"Invoiced: {rupees(bill['invoiced'])}\nBalance: {rupees(bill['balance'])}"))
         branding = json.loads(q.get('snapshot', '{}')).get('shop', {}).get('shop_name') if kind == 'quotation' else None
+        if paper is None and kind in ('bill', 'final_invoice'):
+            paper = self.paper(document='invoice')
         return self.snapshot(title, sections, job_id=job_id, shop_name=branding, paper=paper,
                              internal=visibility=='internal')
 

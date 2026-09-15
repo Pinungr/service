@@ -452,6 +452,8 @@ class Service:
 
     def queue_document(self, attachment_id, recipient_id, subject, body, operation_id):
         self.require_permission('messaging_admin')
+        if not self.channel_enabled('email'):
+            raise RuleError('Email is switched off in Settings. Enable Email before queueing a statement.')
         with self.db.transaction() as c:
             r=c.execute('SELECT * FROM recipients WHERE id=? AND active=1',(recipient_id,)).fetchone()
             a=c.execute("SELECT * FROM attachments WHERE id=? AND kind='issued_document'",(attachment_id,)).fetchone()
@@ -475,7 +477,7 @@ class Service:
         if not channels:
             return []
         return self.queue_customer_document(attachment_id, customer_id, channels, event,
-                                            message, operation_id, job_id=job_id)
+                                            message, operation_id, job_id=job_id, automated=True)
 
     def announce(self, event, job_id, reference, message, kind, source_id=None):
         """Send the customer copy of a business event that has already been committed.
@@ -504,9 +506,16 @@ class Service:
                            {'event': event, 'reason': str(exc)[:300]})
             return [dict(channel='all', state='permanent_failure', detail=str(exc))]
 
-    def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None):
+    def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None, automated=False):
         """Optional customer copy of an issued document. Never part of an intake transaction."""
-        self.require_permission('messaging')
+        # A manual send is a messaging privilege. An automatic send is a shop policy
+        # configured by the owner and is allowed to run after an authorised business
+        # event even when the operator (for example a technician completing a repair)
+        # does not themselves have access to the Notifications screen.
+        if not automated:
+            self.require_permission('messaging')
+        else:
+            self.require()
         if not set(channels) <= {'whatsapp', 'email'}:
             raise RuleError('Choose WhatsApp and/or email.')
         with self.db.transaction() as c:
@@ -669,7 +678,15 @@ class Service:
         if not card:
             return None
         try:
-            return JobCards(self).print(card['id'])
+            from .documents import Documents
+            path = JobCards(self).print(card['id'], paper=Documents(self).paper(document='job_card'))
+            attachment = self.db.one("""SELECT id FROM attachments WHERE job_id=? AND kind='issued_document'
+                AND path LIKE ? ORDER BY id DESC LIMIT 1""", (job_id, '%' + path.name))
+            if attachment:
+                self.auto_notify('job_card', attachment['id'], self.job(job_id)['customer_id'],
+                                 'Your job card is attached.',
+                                 f'auto:job_card:{job_id}:{card["id"]}', job_id=job_id)
+            return path
         except Exception as exc:
             with self.db.transaction() as c:
                 self.audit(c, 'job', job_id, 'job_card_print_failed', {'reason': str(exc)[:300]})
