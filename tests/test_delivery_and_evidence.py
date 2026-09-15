@@ -4,6 +4,7 @@ These pin behavior that was previously only promised: a WhatsApp message that sa
 receipt was attached, a paper-size choice that did not reach the renderer, and photo
 evidence accepted merely because it belonged to the same customer.
 """
+import json
 import pathlib
 import re
 import uuid
@@ -94,6 +95,19 @@ def test_a_message_without_an_attachment_is_completely_unchanged(monkeypatch):
     assert [c['type'] for c in calls[0]['json']['template']['components']] == ['body']
 
 
+def test_whatsapp_photo_uses_an_image_header(monkeypatch, tmp_path):
+    calls = []
+    image = tmp_path / 'repair.jpg'
+    image.write_bytes(b'\xff\xd8\xff\xe0photo')
+    body = {'body': 'Repair photo', 'template': {'name': 'repair_photo', 'language': 'en'},
+            '_attachment_path': str(image), '_attachment_name': image.name,
+            '_attachment_media': 'image'}
+    assert adapter(monkeypatch, calls).send({'destination': '+919990000001'}, body) == 'WAMID-1'
+    assert calls[0]['files']['file'][2] == 'image/jpeg'
+    header = calls[1]['json']['template']['components'][0]
+    assert header['parameters'][0] == {'type': 'image', 'image': {'id': 'MEDIA-1'}}
+
+
 def test_a_rejected_upload_never_reports_a_delivered_message(monkeypatch, tmp_path):
     from repairshop.messaging import Permanent
     calls = []
@@ -154,6 +168,78 @@ def test_the_queued_receipt_reaches_the_adapter_as_a_real_pdf(service, customer)
     assert seen['_attachment_path'].endswith('.pdf')
     assert seen['_attachment_name'].endswith('.pdf')
     assert service.db.one('SELECT state FROM outbox ORDER BY id DESC')['state'] == 'accepted'
+
+
+def test_include_photos_attaches_only_this_jobs_customer_facing_photos_to_email(service, customer):
+    from repairshop.messaging import Outbox
+    evidence = accessory_photo(service, customer, 'Charger')
+    job = service.intake(customer, 'Dell Laptop', 'No display', operation_id=uuid.uuid4().hex,
+                         accessories=[dict(type='accessory', description='Charger', quantity=1, photo_id=evidence)])
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(QColor('#778899'))
+    product = CustomerRecords(service).save_photo(image, customer, 'product',
+        device_id=service.job(job)['device_id'], job_id=job)
+    # This is a customer portrait and must never be sent by Include photos.
+    portrait = photo(service, customer, '#101010')
+    service.settings({'include_photos': True})
+    service.queue_customer_document(receipt(service, job), customer, ['email'], 'intake_receipt',
+                                    'Hi', uuid.uuid4().hex, job_id=job)
+    seen = {}
+    class Recorder:
+        def send(self, row, body):
+            seen.update(body)
+            return 'MAIL-1'
+    worker = Outbox(service, {'email': Recorder()})
+    while worker.process_one():
+        pass
+    titles = {p['title'] for p in seen['_photo_paths']}
+    assert len(seen['_photo_paths']) == 2
+    assert any('Charger' in title for title in titles)
+    assert product in {r['id'] for r in service.db.rows("SELECT id FROM attachments WHERE job_id=?", (job,))}
+    assert portrait not in json.loads(service.db.one("SELECT payload FROM outbox WHERE channel='email'")['payload']).get('photo_attachment_ids', [])
+
+
+def test_include_photos_queues_separate_tracked_whatsapp_photo_messages(service, customer):
+    evidence = accessory_photo(service, customer, 'Charger')
+    job = service.intake(customer, 'Dell Laptop', 'No display', operation_id=uuid.uuid4().hex,
+                         accessories=[dict(type='accessory', description='Charger', quantity=1, photo_id=evidence)])
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(QColor('#223344'))
+    product = CustomerRecords(service).save_photo(image, customer, 'product',
+        device_id=service.job(job)['device_id'], job_id=job)
+    service.settings({'include_photos': True,
+                      'whatsapp': {'photo_template': 'repair_photo', 'photo_language': 'en'}})
+    result = service.queue_customer_document(receipt(service, job), customer, ['whatsapp'], 'intake_receipt',
+                                             'Hi', 'photo-op', job_id=job)[0]
+    assert result['photos_queued'] == 2
+    # Scoped to this event: intake also queues its own 'received' message, which is not
+    # what this test is about.
+    rows = service.db.rows("""SELECT attachment_id,payload FROM outbox
+        WHERE channel='whatsapp' AND event='intake_receipt' ORDER BY id""")
+    assert len(rows) == 3  # one receipt + two independently tracked photos
+    photo_rows = [r for r in rows if json.loads(r['payload']).get('_attachment_media') == 'image']
+    assert {r['attachment_id'] for r in photo_rows} == {evidence, product}
+    assert all(json.loads(r['payload'])['template']['name'] == 'repair_photo' for r in photo_rows)
+
+
+def test_switching_include_photos_off_cancels_queued_whatsapp_photos(service, customer):
+    from repairshop.messaging import Outbox
+    evidence = accessory_photo(service, customer, 'Charger')
+    job = service.intake(customer, 'Dell Laptop', 'No display', operation_id=uuid.uuid4().hex,
+                         accessories=[dict(type='accessory', description='Charger', quantity=1, photo_id=evidence)])
+    service.settings({'include_photos': True,
+                      'whatsapp': {'photo_template': 'repair_photo', 'photo_language': 'en'}})
+    service.queue_customer_document(receipt(service, job), customer, ['whatsapp'], 'intake_receipt',
+                                    'Hi', 'photo-off-op', job_id=job)
+    service.settings({'include_photos': False})
+    class Recorder:
+        def send(self, row, body):
+            return 'OK'
+    worker = Outbox(service, {'whatsapp': Recorder()})
+    while worker.process_one():
+        pass
+    states = service.db.rows("SELECT payload,state FROM outbox WHERE channel='whatsapp' ORDER BY id")
+    assert any(json.loads(r['payload']).get('_attachment_media') == 'image' and r['state'] == 'cancelled' for r in states)
 
 
 def test_a_successful_send_is_never_duplicated_by_a_second_pass(service, customer):

@@ -4,12 +4,14 @@ from datetime import datetime, timezone, timedelta, date
 from email.message import EmailMessage
 from pathlib import Path
 import json
+import mimetypes
 import smtplib
 import ssl
 import uuid
 import httpx
 import keyring
 from .domain import now, RuleError, today, sql_in_shop
+from . import app_settings
 
 
 #: What each stored outbox state means to the person reading the screen. A message that
@@ -56,36 +58,38 @@ class WhatsApp:
     def __init__(self, config):
         self.config = config
 
-    def _upload(self, token, path, filename):
-        """Upload the PDF to the Cloud API media store and return its media id.
+    def _upload(self, token, path, filename, media_kind='document'):
+        """Upload one document/image to the Cloud API media store and return its id.
 
-        Uploading delivers nothing to the customer, so a lost connection here is always
-        safe to retry: only the message send itself can leave an uncertain outcome.
+        Uploading delivers nothing to the customer, so a lost connection here is safe
+        to retry. Photo rows are queued separately from the main document message, which
+        prevents one partial multi-media send from being blindly repeated.
         """
         cfg = self.config
+        mime = 'application/pdf' if media_kind == 'document' else (mimetypes.guess_type(filename)[0] or 'image/jpeg')
         try:
             with open(path, "rb") as handle:
                 response = httpx.post(
                     f"https://graph.facebook.com/{cfg['api_version']}/{cfg['phone_number_id']}/media",
                     headers={"Authorization": "Bearer " + token},
                     data={"messaging_product": "whatsapp"},
-                    files={"file": (filename, handle, "application/pdf")}, timeout=60)
+                    files={"file": (filename, handle, mime)}, timeout=60)
         except OSError:
-            raise Permanent("The document to attach could not be read from disk.")
+            raise Permanent("The attachment could not be read from disk.")
         except httpx.ConnectError:
-            raise Retryable("Could not connect to provider to upload the document.")
+            raise Retryable("Could not connect to provider to upload the attachment.")
         except (httpx.TimeoutException, httpx.NetworkError):
-            raise Retryable("Document upload did not complete; nothing was sent yet.")
+            raise Retryable("Attachment upload did not complete; nothing was sent yet.")
         if response.status_code == 429:
-            raise Retryable("Provider rate limit while uploading the document; retry later.")
+            raise Retryable("Provider rate limit while uploading the attachment; retry later.")
         if response.status_code >= 500:
-            raise Retryable("Provider server error while uploading the document; nothing was sent yet.")
+            raise Retryable("Provider server error while uploading the attachment; nothing was sent yet.")
         if response.status_code >= 400:
-            raise Permanent(f"WhatsApp rejected the document upload (HTTP {response.status_code}). Check the file type and account settings.")
+            raise Permanent(f"WhatsApp rejected the attachment upload (HTTP {response.status_code}). Check the file type and account settings.")
         try:
             return response.json()["id"]
         except (KeyError, ValueError):
-            raise Retryable("Provider did not return a document reference; nothing was sent yet.")
+            raise Retryable("Provider did not return an attachment reference; nothing was sent yet.")
 
     def send(self, row, payload):
         cfg = self.config
@@ -100,9 +104,15 @@ class WhatsApp:
         components = []
         if payload.get("_attachment_path"):
             filename = payload.get("_attachment_name") or "document.pdf"
-            media = self._upload(token, payload["_attachment_path"], filename)
-            components.append({"type": "header", "parameters": [
-                {"type": "document", "document": {"id": media, "filename": filename}}]})
+            media_kind = payload.get('_attachment_media', 'document')
+            if media_kind not in ('document', 'image'):
+                raise RuleError('Unsupported WhatsApp attachment type.')
+            media = self._upload(token, payload["_attachment_path"], filename, media_kind)
+            if media_kind == 'image':
+                parameter = {"type": "image", "image": {"id": media}}
+            else:
+                parameter = {"type": "document", "document": {"id": media, "filename": filename}}
+            components.append({"type": "header", "parameters": [parameter]})
         components.append({"type": "body", "parameters": [{"type": "text", "text": payload["body"]}]})
         data["template"]["components"] = components
         try:
@@ -116,7 +126,11 @@ class WhatsApp:
         if response.status_code >= 500:
             raise Uncertain("Provider server error; acceptance could not be confirmed.")
         if response.status_code >= 400:
-            detail = " The template also needs an approved document header to carry an attachment." if payload.get("_attachment_path") else ""
+            if payload.get("_attachment_path"):
+                kind = payload.get('_attachment_media', 'document')
+                detail = f" The template also needs an approved {kind} header to carry this attachment."
+            else:
+                detail = ""
             raise Permanent(f"WhatsApp rejected the request (HTTP {response.status_code}). Check account/template settings." + detail)
         try:
             return response.json()["messages"][0]["id"]
@@ -141,7 +155,24 @@ class SMTP:
         msg.set_content(payload["body"])
         if payload.get('_attachment_path'):
             path=Path(payload['_attachment_path'])
-            msg.add_attachment(path.read_bytes(),maintype='application',subtype='pdf',filename=payload.get('_attachment_name','statement.pdf'))
+            try:
+                content = path.read_bytes()
+            except OSError:
+                raise Permanent('The PDF attachment could not be read from disk.')
+            msg.add_attachment(content,maintype='application',subtype='pdf',filename=payload.get('_attachment_name','statement.pdf'))
+        # Product/accessory photos are resolved from attachment ids by Outbox, never
+        # accepted as arbitrary filesystem paths from stored JSON. This keeps Internal/
+        # files and unrelated customer history out of customer email.
+        for photo in payload.get('_photo_paths', []):
+            path = Path(photo['path'])
+            mime = mimetypes.guess_type(photo.get('name') or path.name)[0] or 'image/jpeg'
+            maintype, subtype = mime.split('/', 1) if '/' in mime else ('image', 'jpeg')
+            try:
+                content = path.read_bytes()
+            except OSError:
+                raise Permanent('A customer photo attachment could not be read from disk.')
+            msg.add_attachment(content, maintype=maintype, subtype=subtype,
+                               filename=photo.get('name') or path.name)
         submitted = False
         try:
             context = ssl.create_default_context()
@@ -188,6 +219,9 @@ class Outbox:
         # retried once the channel is switched back on.
         if not self.s.channel_enabled(row['channel']):
             return 'channel_disabled', row['channel'].title() + ' sending is switched off in Settings.'
+        payload = json.loads(row['payload'])
+        if payload.get('_attachment_media') == 'image' and not app_settings.value(self.db, 'include_photos'):
+            return 'cancelled', 'Photo sending was switched off in Settings after this message was queued.'
         if row['contact_id']:
             customer = c.execute("SELECT * FROM customers WHERE id=?", (row["contact_id"],)).fetchone()
             if not customer or not customer[row["channel"] + "_consent"]:
@@ -220,6 +254,49 @@ class Outbox:
                 return "cancelled", "Job changed after the date notification was prepared."
         return None
 
+    def _customer_photo_files(self, row, payload):
+        """Resolve only customer-facing photos explicitly linked to this repair."""
+        if not app_settings.value(self.db, 'include_photos'):
+            return []
+        ids = []
+        for value in payload.get('photo_attachment_ids', []):
+            try:
+                ident = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ident not in ids:
+                ids.append(ident)
+        if not ids or not row.get('job_id') or not row.get('contact_id'):
+            return []
+        placeholders = ','.join('?' for _ in ids)
+        if row.get('event') == 'intake_receipt':
+            visit = self.db.one('SELECT visit_id FROM jobs WHERE id=? AND customer_id=?',
+                                (row['job_id'], row['contact_id']))
+            if not visit or not visit['visit_id']:
+                return []
+            rows = self.db.rows(
+                f"SELECT a.id,a.path,a.title,a.kind FROM attachments a JOIN jobs j ON j.id=a.job_id "
+                f"WHERE a.id IN ({placeholders}) AND j.visit_id=? AND j.customer_id=? "
+                "AND a.kind IN ('product_photo','accessory_photo')",
+                (*ids, visit['visit_id'], row['contact_id']))
+        else:
+            rows = self.db.rows(
+                f"SELECT id,path,title,kind FROM attachments WHERE id IN ({placeholders}) "
+                "AND job_id=? AND customer_id=? AND kind IN ('product_photo','accessory_photo')",
+                (*ids, row['job_id'], row['contact_id']))
+        by_id = {r['id']: r for r in rows}
+        from .local_files import managed_path
+        result = []
+        for ident in ids:
+            photo = by_id.get(ident)
+            if not photo:
+                continue
+            path = managed_path(self.db.root, photo['path'])
+            if not path.is_file():
+                continue
+            result.append({'path': str(path), 'name': path.name, 'title': photo['title']})
+        return result
+
     def process_one(self):
         if self.db.readonly or self.db.setting("notifications_paused", False):
             return False
@@ -237,12 +314,15 @@ class Outbox:
         state, error, provider_id, retry = "accepted", "", None, None
         try:
             payload = json.loads(row['payload'])
+            photos = self._customer_photo_files(row, payload)
+            if photos:
+                payload['_photo_paths'] = photos
             if row.get('attachment_id'):
                 attachment=self.db.one('SELECT * FROM attachments WHERE id=?',(row['attachment_id'],))
                 from .local_files import managed_path
                 path=managed_path(self.db.root, attachment['path']) if attachment else None
                 if not path or not path.is_file():
-                    raise RuleError('The selected issued attachment is unavailable.')
+                    raise RuleError('The selected attachment is unavailable.')
                 payload['_attachment_path']=str(path)
                 payload['_attachment_name']=path.name
             if self.db.setting("messaging_mode", "test") == "test" and self.adapters is None:

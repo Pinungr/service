@@ -706,7 +706,10 @@ class MainWindow(QMainWindow):
         d.text("phone_number_id", "WhatsApp phone number ID", wa.get("phone_number_id"))
         d.text("api_version", "Supported Meta Graph API version", wa.get("api_version"))
         d.text("wa_token", "New WhatsApp token (blank keeps stored)", password=True)
+        d.text("wa_photo_template", "Approved WhatsApp photo template (image header)", wa.get("photo_template", ""))
+        d.text("wa_photo_language", "WhatsApp photo template language", wa.get("photo_language", "en"))
         d.text("templates", "Event | approved template name | language per line", "\n".join(f"{event} | {cfg['name']} | {cfg.get('language','en')}" for event,cfg in self.db.setting("templates", {}).items()), multiline=True)
+        d.layout.addRow('', QLabel('When Include photos is enabled, WhatsApp sends each product/accessory photo as a separate tracked template message. The photo template must be approved with an IMAGE header and one body variable.'))
         d.text("host", "SMTP server", smtp.get("host"))
         d.text("port", "STARTTLS port", smtp.get("port", 587))
         d.text("username", "SMTP account", smtp.get("username"))
@@ -727,7 +730,7 @@ class MainWindow(QMainWindow):
                 secret("whatsapp_token", v["wa_token"])
             if v["smtp_token"]:
                 secret("smtp_credential", v["smtp_token"])
-            self.s.settings({"messaging_mode": v["mode"], "notifications_paused": v["paused"], "whatsapp": {"phone_number_id": v["phone_number_id"], "api_version": v["api_version"]}, "smtp": {"host": v["host"], "port": int(v["port"]), "username": v["username"], "from_address": v["from_address"], "auth": v["auth"]}, "templates": templates, 'reminder_days':int(v['reminder_days']),'email_subject':v['email_subject'],'message_template':v['message_template']})
+            self.s.settings({"messaging_mode": v["mode"], "notifications_paused": v["paused"], "whatsapp": {"phone_number_id": v["phone_number_id"], "api_version": v["api_version"], "photo_template": v["wa_photo_template"].strip(), "photo_language": (v["wa_photo_language"].strip() or "en")}, "smtp": {"host": v["host"], "port": int(v["port"]), "username": v["username"], "from_address": v["from_address"], "auth": v["auth"]}, "templates": templates, 'reminder_days':int(v['reminder_days']),'email_subject':v['email_subject'],'message_template':v['message_template']})
         if d.submit(save):
             self.refresh()
 

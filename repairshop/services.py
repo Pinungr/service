@@ -524,6 +524,26 @@ class Service:
             if not contact or not attachment:
                 raise RuleError('Choose a customer and a saved issued document.')
             settings = self.db.setting('templates', {})
+            # Photos are selected by database relationship, never by folder scanning.
+            # Only product/accessory evidence explicitly bound to this repair is eligible;
+            # customer portraits, return evidence and every Internal/ file stay excluded.
+            photo_rows = []
+            if job_id and app_settings.value(self.db, 'include_photos'):
+                if event == 'intake_receipt':
+                    # A visit receipt may cover several products. Include evidence from
+                    # every job in that same visit, never from an older/newer visit.
+                    visit = c.execute('SELECT visit_id FROM jobs WHERE id=? AND customer_id=?',
+                                      (job_id, customer_id)).fetchone()
+                    if visit and visit['visit_id']:
+                        photo_rows = [dict(r) for r in c.execute("""SELECT a.id,a.title,a.job_id FROM attachments a
+                            JOIN jobs j ON j.id=a.job_id
+                            WHERE j.visit_id=? AND j.customer_id=?
+                              AND a.kind IN ('product_photo','accessory_photo') ORDER BY a.id""",
+                            (visit['visit_id'], customer_id)).fetchall()]
+                else:
+                    photo_rows = [dict(r) for r in c.execute("""SELECT id,title,job_id FROM attachments
+                        WHERE job_id=? AND customer_id=? AND kind IN ('product_photo','accessory_photo')
+                        ORDER BY id""", (job_id, customer_id)).fetchall()]
             results = []
             for channel in channels:
                 if not self.channel_enabled(channel):
@@ -536,8 +556,8 @@ class Service:
                     continue
                 payload = {'subject': event.replace('_', ' ').title(), 'body': message,
                            'template': settings.get(event, {})}
-                if app_settings.value(self.db, 'include_photos') and channel == 'email':
-                    payload['include_photos'] = True
+                if photo_rows and channel == 'email':
+                    payload['photo_attachment_ids'] = [r['id'] for r in photo_rows]
                 # Whether the PDF travels with the message is an owner setting per channel.
                 attached = attachment_id if app_settings.value(self.db, channel + '_attach_pdf') else None
                 state = 'pending' if consent else 'blocked_consent'
@@ -545,9 +565,31 @@ class Service:
                     event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
                     (f'{operation_id}:{channel}', job_id, customer_id, attached, channel, destination,
                      event, json.dumps(payload), state, now(), now()))
-                results.append(dict(channel=channel, state=state))
+                result = dict(channel=channel, state=state)
+                if channel == 'whatsapp' and photo_rows:
+                    # WhatsApp templates can carry one media header. Queue each photo as
+                    # its own tracked template message instead of trying to combine a PDF
+                    # and several images in one request (which could partially send and be
+                    # unsafe to retry). The owner configures one approved image-header
+                    # template in Messaging settings.
+                    wa = self.db.setting('whatsapp', {})
+                    photo_template = {'name': wa.get('photo_template', ''),
+                                      'language': wa.get('photo_language', 'en') or 'en'}
+                    for photo in photo_rows:
+                        photo_payload = {
+                            'subject': 'Repair photo',
+                            'body': 'Repair photo: ' + (photo['title'] or 'customer-facing repair evidence'),
+                            'template': photo_template,
+                            '_attachment_media': 'image',
+                        }
+                        c.execute('''INSERT OR IGNORE INTO outbox(event_key,job_id,contact_id,attachment_id,channel,destination,
+                            event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                            (f'{operation_id}:whatsapp:photo:{photo["id"]}', photo['job_id'], customer_id, photo['id'],
+                             'whatsapp', destination, event, json.dumps(photo_payload), state, now(), now()))
+                    result['photos_queued'] = len(photo_rows)
+                results.append(result)
             self.audit(c, 'document', attachment_id, 'queued_for_customer',
-                       {'customer_id': customer_id, 'event': event,
+                       {'customer_id': customer_id, 'event': event, 'photo_count': len(photo_rows),
                         'outcomes': {r['channel']: r['state'] for r in results}})
             return results
 
