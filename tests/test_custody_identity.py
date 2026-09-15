@@ -243,8 +243,21 @@ def test_external_and_customer_custody_still_read_correctly(service):
         name='ABC Laptop Services', kind='vendor', role='Third Party')
     assert service.custodian('centre:HP Care')['role'] == 'Authorized Service Center'
     assert service.custodian('customer')['name'] == 'Customer'
-    assert service.custodian('shop:Front desk') == dict(
-        name='Front desk', kind='shop', role='Shop storage')
+
+
+def test_a_storage_place_is_not_a_custody_value(service):
+    """There is no office storage, so `shop:` is refused by the movement service itself."""
+    from repairshop.domain import in_shop, sql_in_shop
+    assert not in_shop('shop:Front desk')
+    assert 'shop:' not in sql_in_shop('h.location')
+    customer = customer_of(service)
+    job = service.intake(customer, 'Dell Laptop', 'No power', operation_id=uuid.uuid4().hex)
+    item = device_item(service, job)
+    for destination in ('shop:Front Desk', 'shop:Service Shelf', 'shop:Office Storage'):
+        with pytest.raises(RuleError, match='Invalid custody destination'):
+            service.move(item, 1, where(service, job), destination, 'Someone', uuid.uuid4().hex)
+    assert not service.db.rows("SELECT 1 FROM movements WHERE to_location LIKE 'shop:%'")
+    assert not service.db.rows("SELECT 1 FROM holdings WHERE location LIKE 'shop:%'")
 
 
 # ---- 18. identity comes from the session, never from the caller --------------

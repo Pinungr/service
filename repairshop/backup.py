@@ -132,7 +132,7 @@ class Backups:
                     raise RuleError("Archive exceeds the 20 GB safety limit.")
                 for name in names:
                     p = PurePosixPath(name)
-                    if p.is_absolute() or ".." in p.parts or p.as_posix() != name or any(part.rstrip(' .') != part for part in p.parts) or "\\" in name or ":" in name or not (name in ("manifest.json", "shop.db") or name.startswith(("managed/", "Customers/"))):
+                    if p.is_absolute() or ".." in p.parts or p.as_posix() != name or any(part.rstrip(' .') != part for part in p.parts) or "\\" in name or ":" in name or not (name in ("manifest.json", "shop.db") or name.startswith(("managed/", "Customers/", "Internal/"))):
                         raise RuleError("Archive contains an unsafe path.")
                 if len({name.casefold() for name in names}) != len(names):
                     raise RuleError('Archive paths collide on Windows.')

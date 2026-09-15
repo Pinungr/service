@@ -238,8 +238,12 @@ def test_parts_reports_and_customer_folder_history(service,customer):
     assert [r['kind'] for r in reports.report('job_cards','2000-01-01','2099-01-01')]==['customer_receiving','in_house_assignment','in_house_handover','in_house_return']
     assert reports.report('warranty_claims','2000-01-01','2099-01-01')==[]
     folder=CustomerRecords(service).sync_customer(customer)
-    text=next(folder.rglob('job-details.txt')).read_text(encoding='utf-8')
-    assert 'Repair Parts' in text and 'Part Warranties' in text and 'Job Cards' in text
+    text=next(folder.rglob('customer-job-summary.txt')).read_text(encoding='utf-8')
+    # The customer summary carries their own warranty, not the shop's parts ledger.
+    assert 'Warranty' in text and 'Accessories Received' in text
+    assert 'Repair Parts' not in text and 'Job Cards' not in text
+    internal=next((service.db.root/'Internal').rglob('internal-job-details.txt')).read_text(encoding='utf-8')
+    assert 'Repair Parts' in internal and 'Part Warranties' in internal and 'Job Cards' in internal
 
 
 def test_window_closes_after_background_work_without_blocking_dialog(qtbot,service,monkeypatch):

@@ -354,11 +354,14 @@ class MainWindow(QMainWindow):
         rows = life.rows(filter_key="attention",limit=50)
         totals = life.dashboard_counts()
         self.toolbar([('+ New intake',self.intake,True),('Active repairs',lambda:self.navigate('Active Repairs'),False),('Resume draft',self.intake_drafts,False)])
-        heading = QLabel('Your work queue')
+        # A technician's counts cover only their own repairs, so the headings say so.
+        mine = not self.s.may('view_all_jobs')
+        heading = QLabel('My work queue' if mine else 'Your work queue')
         heading.setObjectName('sectionTitle')
         self.layout.addWidget(heading)
         definitions = [('Received','received','info'),('Under diagnosis','diagnosis','info'),('Waiting for approval','awaiting_approval','warning'),('Waiting for parts','waiting_parts','warning'),('Repair in progress','under_repair','info'),('Final quality check','final_qc','info'),('Ready for delivery','ready','success'),('Overdue','overdue','error')]
-        cards = [MetricCard(title, totals.get(key, 0), lambda checked=False, k=key: self.safe(lambda: self.lifecycle_list(k)), tone)
+        cards = [MetricCard(('My ' + title[0].lower() + title[1:]) if mine else title,
+                            totals.get(key, 0), lambda checked=False, k=key: self.safe(lambda: self.lifecycle_list(k)), tone)
                  for title, key, tone in definitions]
         self.layout.addWidget(CardGrid(cards))
         locations, locations_layout = panel('Location & history', 'These views can include the same repair. Counts are not added together.')
@@ -402,7 +405,9 @@ class MainWindow(QMainWindow):
         data = self.q.dashboard()
         counts = {(r["location"], r["type"]): r["units"] for r in data["locations"]}
         cards = QHBoxLayout()
+        mine = not self.s.may('view_all_jobs')
         for label, key, color in (("Devices at shop", "shop", "#246a56"), ("With repairers", "vendor", "#916729"), ("At service centres", "centre", "#367e88"), ("In transit", "transit", "#7f6396")):
+            label = ('My ' + label[0].lower() + label[1:]) if mine else label
             card = QWidget()
             card.setObjectName("card")
             box = QVBoxLayout(card)
@@ -624,7 +629,7 @@ class MainWindow(QMainWindow):
         self.run(lambda: Backups.validate(path), "Validating archive and preview…", callback=preview, refresh=False)
 
     def settings(self):
-        self.toolbar([("Edit shop & backup settings", self.shop_settings, True), ("Printing & documents", self.print_settings, False), ("Configure messaging", self.channel_settings, False), ("+ Staff login", self.staff_form, False), ("Edit selected staff", lambda: self.staff_form(self.selected(grid)), False)])
+        self.toolbar([("Edit shop & backup settings", self.shop_settings, True), ("Business & application settings", self.print_settings, False), ("Configure messaging", self.channel_settings, False), ("+ Staff login", self.staff_form, False), ("Edit selected staff", lambda: self.staff_form(self.selected(grid)), False)])
         self.layout.addWidget(QLabel(f"{self.db.setting('shop_name')}\nINR · {self.db.setting('timezone')}\nData location: {self.db.root}\nMessaging: {self.db.setting('messaging_mode','test')} mode · Sending paused: {self.db.setting('notifications_paused',False)}"))
         grid = self.table(self.db.rows("SELECT id,username,name,role,active FROM users ORDER BY name"))
 
@@ -642,14 +647,25 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def print_settings(self):
-        d = Form("Printing & documents", self,
-                 "These apply to every generated PDF. A4 is the shop standard; A5 re-lays the same "
-                 "content for a smaller sheet rather than shrinking it.")
-        d.select("paper_size", "Default paper size", [("A4", "A4"), ("A5", "A5")], self.db.setting("paper_size", "A4"))
-        d.select("include_photos", "Include photos in WhatsApp / email",
-                 [("No", False), ("Yes", True)], bool(self.db.setting("include_photos", False)))
+        """Business and application settings: configured once, used everywhere after."""
+        from . import app_settings
+        d = Form("Business & application settings", self,
+                 "Set these once. Normal intake and repair work then uses them automatically, so "
+                 "staff are not asked the same questions on every job. Customer consent and recorded "
+                 "contact details always decide what is actually sent, whatever is chosen here.")
+        d.resize(760, 780)
+        for section, entries in app_settings.sections().items():
+            d.section(section)
+            for key, setting in entries:
+                current = app_settings.value(self.db, key)
+                if setting.kind == 'bool':
+                    d.select(key, setting.label, [("No", False), ("Yes", True)], bool(current))
+                else:
+                    labels = {'': 'Use the default paper size', 'A4': 'A4', 'A5': 'A5'}
+                    d.select(key, setting.label,
+                             [(labels.get(choice, choice), choice) for choice in setting.choices], current)
         d.layout.addRow(QLabel("Only customer-facing product and accessory photos are ever attached. "
-                               "Internal evidence and local file paths are never sent."))
+                               "Internal evidence, costs and local file paths are never sent."))
         if d.submit(lambda v: self.s.settings(v)):
             self.refresh()
 

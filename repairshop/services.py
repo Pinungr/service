@@ -5,8 +5,9 @@ import uuid
 from datetime import date
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
-from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind, today
+from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind, today, sql_in_shop
 from .permissions import allowed
+from . import app_settings
 from .persistence import insert
 from .customer_records import dirty, customer_folder, device_record
 from .local_files import managed_path, digest
@@ -114,8 +115,6 @@ class Service:
                 return dict(name=(row or {}).get('name', 'Technician'), kind='technician', role='Technician')
             row = self.db.one('SELECT name,role FROM users WHERE id=?', (token,))
             return dict(name=(row or {}).get('name', 'Technician'), kind='technician', role='Technician')
-        if kind == 'shop':
-            return dict(name=token or self.db.setting('shop_name', 'Shop'), kind='shop', role='Shop storage')
         if kind == 'customer':
             return dict(name='Customer', kind='customer', role='Customer')
         labels = {'vendor': 'Third Party', 'centre': 'Authorized Service Center',
@@ -187,9 +186,17 @@ class Service:
 
     def settings(self, values):
         self.require_permission('settings')
-        allowed = {"shop_name", "address", "hours", "timezone", "decline_policy", "backup_destination", "external_backup", "backup_retention", "archive_days", "messaging_mode", "notifications_paused", "whatsapp", "smtp", "templates", "reminder_days", 'message_template', 'email_subject', 'paper_size', 'include_photos'}
+        from . import app_settings
+        allowed = {"shop_name", "address", "hours", "timezone", "decline_policy", "backup_destination", "external_backup", "backup_retention", "archive_days", "messaging_mode", "notifications_paused", "whatsapp", "smtp", "templates", "reminder_days", 'message_template', 'email_subject'} | app_settings.KEYS
         if not set(values) <= allowed:
             raise RuleError("Unsupported setting. Secrets belong in Windows Credential Manager.")
+        # Operational defaults validate against one declarative schema rather than a
+        # growing list of one-off checks here.
+        for key in set(values) & app_settings.KEYS:
+            try:
+                values[key] = app_settings.SETTINGS[key].clean(values[key])
+            except ValueError as exc:
+                raise RuleError(str(exc))
         if "archive_days" in values and int(values["archive_days"]) not in (60, 90):
             raise RuleError("Choose a 60 or 90 day archive interval.")
         if "backup_retention" in values and int(values["backup_retention"]) < 1:
@@ -205,10 +212,6 @@ class Service:
                         raise RuleError('Unsupported template variable or formatting. Use the listed simple variables.')
         if 'reminder_days' in values and (not isinstance(values['reminder_days'],int) or not 0 <= values['reminder_days'] <= 90):
             raise RuleError('Reminder interval must be 0 (off) to 90 days.')
-        if 'paper_size' in values and values['paper_size'] not in ('A4', 'A5'):
-            raise RuleError('Choose A4 or A5 as the default paper size.')
-        if 'include_photos' in values and not isinstance(values['include_photos'], bool):
-            raise RuleError('Choose Yes or No for including photos in customer messages.')
         with self.db.transaction() as c:
             for k, v in values.items():
                 c.execute("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, json.dumps(v)))
@@ -445,6 +448,20 @@ class Service:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,recipient_id,attachment_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)',(operation_id,recipient_id,attachment_id,r['channel'],r['destination'],'statement',json.dumps(payload),'pending' if r['consent'] else 'blocked_consent',now(),now()))
             self.audit(c,'document',attachment_id,'queued_for_recipient',{'recipient_id':recipient_id,'subject':subject})
 
+    def auto_notify(self, event, attachment_id, customer_id, message, operation_id, job_id=None):
+        """Send the customer copies the shop is configured to send for this event.
+
+        The owner decides once which events go out on which channel. That decision is
+        only an intention: whether the customer can be reached, and whether they have
+        consented, is still decided per customer in `queue_customer_document`, so a
+        global setting can never message someone who has not agreed to it.
+        """
+        channels = app_settings.channels_for(self.db, event)
+        if not channels:
+            return []
+        return self.queue_customer_document(attachment_id, customer_id, channels, event,
+                                            message, operation_id, job_id=job_id)
+
     def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None):
         """Optional customer copy of an issued document. Never part of an intake transaction."""
         self.require_permission('messaging')
@@ -465,12 +482,14 @@ class Service:
                     continue
                 payload = {'subject': event.replace('_', ' ').title(), 'body': message,
                            'template': settings.get(event, {})}
-                if self.db.setting('include_photos', False) and channel == 'email':
+                if app_settings.value(self.db, 'include_photos') and channel == 'email':
                     payload['include_photos'] = True
+                # Whether the PDF travels with the message is an owner setting per channel.
+                attached = attachment_id if app_settings.value(self.db, channel + '_attach_pdf') else None
                 state = 'pending' if consent else 'blocked_consent'
                 c.execute('''INSERT OR IGNORE INTO outbox(event_key,job_id,contact_id,attachment_id,channel,destination,
                     event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                    (f'{operation_id}:{channel}', job_id, customer_id, attachment_id, channel, destination,
+                    (f'{operation_id}:{channel}', job_id, customer_id, attached, channel, destination,
                      event, json.dumps(payload), state, now(), now()))
                 results.append(dict(channel=channel, state=state))
             self.audit(c, 'document', attachment_id, 'queued_for_customer',
@@ -656,8 +675,9 @@ class Service:
         self.require_permission('handover')
         if not isinstance(quantity, int) or quantity <= 0 or source == destination or not counterparty.strip():
             raise RuleError("Choose a positive quantity, different destination, and counterparty.")
-        if destination.split(":")[0] not in ("shop", "staff", "technician", "vendor", "centre", "transit", "customer", "exception"):
-            raise RuleError("Invalid custody destination.")
+        if destination.split(":")[0] not in ("staff", "technician", "vendor", "centre", "transit", "customer", "exception"):
+            # A storage place is not a custodian: items are always held by a named person.
+            raise RuleError("Invalid custody destination. Record the person or party holding the item.")
         if destination.startswith("exception"):
             self.require_permission('resolve_exception')
             if not notes.strip():
@@ -791,8 +811,8 @@ class Service:
             if stage == "under_repair":
                 self._authorize_repair(c, j)
             if stage in ("ready_repaired", "ready_unrepaired"):
-                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
-                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%')", (job_id,)).fetchone()[0] or 0
+                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND NOT "+sql_in_shop('h.location')+" AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
+                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND "+sql_in_shop('h.location')+"", (job_id,)).fetchone()[0] or 0
                 if away or not at_shop:
                     raise RuleError("The device must be physically received at the shop.")
                 if stage == "ready_repaired" and (test_result or j["test_result"]) != "passed":

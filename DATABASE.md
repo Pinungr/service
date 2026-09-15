@@ -174,3 +174,34 @@ filtered per job.
 Custody values are `staff:<user id>`, `technician:<user id>`, `vendor:`, `centre:`,
 `transit:`, `customer` and `exception:`. `shop:<place>` is only ever read, never written:
 storage places are no longer seeded, are not a directory, and cannot be made a custodian.
+
+## Application settings
+
+`app_settings.py` declares every operational default the owner configures once: paper
+sizes, which events go out on WhatsApp and email, whether the PDF is attached, what the
+intake receipt shows, and what happens after intake. Values live in the existing
+`settings` table; a key that has never been set falls back to its declared default, so
+adding a setting never breaks an existing installation and a stored value that no longer
+validates falls back rather than crashing.
+
+A global setting states only what the shop *wants* to do. Whether a customer can be
+reached, and whether they consented, is still decided per customer in
+`queue_customer_document`, so a setting can never message someone who has not agreed.
+Only `settings` permission holders may change them; everyone else reads them through
+normal work.
+
+## Records on disk
+
+Two separate trees, both included in backup and restore:
+
+* `Customers/…/Repairs/<job>/customer-job-summary.txt` — only what the customer may see:
+  their details, the product, the reported issue and condition, accessories received, the
+  initial estimate, the approved quotation, the account position, warranty, status and
+  handover. Safe to print, email or hand over.
+* `Internal/CUST-nnnnnn/<job>/internal-job-details.txt` — the shop's own record:
+  purchase and vendor costs, margins, third-party quotations, assignments, work logs,
+  expenses, dispatches, return checks, custody history and the audit trail.
+
+Nothing is routed by filename: `Documents.generate()` takes an explicit
+`visibility='customer'|'internal'`, and internal copies are recorded with attachment kind
+`internal_document`, which no customer send path will accept.

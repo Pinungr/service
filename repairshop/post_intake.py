@@ -1,15 +1,20 @@
-"""Post-confirmation actions: confirm what was created, then optionally send or print.
+"""Post-confirmation summary: what was created, and what the shop's settings did with it.
 
 This dialog runs only after the visit, its jobs and their documents are already
 committed. Nothing here can undo the intake: a WhatsApp, email or printer failure is
 reported in place and the repair records stay exactly as saved.
+
+The counter is not asked which paper to use or whether to message the customer. The
+owner configures that once under Settings, and this screen reports what happened.
 """
 import uuid
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox, QWidget
+from . import app_settings
 from .ui_widgets import button, combo, FlowLayout
 from .domain import rupees, RuleError
+from .messaging import status_label
 
 
 class PostIntakeDialog(QDialog):
@@ -48,71 +53,101 @@ class PostIntakeDialog(QDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
-        layout.addWidget(QLabel('Would you like to send or print these now?'))
-        self.whatsapp = QCheckBox('Send to the customer on WhatsApp')
-        self.email = QCheckBox('Email the customer')
+        layout.addWidget(self.status)
+
+        # Everything below is the occasional one-off: normal intakes need none of it.
+        self.extra = QWidget()
+        extra_layout = QVBoxLayout(self.extra)
+        extra_layout.setContentsMargins(0, 0, 0, 0)
+        extra_layout.addWidget(QLabel('Send or print an extra copy now. This does not change the '
+                                      'shop settings, which only the owner can edit.'))
+        self.whatsapp = QCheckBox('Also send on WhatsApp')
+        self.email = QCheckBox('Also send by email')
         self.print_copy = QCheckBox('Open for printing')
         contact = window.db.one('SELECT * FROM customers WHERE id=?', (rows[0]['customer_id'],)) or {}
-        # A channel is only offered when the customer can actually be reached on it and
-        # has consented, so the dialog never promises a message it is not allowed to send.
-        blocked = {}
         for box, field, consent, label in ((self.whatsapp, 'phone', 'whatsapp_consent', 'WhatsApp'),
                                            (self.email, 'email', 'email_consent', 'email')):
-            if not contact.get(field):
-                blocked[box] = 'no ' + label + ' contact recorded'
-            elif not contact.get(consent):
-                blocked[box] = label + ' consent not given — record consent on the customer first'
-            box.setEnabled(box not in blocked and bool(documents))
-            if box in blocked and documents:
-                box.setText(box.text() + ' — ' + blocked[box])
-            layout.addWidget(box)
+            reason = ('no ' + label + ' contact recorded' if not contact.get(field)
+                      else label + ' consent not given' if not contact.get(consent) else '')
+            box.setEnabled(not reason and bool(documents))
+            if reason and documents:
+                box.setText(box.text() + ' — ' + reason)
+            extra_layout.addWidget(box)
         self.print_copy.setEnabled(bool(documents))
-        layout.addWidget(self.print_copy)
+        extra_layout.addWidget(self.print_copy)
         choice = FlowLayout()
-        layout.addLayout(choice)
-        self.paper = combo([('A4', 'A4'), ('A5', 'A5')], window.db.setting('paper_size', 'A4'))
-        choice.addWidget(QLabel('Paper size for printing'))
+        extra_layout.addLayout(choice)
+        self.paper = combo([(size, size) for size in app_settings.PAPER_CHOICES],
+                           window.docs.paper(document='intake_receipt'))
+        choice.addWidget(QLabel('Paper size for this copy'))
         choice.addWidget(self.paper)
-        layout.addWidget(self.status)
+        send = button('Send / print the extra copy', lambda: window.safe(self.deliver))
+        send.setObjectName('primary')
+        extra_layout.addWidget(send)
+        self.extra.hide()
+        layout.addWidget(button('More options', lambda: self.extra.setVisible(not self.extra.isVisible())))
+        layout.addWidget(self.extra)
         layout.addStretch()
         actions = QDialogButtonBox()
-        send = actions.addButton('Do it', QDialogButtonBox.ButtonRole.AcceptRole)
-        send.setObjectName('primary')
-        send.clicked.connect(lambda: window.safe(self.deliver))
-        finish = actions.addButton('Finish', QDialogButtonBox.ButtonRole.RejectRole)
+        finish = actions.addButton('Finish', QDialogButtonBox.ButtonRole.AcceptRole)
+        finish.setObjectName('primary')
         finish.clicked.connect(self.accept)
         layout.addWidget(actions)
+        self.apply_settings()
+
+    def apply_settings(self):
+        """Do what the shop is configured to do, then say what happened."""
+        notes = []
+        if self.documents:
+            title, path, job_id = self.documents[-1]
+            try:
+                results = self.window.s.auto_notify(
+                    'intake_receipt', self.attachment(path), self.window.s.job(self.jobs[0])['customer_id'],
+                    'Your products have been received. The attached receipt lists each product, its '
+                    'initial estimate and the advance recorded.', uuid.uuid4().hex, job_id=job_id)
+                notes += [r['channel'].title() + ': ' + status_label(r['state']) for r in results]
+                if not results:
+                    notes.append('No customer message is configured for intake receipts.')
+            except Exception as exc:
+                notes.append('Could not queue the customer message: ' + str(exc)
+                             + ' The intake is saved.')
+            if app_settings.value(self.window.db, 'auto_print'):
+                notes.append(self.open_for_print(self.window.docs.paper(document='intake_receipt')))
+        self.status.setText('\n'.join(notes) or 'Intake saved.')
+
+    def attachment(self, path):
+        row = self.window.db.one(
+            "SELECT id FROM attachments WHERE kind='issued_document' AND path LIKE ? ORDER BY id DESC LIMIT 1",
+            ('%' + path.name,))
+        if not row:
+            raise RuleError('The issued document could not be located for sending.')
+        return row['id']
+
+    def open_for_print(self, paper):
+        try:
+            # Rendered again for the chosen sheet, so A5 is a real A5 page.
+            path = self.window.docs.visit_receipt(self.jobs, paper=paper)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            return 'Opened the ' + paper + ' receipt for printing.'
+        except Exception as exc:
+            return 'Could not prepare the ' + paper + ' document for printing: ' + str(exc)
 
     def deliver(self):
-        """Every optional step is attempted independently and reported, never rolled back."""
+        """The manual one-off copy. Every step is attempted independently and reported."""
         notes = []
         channels = [name for name, box in (('whatsapp', self.whatsapp), ('email', self.email))
                     if box.isChecked() and box.isEnabled()]
         if channels and self.documents:
             title, path, job_id = self.documents[-1]
-            attachment = self.window.db.one(
-                "SELECT id FROM attachments WHERE kind='issued_document' AND path LIKE ? ORDER BY id DESC LIMIT 1",
-                ('%' + path.name,))
             customer_id = self.window.s.job(self.jobs[0])['customer_id']
             try:
-                if not attachment:
-                    raise RuleError('The issued document could not be located for sending.')
                 results = self.window.s.queue_customer_document(
-                    attachment['id'], customer_id, channels, 'intake_receipt',
+                    self.attachment(path), customer_id, channels, 'intake_receipt',
                     'Your products have been received. The attached receipt lists each product, its '
                     'initial estimate and the advance recorded.', uuid.uuid4().hex, job_id=job_id)
-                from .messaging import status_label
                 notes += [r['channel'].title() + ': ' + status_label(r['state']) for r in results]
             except Exception as exc:
                 notes.append('Could not queue the message: ' + str(exc) + ' The intake is saved.')
         if self.print_copy.isChecked() and self.documents:
-            paper = self.paper.currentData() or 'A4'
-            try:
-                # The receipt is rendered again for the chosen sheet, so A5 is a genuinely
-                # re-laid-out page rather than an A4 document described as A5.
-                path = self.window.docs.visit_receipt(self.jobs, paper=paper)
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-                notes.append('Opened the ' + paper + ' receipt for printing.')
-            except Exception as exc:
-                notes.append('Could not prepare the ' + paper + ' document for printing: ' + str(exc))
+            notes.append(self.open_for_print(self.paper.currentData() or 'A4'))
         self.status.setText('\n'.join(notes) or 'Nothing selected.')

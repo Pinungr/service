@@ -92,6 +92,10 @@ class Documents:
         jobs=[self.s.job(ident) for ident in job_ids]
         if len({(j['customer_id'],j['visit_id'] or j['intake_ref']) for j in jobs})!=1:
             raise RuleError('A visit receipt must contain one customer and one visit reference.')
+        from . import app_settings
+        show_estimate=app_settings.value(self.db,'show_estimate_on_receipt')
+        show_advance=app_settings.value(self.db,'show_advance_on_receipt')
+        show_completion=app_settings.value(self.db,'show_completion_date')
         visit=self.db.one('SELECT number FROM visits WHERE id=?',(jobs[0]['visit_id'],)) if jobs[0]['visit_id'] else None
         reference=(visit or {}).get('number') or jobs[0]['intake_ref']
         sections=[]
@@ -122,7 +126,8 @@ class Documents:
         sections.append(('Please note','The initial estimate above is the figure given when the products were '
             'received. It is not the final repair quotation. Any chargeable repair is quoted after diagnosis '
             'and started only after your recorded approval.'))
-        return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],paper=paper)
+        return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],
+            paper=paper or self.paper(document='intake_receipt'))
 
     def attach(self, source, title, job_id=None, sale_id=None, kind="evidence"):
         self.s.require_permission('customer_records')
@@ -164,12 +169,14 @@ class Documents:
         if kind in card_kind:
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind']==card_kind[kind]]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'], paper=paper, internal=visibility=='internal')
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper or self.paper(document='job_card'),
+                                             internal=visibility=='internal')
         if kind in ('dispatch_manifest','return_manifest'):
             ending='dispatch' if kind=='dispatch_manifest' else 'return'
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind'].endswith(ending)]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'], paper=paper, internal=visibility=='internal')
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper or self.paper(document='job_card'),
+                                             internal=visibility=='internal')
             raise RuleError('This legacy job has no external card. Review its history and record a new actual dispatch/return before printing a card.')
         j = self.s.job(job_id)
         sections = [("Customer & device", f"{j['customer']} · {j['phone']}\n{j['device']} · Serial: {j['serial'] or 'Unknown'}\nSubmitted by: {j['submitter'] or j['customer']} ({j['relationship'] or 'owner'})" )]
@@ -224,9 +231,17 @@ class Documents:
         return self.snapshot(title, sections, job_id=job_id, shop_name=branding, paper=paper,
                              internal=visibility=='internal')
 
-    def paper(self, override=None):
-        """A4 unless the owner chose A5, with an explicit print-time override allowed."""
-        choice = (override or self.db.setting('paper_size', 'A4') or 'A4').upper()
+    def paper(self, override=None, document=None):
+        """The paper this document is printed on.
+
+        The owner configures it once; a document kind may have its own size, otherwise
+        the shop default applies. An explicit override is only for a one-off reprint, so
+        staff are never asked for a size during normal work.
+        """
+        from . import app_settings
+        choice = override or (app_settings.paper_for(self.db, document) if document
+                              else app_settings.value(self.db, 'paper_size'))
+        choice = str(choice or 'A4').upper()
         return choice if choice in PAPER else 'A4'
 
     def snapshot(self, title, sections, job_id=None, shop_name=None, paper=None, internal=False):

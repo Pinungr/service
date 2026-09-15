@@ -412,7 +412,7 @@ class Lifecycle:
         attention_days = int(self.db.setting('lifecycle_attention_days', 3))
         external_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
         live_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%')"
-        device_outside_shop = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%' AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%'))"
+        device_outside_shop = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%' AND NOT "+sql_in_shop('h.location')+")"
         external_accessory = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
         customer_balance = "COALESCE((SELECT sum(e.amount) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer'),0)"
         pending_since = "COALESCE((SELECT a.created FROM audit a WHERE a.entity='job' AND a.entity_id=j.id AND a.action IN ('received','lifecycle','stage_changed','quote_issued','quote_decision','custody_moved') AND (a.action!='lifecycle' OR json_extract(a.payload,'$.before') IS NOT json_extract(a.payload,'$.after')) ORDER BY a.created DESC,a.id DESC LIMIT 1),j.received)"
@@ -474,18 +474,21 @@ class Lifecycle:
     def dashboard_counts(self):
         """Aggregate the full ledger in SQL; only project visible job rows in detail."""
         self.s.require()
-        counts={r['stage']:r['n'] for r in self.db.rows('SELECT stage,count(*) n FROM jobs GROUP BY stage')}
+        # The same job scope as the lists, so the headline numbers and the rows agree.
+        scope,scope_args=self.s.scope_jobs()
+        counts={r['stage']:r['n'] for r in self.db.rows(
+            'SELECT j.stage,count(*) n FROM jobs j WHERE '+scope+' GROUP BY j.stage',tuple(scope_args))}
         result=dict(counts)
         result['diagnosis']=sum(counts.get(k,0) for k in ('diagnosis','inspection','external_diagnosis'))
         result['ready']=sum(counts.get(k,0) for k in ('ready_repaired','ready_unrepaired'))
         result['collected']=sum(counts.get(k,0) for k in ('collected','closed'))
         for key,prefix in [('external_centre','centre:%'),('external_vendor','vendor:%')]:
-            result[key]=self.db.one("SELECT count(DISTINCT j.id) n FROM jobs j JOIN items i ON i.job_id=j.id JOIN holdings h ON h.item_id=i.id WHERE j.stage NOT IN ('collected','closed') AND i.type='device' AND h.quantity>0 AND h.location LIKE ?",(prefix,))['n']
-        result['warranty_claims']=self.db.one("SELECT count(DISTINCT new_job_id) n FROM warranty_claims WHERE status!='CLOSED'")['n']
-        result['in_house']=self.db.one("SELECT count(*) n FROM jobs WHERE route='in_house' AND stage NOT IN ('received','inspection','warranty_check','route_selection','collected','closed')")['n']
+            result[key]=self.db.one("SELECT count(DISTINCT j.id) n FROM jobs j JOIN items i ON i.job_id=j.id JOIN holdings h ON h.item_id=i.id WHERE j.stage NOT IN ('collected','closed') AND i.type='device' AND h.quantity>0 AND h.location LIKE ? AND "+scope,(prefix,*scope_args))['n']
+        result['warranty_claims']=self.db.one("SELECT count(DISTINCT wc.new_job_id) n FROM warranty_claims wc JOIN jobs j ON j.id=wc.new_job_id WHERE wc.status!='CLOSED' AND "+scope,tuple(scope_args))['n']
+        result['in_house']=self.db.one("SELECT count(*) n FROM jobs j WHERE j.route='in_house' AND j.stage NOT IN ('received','inspection','warranty_check','route_selection','collected','closed') AND "+scope,tuple(scope_args))['n']
         today_local=today()
         result['overdue']=self.db.one("""SELECT count(*) n FROM jobs j WHERE stage NOT IN ('collected','closed') AND
-            (collection_due<? OR (repair_due<? AND stage NOT IN ('ready_repaired','ready_unrepaired')) OR (return_due<? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))))""",(today_local,today_local,today_local))['n']
+            (collection_due<? OR (repair_due<? AND stage NOT IN ('ready_repaired','ready_unrepaired')) OR (return_due<? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%')))) AND """+scope,(today_local,today_local,today_local,*scope_args))['n']
         return result
 
     def _set(self, c, j, data, stage, action, evidence):

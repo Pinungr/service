@@ -1,6 +1,6 @@
 """Issued event snapshots; holdings and movements remain the custody ledger."""
 import json
-from .domain import now, RuleError, timezone_name, in_shop
+from .domain import now, RuleError, timezone_name, in_shop, sql_in_shop
 from .persistence import insert
 
 
@@ -19,7 +19,6 @@ class JobCards:
 
     def _party(self,location,shop):
         kind,_,name=location.partition(':')
-        if kind=='shop':return dict(shop,location=name)
         if kind=='staff':
             # The shop is the party on the card; the employee who handled it is named
             # alongside, so a customer-facing card still reads as the business.
@@ -43,7 +42,7 @@ class JobCards:
         result=p.get('repair_result') or ('RETURNED WITHOUT REPAIR' if data.get('unrepaired') else 'REPLACED' if data.get('replacement') else 'REPAIRED' if data.get('repair_completed') else 'NOT RECORDED')
         from .costing import JobCosts
         repairer=self.db.one('SELECT m.name,m.contact FROM assignments a JOIN masters m ON m.id=a.contact_id WHERE a.id=?',(j['assignment_id'],)) or {}
-        remaining=self.db.one("SELECT h.location FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'",(j['id'],))
+        remaining=self.db.one("SELECT h.location FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT "+sql_in_shop('h.location')+" AND h.location NOT LIKE 'exception:%'",(j['id'],))
         return dict(result=result,repair_status='Partial return; device remains away from shop' if remaining else 'Received at shop; final quality check pending',repairer=repairer.get('name','Not recorded'),repairer_contact=repairer.get('contact',''),work_performed=p.get('work_performed') or data.get('repair_summary',''),
             diagnosis=data.get('diagnosis',''),parts_installed=parts,parts_reported=p.get('parts_reported') or data.get('parts_used',''),
             vendor_invoice=p.get('vendor_invoice') or details.get('vendor_invoice',''),service_reference=details.get('external_reference',''),

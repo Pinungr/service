@@ -1,6 +1,6 @@
 """Physical handovers over the existing holdings/movements ledger."""
 import uuid
-from .domain import RuleError, now, in_shop, staff_custody
+from .domain import RuleError, now, in_shop, staff_custody, sql_in_shop
 
 
 class DeviceCustody:
@@ -102,7 +102,7 @@ class DeviceCustody:
             rows=[h for h in v['holdings'] if h['location'].startswith(('centre:','vendor:','transit:'))]
             if not c.execute("SELECT 1 FROM job_cards WHERE job_id=? AND kind IN ('third_party_dispatch','service_center_dispatch','carrier_dispatch')",(j['id'],)).fetchone() and not data.get('legacy_review'):
                 raise RuleError('An outbound Job Card is required before a return can be recorded.')
-            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND (m.from_location LIKE 'shop:%' OR m.from_location LIKE 'staff:%' OR m.from_location LIKE 'technician:%') AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
+            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND "+sql_in_shop('m.from_location')+" AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
             # The signed-in person receiving the item from the repairer becomes its custodian.
             destination=self.s.receiving_custody();final=self.db.setting('shop_name','Repair shop')
             # The returned items are checked against the outbound manifest before custody
@@ -139,7 +139,7 @@ class DeviceCustody:
             JobCards(self.s).issue(j['id'],kind,'movement:'+str(moves[0]),dict(p,movement_ids=moves,final_destination=final),items)
         data['in_transit']=bool(c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location LIKE 'transit:%'",(j['id'],)).fetchone())
         if action=='receive':
-            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
+            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT "+sql_in_shop('h.location')+" AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
             if remaining:stage=j['stage'];data.pop('returned',None)
             else:
                 from .dispatch import Dispatches

@@ -265,6 +265,79 @@ class CustomerRecords:
             devices=self.db.rows('SELECT * FROM devices WHERE customer_id=? ORDER BY id', (customer_id,)),
             photos=self.db.rows("SELECT * FROM attachments WHERE customer_id=? AND kind='customer_photo' ORDER BY id DESC", (customer_id,)))
 
+    #: Job columns a customer may see. Anything not listed here — internal costs, hold
+    #: reasons, operational flags — simply never reaches the customer projection.
+    CUSTOMER_JOB_FIELDS = ('number', 'device', 'serial', 'complaint', 'damage', 'received',
+                           'stage', 'initial_estimate', 'customer_requirement', 'deposit',
+                           'repair_due', 'collection_due', 'actual_completion', 'actual_collection')
+
+    def _customer_job(self, c, job, overview):
+        """What the customer is entitled to see about their own repair."""
+        from .domain import rupees
+        details = {k: job[k] for k in self.CUSTOMER_JOB_FIELDS}
+        details['status'] = (overview or {}).get('current_status') or job['stage']
+        details['date_note'] = 'repair_due and collection_due are tentative dates.'
+        details['accessories_received'] = [
+            {k: r[k] for k in ('description', 'quantity', 'serial', 'condition')}
+            for r in c.execute("SELECT * FROM items WHERE job_id=? ORDER BY id", (job['id'],))]
+        approved = c.execute('''SELECT q.* FROM quotes q JOIN decisions d ON d.quote_id=q.id
+            WHERE q.job_id=? AND d.decision='approved' ORDER BY q.version DESC LIMIT 1''', (job['id'],)).fetchone()
+        if approved:
+            details['approved_quotation'] = dict(
+                version=approved['version'], scope=approved['scope'], total=approved['total'],
+                terms=approved['terms'],
+                lines=[{'description': x.get('description'), 'amount': x.get('amount')}
+                       for x in json.loads(approved['lines'])])
+        money = c.execute("""SELECT
+            COALESCE(sum(CASE WHEN kind='invoice' THEN amount ELSE 0 END),0) invoiced,
+            -COALESCE(sum(CASE WHEN kind IN ('receipt','refund') THEN amount ELSE 0 END),0) paid,
+            COALESCE(sum(amount),0) balance
+            FROM entries WHERE account_type='customer' AND job_id=?""", (job['id'],)).fetchone()
+        details['account'] = dict(invoiced=rupees(money['invoiced']), paid=rupees(money['paid']),
+                                  balance_due=rupees(money['balance']))
+        details['warranty'] = [{k: r[k] for k in ('name', 'duration', 'unit', 'start_date', 'expiry', 'provider', 'terms')}
+                               for r in c.execute('SELECT * FROM part_warranties WHERE job_id=? ORDER BY id', (job['id'],))]
+        details['handover'] = [dict(happened=r['happened'], received_by=r['counterparty'],
+                                    acknowledgment=r['acknowledgment'], condition=r['condition'])
+                               for r in c.execute("""SELECT m.* FROM movements m JOIN items i ON i.id=m.item_id
+                                   WHERE i.job_id=? AND m.to_location='customer' ORDER BY m.id""", (job['id'],))]
+        details['documents'] = [r['title'] for r in c.execute(
+            "SELECT title FROM attachments WHERE job_id=? AND kind='issued_document' ORDER BY id", (job['id'],))]
+        return details
+
+    def _internal_job(self, c, job, overview):
+        """The shop's own operational record: costs, assignments and custody audit."""
+        details = dict(job)
+        details['overview'] = overview
+        for table in ('items', 'assignments', 'work', 'warranty', 'quotes', 'entries',
+                      'attachments', 'job_cards', 'repair_parts', 'part_warranties'):
+            details[table] = [dict(r) for r in c.execute(f'SELECT * FROM {table} WHERE job_id=?', (job['id'],))]
+        details['warranty_claims'] = [dict(r) for r in c.execute(
+            'SELECT * FROM warranty_claims WHERE new_job_id=? OR original_job_id=?', (job['id'], job['id']))]
+        details['approvals'] = [dict(r) for r in c.execute(
+            'SELECT d.* FROM decisions d JOIN quotes q ON q.id=d.quote_id WHERE q.job_id=?', (job['id'],))]
+        details['expenses'] = [dict(r) for r in c.execute(
+            '''SELECT e.*,a.amount AS allocated FROM expenses e JOIN expense_allocations a ON a.expense_id=e.id
+               WHERE a.job_id=?''', (job['id'],))]
+        details['holdings'] = [dict(r) for r in c.execute(
+            '''SELECT i.description,i.type,h.* FROM holdings h JOIN items i ON i.id=h.item_id
+               WHERE i.job_id=? AND h.quantity>0''', (job['id'],))]
+        details['custody_history'] = [dict(r) for r in c.execute(
+            'SELECT m.* FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? ORDER BY m.id', (job['id'],))]
+        # What the third party charges the shop is internal: it is not the customer's price.
+        details['third_party_quotes'] = [dict(r) for r in c.execute(
+            'SELECT * FROM party_quotes WHERE job_id=? ORDER BY version', (job['id'],))]
+        details['third_party_quote_lines'] = [dict(r) for r in c.execute(
+            '''SELECT l.* FROM party_quote_lines l JOIN party_quotes q ON q.id=l.quote_id
+               WHERE q.job_id=? ORDER BY l.id''', (job['id'],))]
+        details['dispatches'] = [dict(r) for r in c.execute(
+            'SELECT * FROM dispatches WHERE job_id=? ORDER BY cycle,version', (job['id'],))]
+        details['return_checks'] = [dict(r) for r in c.execute(
+            'SELECT * FROM return_verifications WHERE job_id=? ORDER BY id', (job['id'],))]
+        details['audit'] = [dict(r) for r in c.execute(
+            "SELECT created,action,payload FROM audit WHERE entity='job' AND entity_id=? ORDER BY id", (job['id'],))]
+        return details
+
     def _summary(self, c, customer_id, relative, text):
         data = ('RepairShop Manager — generated from the database; edit records in the application.\n\n' + text + '\n').encode('utf-8')
         target = managed_path(self.db.root, relative)
@@ -309,18 +382,16 @@ class CustomerRecords:
                 self._summary(c, customer_id, device_folder + '/product-details.txt', 'Device ID: DEV-%06d\n%s' % (device['id'], readable(details)))
                 for job in device_jobs:
                     job_folder = device_folder + '/Repairs/' + slug(job['number'])
-                    details = dict(job)
-                    details['date_note'] = 'repair_due, collection_due and return_due are tentative dates.'
-                    for table in ('items', 'assignments', 'work', 'warranty', 'quotes', 'entries', 'attachments', 'job_cards', 'repair_parts', 'part_warranties'):
-                        details[table] = [dict(r) for r in c.execute(f'SELECT * FROM {table} WHERE job_id=?', (job['id'],))]
-                    details['warranty_claims'] = [dict(r) for r in c.execute('SELECT * FROM warranty_claims WHERE new_job_id=? OR original_job_id=?',(job['id'],job['id']))]
-                    details['approvals'] = [dict(r) for r in c.execute('SELECT d.* FROM decisions d JOIN quotes q ON q.id=d.quote_id WHERE q.job_id=?', (job['id'],))]
-                    details['expenses'] = [dict(r) for r in c.execute('SELECT e.*,a.amount AS allocated FROM expenses e JOIN expense_allocations a ON a.expense_id=e.id WHERE a.job_id=?', (job['id'],))]
-                    details['holdings'] = [dict(r) for r in c.execute('SELECT i.description,i.type,h.* FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND h.quantity>0', (job['id'],))]
-                    details['handovers'] = [dict(r) for r in c.execute('SELECT m.* FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=?', (job['id'],))]
                     summary_row = next((r for r in overview['outstanding'] + overview['history'] if r['id'] == job['id']), {})
-                    details['overview'] = summary_row
-                    self._summary(c, customer_id, job_folder + '/job-details.txt', readable(details))
+                    # Two separate projections. Everything under Customers/ is safe to
+                    # print, email or hand over; the shop's own operational record —
+                    # costs, assignments, custody audit, staff notes — lives only
+                    # under Internal/ and is never written into the customer's folder.
+                    self._summary(c, customer_id, job_folder + '/customer-job-summary.txt',
+                                  readable(self._customer_job(c, job, summary_row)))
+                    self._summary(c, customer_id,
+                                  f'Internal/CUST-{customer_id:06d}/{slug(job["number"])}/internal-job-details.txt',
+                                  readable(self._internal_job(c, job, summary_row)))
             c.execute('DELETE FROM folder_queue WHERE customer_id=?', (customer_id,))
         return managed_path(self.db.root, folder)
 

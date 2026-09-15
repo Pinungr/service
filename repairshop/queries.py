@@ -48,12 +48,30 @@ class Queries:
             FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE """ + " AND ".join(where) + " ORDER BY j.id DESC LIMIT 50 OFFSET ?", args)
 
     def dashboard(self):
+        """Counts for the signed-in user.
+
+        Every job aggregate goes through the same scope as the job lists, so a technician
+        is never shown a total that includes repairs they cannot open.
+        """
         self.s.require()
-        locations = self.db.rows("""SELECT CASE WHEN instr(h.location,':')>0 THEN substr(h.location,1,instr(h.location,':')-1) ELSE h.location END AS location,i.type,sum(h.quantity) AS units FROM holdings h JOIN items i ON i.id=h.item_id JOIN jobs j ON j.id=i.job_id WHERE h.quantity>0 AND j.stage NOT IN ('collected','closed') AND h.location!='customer' AND h.location NOT LIKE 'exception:%' GROUP BY location,i.type""")
-        stages = self.db.rows("SELECT stage,count(*) AS jobs FROM jobs WHERE stage NOT IN ('collected','closed') GROUP BY stage")
-        balances = self.db.rows("SELECT account_type,sum(amount) AS balance FROM entries GROUP BY account_type") if self.s.user["role"] == "owner" else []
-        messages = self.db.rows("SELECT state,count(*) AS messages FROM outbox WHERE state NOT IN ('accepted','captured','cancelled','delivered','read') GROUP BY state")
-        overdue = self.db.one("SELECT count(*) AS n FROM jobs WHERE stage NOT IN ('collected','closed') AND (repair_due<? OR collection_due<? OR return_due<?)", (today(),) * 3)["n"]
+        scope, scope_args = self.s.scope_jobs()
+        # Grouped in a subquery: `GROUP BY location` would otherwise bind to the raw
+        # column rather than the computed prefix, giving one row per individual holder
+        # now that custody names a person rather than a single storage place.
+        locations = self.db.rows("""SELECT kind AS location,type,sum(units) AS units FROM (
+                SELECT CASE WHEN instr(h.location,':')>0 THEN substr(h.location,1,instr(h.location,':')-1)
+                            ELSE h.location END AS kind, i.type AS type, h.quantity AS units
+                FROM holdings h JOIN items i ON i.id=h.item_id JOIN jobs j ON j.id=i.job_id
+                WHERE h.quantity>0 AND j.stage NOT IN ('collected','closed')
+                  AND h.location!='customer' AND h.location NOT LIKE 'exception:%' AND """ + scope + """)
+            GROUP BY kind,type""", tuple(scope_args))
+        stages = self.db.rows("SELECT j.stage,count(*) AS jobs FROM jobs j WHERE j.stage NOT IN ('collected','closed') AND " + scope + " GROUP BY j.stage", tuple(scope_args))
+        balances = self.db.rows("SELECT account_type,sum(amount) AS balance FROM entries GROUP BY account_type") if self.s.may('financial_reports') else []
+        messages = self.db.rows("""SELECT state,count(*) AS messages FROM outbox o
+            WHERE state NOT IN ('accepted','captured','cancelled','delivered','read')
+            AND (o.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=o.job_id AND """ + scope + """))
+            GROUP BY state""", tuple(scope_args))
+        overdue = self.db.one("SELECT count(*) AS n FROM jobs j WHERE j.stage NOT IN ('collected','closed') AND (j.repair_due<? OR j.collection_due<? OR j.return_due<?) AND " + scope, (today(), today(), today(), *scope_args))["n"]
         return dict(locations=locations, stages=stages, balances=balances, messages=messages, overdue=overdue, sales=self.db.one("SELECT count(*) AS n FROM sales WHERE collected=0")["n"], backup=self.db.one("SELECT * FROM backups WHERE state='verified' ORDER BY id DESC LIMIT 1"))
 
     def ledger(self, account_type, account_id, start, end):

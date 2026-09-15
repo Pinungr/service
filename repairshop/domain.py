@@ -81,17 +81,16 @@ def rupees(paise):
 #   transit:<carrier>         a carrier is moving it
 #   customer                  it is back with its owner
 #   exception:<reason>        it is lost, written off or otherwise resolved
-#   shop:<place>              historical: a shop storage place rather than a person
 #
-# `shop:` is kept because existing databases contain it and that history must stay
-# readable, but new receipts record the person who actually took the item.
+# There is no storage custodian. Every item in the shop is the responsibility of a named
+# person, so `shop:<place>` is not a custody value and is rejected wherever it appears.
 STAFF_CUSTODY = ('staff:', 'technician:')
-SHOP_CUSTODY = ('shop:',) + STAFF_CUSTODY
+SHOP_CUSTODY = STAFF_CUSTODY
 AWAY_CUSTODY = ('vendor:', 'centre:', 'transit:')
 
 
 def in_shop(location):
-    """Is the item in the shop's own possession, with a person or a storage place?"""
+    """Is the item in the shop's own possession, i.e. held by one of our people?"""
     return str(location or '').startswith(SHOP_CUSTODY)
 
 

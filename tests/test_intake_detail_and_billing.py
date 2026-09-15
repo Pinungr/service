@@ -240,9 +240,9 @@ def test_messaging_failure_does_not_roll_back_the_intake(service, customer, monk
 def test_print_and_photo_settings_are_validated(service):
     service.settings({'paper_size': 'A5', 'include_photos': True})
     assert service.db.setting('paper_size') == 'A5' and service.db.setting('include_photos') is True
-    with pytest.raises(RuleError, match='A4 or A5'):
+    with pytest.raises(RuleError, match='A4, A5'):
         service.settings({'paper_size': 'Letter'})
-    with pytest.raises(RuleError, match='Yes or No'):
+    with pytest.raises(RuleError, match='yes/no'):
         service.settings({'include_photos': 'maybe'})
 
 
