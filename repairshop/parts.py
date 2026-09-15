@@ -13,7 +13,7 @@ class Parts:
         with self.db.read() as c:self.s._job(c,job_id)
         rows=self.db.rows('SELECT p.*,w.expiry warranty_expiry,(p.customer_price-p.purchase_cost)*p.quantity margin FROM repair_parts p LEFT JOIN part_warranties w ON w.part_id=p.id WHERE p.job_id=? ORDER BY p.id',(job_id,))
         from .inventory import public_values
-        return rows if self.s.user['role']=='owner' else public_values(rows)
+        return rows if self.s.may('view_internal_cost') else public_values(rows)
 
     def stock(self):
         from .inventory import Inventory
@@ -41,7 +41,7 @@ class Parts:
                 raise RuleError('Only an uninstalled planned part may be edited.')
             if old and old['stock_state'] in ('reserved','issued'):
                 raise RuleError('Release the reservation or return the issued part before changing its specification or price.')
-            if self.s.user['role']!='owner' and 'purchase_cost' in values:
+            if not self.s.may('view_internal_cost') and 'purchase_cost' in values:
                 raise RuleError('Only the owner may enter or change internal purchase costs.')
             if old:
                 defaults.update({k:old[k] for k in defaults})

@@ -32,6 +32,7 @@ PERMISSIONS = (
     'resolve_exception',    # write an item off or otherwise resolve lost custody
     'record_replacement',   # accept a replacement unit in place of the original
     'customer_delivery',    # hand the product back to its owner
+    'register_sale',        # record a product sale and see its customer price
     'view_all_jobs',        # see repairs that are not your own responsibility
     'view_internal_cost',   # purchase cost, vendor cost, margin
     'vendor_accounts',      # third-party payables
@@ -48,12 +49,13 @@ _COUNTER = {
     'intake', 'customer_records', 'assign_job', 'handover', 'quality_check', 'repair',
     'manage_parts', 'manage_warranty',
     'create_quote', 'approve_quote', 'billing', 'collect_payment', 'customer_delivery',
-    'view_all_jobs', 'reports', 'directories', 'messaging',
+    'view_all_jobs', 'reports', 'directories', 'messaging', 'register_sale',
 }
 
-#: A technician takes products in and works on them. Nothing here exposes money,
-#: other people's repairs, or shop configuration.
-_TECHNICIAN = {'intake', 'customer_records', 'handover', 'repair'}
+#: A technician is operational staff: they take products in, decide who works on a
+#: repair (including themselves), hand it over physically and do the work. Nothing
+#: here exposes money, other people's repairs, or shop configuration.
+_TECHNICIAN = {'intake', 'customer_records', 'assign_job', 'handover', 'repair'}
 
 ROLES = {
     'owner': set(PERMISSIONS),

@@ -56,7 +56,7 @@ def complete(life,ident,external=False):
 
 def qc(life,ident,result='passed'):
     if 'return_technician' in life.snapshot(ident)['actions']:
-        life.execute(ident,'return_technician',dict(condition='Intact',acknowledgment='QC counter received',storage='shop:QC Area'))
+        life.execute(ident,'return_technician',dict(condition='Intact',acknowledgment='QC counter received'))
     life.execute(ident,'qc',dict(result=result,notes='Original fault verified',condition_checked=True,
         checks={k:'passed' for k in ('functional','power','charging','display','connectivity','complaint')},repair_warranty='90 days workmanship',warranty_until='2099-01-01'))
 

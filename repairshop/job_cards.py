@@ -12,7 +12,7 @@ class JobCards:
         self.s.require()
         with self.db.read() as c:self.s._job(c,job_id)
         rows=self.db.rows("SELECT c.*,j.number || ' / CARD-' || printf('%02d',c.sequence) AS number FROM job_cards c JOIN jobs j ON j.id=c.job_id WHERE c.job_id=? ORDER BY sequence", (job_id,))
-        if self.s.user['role']!='owner':
+        if not self.s.may('view_internal_cost'):
             from .inventory import public_values
             for r in rows:r['snapshot']=json.dumps(public_values(json.loads(r['snapshot'])))
         return rows

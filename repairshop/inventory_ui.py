@@ -23,14 +23,14 @@ class InventoryPage(QWidget):
             ('Receive / adjust stock',self.adjust),('Stock movements',self.history),('Suppliers',lambda:self.w.navigate('Directories'))]
         for i,(title,fn) in enumerate(actions):
             b=button(title,lambda checked=False,f=fn:self.w.safe(f),title=='New inventory item');controls.addWidget(b)
-            if i in (1,2,3):b.setEnabled(self.s.user['role']=='owner' and not self.w.db.readonly)
+            if i in (1,2,3):b.setEnabled(self.s.may('manage_inventory') and not self.w.db.readonly)
         self.search.textChanged.connect(self.reload);self.filter.currentIndexChanged.connect(self.reload);self.reload()
 
     def reload(self,*_):
         rows=self.inventory.rows(self.search.text(),self.filter.currentData());allrows=self.inventory.rows()
         self.summary.setText(f"{len(allrows)} inventory items · {sum(r['available'] for r in allrows)} available units · {sum(r['reserved'] for r in allrows)} reserved · {sum(r['issued'] for r in allrows)} issued")
         cols=['sku','name','brand','compatibility','stock','reserved','issued','available','customer_price','warranty','supplier','storage','active']
-        if self.s.user['role']=='owner':cols[9:9]=['purchase_cost','margin']
+        if self.s.may('view_internal_cost'):cols[9:9]=['purchase_cost','margin']
         self.grid.fill(rows,cols)
 
     def edit(self,row=None):
@@ -88,11 +88,11 @@ class InventoryPage(QWidget):
     def detail(self):
         row=self.w.selected(self.grid);d=QDialog(self);d.setWindowTitle(row['sku']+' · '+row['name']);d.resize(1150,740);layout=QVBoxLayout(d)
         text=f"{row['name']} · {row['brand']} {row['model']} · {row['compatibility']}\nStock {row['stock']} · Reserved {row['reserved']} · Issued {row['issued']} · Available {row['available']}\nCustomer price {rupees(row['customer_price'])} · Warranty {row['warranty']} · {row['warranty_provider']}\nSupplier: {row['supplier'] or 'Not recorded'} · Invoice {row['invoice']} · Bin {row['storage']} · Serial {row['serial']} · Batch {row['batch']}"
-        if self.s.user['role']=='owner':text+=f"\nUnit purchase cost {rupees(row['purchase_cost'])} · Unit margin {rupees(row['margin'])}"
+        if self.s.may('view_internal_cost'):text+=f"\nUnit purchase cost {rupees(row['purchase_cost'])} · Unit margin {rupees(row['margin'])}"
         summary=QLabel(text);summary.setWordWrap(True);layout.addWidget(summary);tabs=QTabWidget();layout.addWidget(tabs,1)
         movements=self.inventory.movements(stock_id=row['id'])
         for title,rows,cols in [('Stock movements',movements,['created','kind','quantity','from_location','to_location','job','reference','staff']),
-            ('Purchase / receipt history',[m for m in movements if m['delta']>0],['created','quantity','supplier','invoice','purchase_date','reference','notes','staff']+(['purchase_cost'] if self.s.user['role']=='owner' else []))]:
+            ('Purchase / receipt history',[m for m in movements if m['delta']>0],['created','quantity','supplier','invoice','purchase_date','reference','notes','staff']+(['purchase_cost'] if self.s.may('view_internal_cost') else []))]:
             grid=Grid();grid.fill(rows,cols);tabs.addTab(grid,title)
         installed=self.w.db.rows("SELECT p.id,j.number job,p.name,p.quantity,p.installed_at,p.installed_by,w.expiry FROM repair_parts p JOIN jobs j ON j.id=p.job_id LEFT JOIN part_warranties w ON w.part_id=p.id WHERE p.inventory_id=? AND p.status='installed'",(row['id'],))
         grid=Grid();grid.fill(installed,['job','name','quantity','installed_at','installed_by','expiry']);tabs.addTab(grid,'Installations')

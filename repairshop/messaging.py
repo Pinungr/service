@@ -1,6 +1,6 @@
 """Outbound-only adapters. Provider acceptance never means delivered/read."""
 import base64
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from email.message import EmailMessage
 from pathlib import Path
 import json
@@ -25,6 +25,7 @@ STATUS_LABELS = {
     'permanent_failure': 'Failed',
     'uncertain': 'Unconfirmed — check before resending',
     'cancelled': 'Cancelled',
+    'channel_disabled': 'Held — channel switched off in Settings',
     'no_contact': 'Skipped — no contact information',
 }
 
@@ -182,6 +183,11 @@ class Outbox:
             c.execute("UPDATE outbox SET state='uncertain',error='Previous process stopped during submission; review before retrying',updated=? WHERE state='sending'", (now(),))
 
     def _valid(self, c, row):
+        # The shop may have switched the channel off after this was queued. Hold the
+        # message with a clear reason rather than sending it or discarding it; it can be
+        # retried once the channel is switched back on.
+        if not self.s.channel_enabled(row['channel']):
+            return 'channel_disabled', row['channel'].title() + ' sending is switched off in Settings.'
         if row['contact_id']:
             customer = c.execute("SELECT * FROM customers WHERE id=?", (row["contact_id"],)).fetchone()
             if not customer or not customer[row["channel"] + "_consent"]:
@@ -265,15 +271,17 @@ class Outbox:
         interval=int(self.db.setting('reminder_days',0))
         if interval<=0:
             return
-        today=datetime.now(timezone.utc).date()
+        # Whether a collection is overdue is an Indian business day, not a UTC one:
+        # before 05:30 IST the UTC date is still yesterday.
+        today_local=date.fromisoformat(today())
         with self.db.transaction() as c:
-            jobs=c.execute("SELECT * FROM jobs WHERE stage IN ('ready_repaired','ready_unrepaired') AND collection_due IS NOT NULL AND collection_due<? LIMIT 500",(today.isoformat(),)).fetchall()
+            jobs=c.execute("SELECT * FROM jobs WHERE stage IN ('ready_repaired','ready_unrepaired') AND collection_due IS NOT NULL AND collection_due<? LIMIT 500",(today_local.isoformat(),)).fetchall()
             for j in jobs:
                 previous=c.execute("SELECT count(DISTINCT event_key),max(created) FROM outbox WHERE job_id=? AND event='collection_reminder'",(j['id'],)).fetchone()
-                if previous[0]>=3 or (previous[1] and datetime.fromisoformat(previous[1]).date()+timedelta(days=interval)>today):
+                if previous[0]>=3 or (previous[1] and datetime.fromisoformat(previous[1]).date()+timedelta(days=interval)>today_local):
                     continue
                 qualifier='without repair' if j['stage']=='ready_unrepaired' else 'after repair and testing'
-                self.s.notify(c,j['id'],'collection_reminder',f"Your device remains ready for collection {qualifier}. Please contact the shop to arrange pickup.",event_key=f"reminder-{j['id']}-{today}")
+                self.s.notify(c,j['id'],'collection_reminder',f"Your device remains ready for collection {qualifier}. Please contact the shop to arrange pickup.",event_key=f"reminder-{j['id']}-{today_local}")
 
     def action(self, ident, action):
         self.s.require_permission('messaging')
@@ -281,7 +289,7 @@ class Outbox:
             row = c.execute("SELECT * FROM outbox WHERE id=?", (ident,)).fetchone()
             if not row:
                 raise RuleError("Notification not found.")
-            if action == "retry" and row["state"] not in ("retryable", "blocked_consent", "blocked_configuration", "permanent_failure"):
+            if action == "retry" and row["state"] not in ("retryable", "blocked_consent", "blocked_configuration", "channel_disabled", "permanent_failure"):
                 raise RuleError("Only confirmed failures or blocked messages may be retried. Uncertain/restored messages require reconciliation.")
             if row["state"] == "sending":
                 raise RuleError("Wait for the in-flight submission to finish.")

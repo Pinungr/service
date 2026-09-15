@@ -366,7 +366,11 @@ class Service:
         return ident
 
     def save_sale(self, customer_id, device, **fields):
-        self.require_permission('customer_records')
+        # Recording a sale is its own job, separate from maintaining customer records.
+        self.require_permission('register_sale')
+        if 'cost' in fields or 'provider' in fields:
+            # Shop cost and supplier are internal figures.
+            self.require_permission('view_internal_cost')
         if not device.strip():
             raise RuleError("Device description is required.")
         allowed = {"category_id", "serial", "invoice_ref", "invoice_date", "sale_date", "amount", "cost", "provider", "warranty_start", "warranty_end", "warranty_terms"}
@@ -390,6 +394,15 @@ class Service:
                 raise RuleError("Product has already been collected.")
             self.audit(c, "sale", ident, "collected", {"collector": collector, "acknowledgment": acknowledgment})
 
+    def channel_enabled(self, channel):
+        """Is this channel switched on for the shop at all?
+
+        One answer for every queue and send path, so turning WhatsApp off in Settings
+        really does stop WhatsApp everywhere rather than only on the screens that
+        remembered to check.
+        """
+        return bool(app_settings.value(self.db, channel + '_enabled'))
+
     def notify(self, c, job_id, event, message, quote_id=None, event_key=None):
         j = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         key = event_key or uuid.uuid4().hex
@@ -399,7 +412,7 @@ class Service:
         for contact_id in set(filter(None, (j["customer_id"], j["update_contact_id"]))):
             contact = c.execute("SELECT * FROM customers WHERE id=?", (contact_id,)).fetchone()
             for channel, destination, consent in (("whatsapp", contact["phone"], contact["whatsapp_consent"]), ("email", contact["email"], contact["email_consent"])):
-                if destination:
+                if destination and self.channel_enabled(channel):
                     c.execute("INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,contact_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (key, job_id, quote_id, contact_id, channel, destination, event, json.dumps(payload), "pending" if consent else "blocked_consent", now(), now()))
         # Notify owners and the assigned technician. A staff recipient is always a login
         # account, so a technician assigned through the directory is resolved to the
@@ -416,6 +429,8 @@ class Service:
                 FROM assignments a WHERE a.id=?)""",
             (j['assignment_id'],)).fetchall()
         for recipient in internal:
+            if not self.channel_enabled(recipient['channel']):
+                continue
             c.execute('INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,recipient_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',(key,job_id,quote_id,recipient['id'],recipient['channel'],recipient['destination'],event,json.dumps(payload),'pending' if recipient['consent'] else 'blocked_consent',now(),now()))
 
     def save_recipient(self, kind, entity_id, channel, destination, consent=False, active=True):
@@ -462,6 +477,33 @@ class Service:
         return self.queue_customer_document(attachment_id, customer_id, channels, event,
                                             message, operation_id, job_id=job_id)
 
+    def announce(self, event, job_id, reference, message, kind, source_id=None):
+        """Send the customer copy of a business event that has already been committed.
+
+        Called only after the business transaction succeeds, so a customer is never told
+        about something that did not happen. The operation id is derived from the record
+        itself, so a retried workflow queues the same message rather than a second one.
+
+        This never raises: the repair record is already saved and a messaging problem must
+        not look like a failed repair. The reason is recorded in the audit log instead.
+        """
+        if not app_settings.channels_for(self.db, event):
+            return []
+        from .documents import Documents
+        try:
+            path = Documents(self).generate(kind, job_id, source_id=source_id, visibility='customer')
+            attachment = self.db.one("""SELECT id FROM attachments WHERE kind='issued_document'
+                AND path LIKE ? ORDER BY id DESC LIMIT 1""", ('%' + path.name,))
+            if not attachment:
+                raise RuleError('The generated document could not be located for sending.')
+            return self.auto_notify(event, attachment['id'], self.job(job_id)['customer_id'], message,
+                                    f'auto:{event}:{job_id}:{reference}', job_id=job_id)
+        except Exception as exc:
+            with self.db.transaction() as c:
+                self.audit(c, 'job', job_id, 'auto_notify_failed',
+                           {'event': event, 'reason': str(exc)[:300]})
+            return [dict(channel='all', state='permanent_failure', detail=str(exc))]
+
     def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None):
         """Optional customer copy of an issued document. Never part of an intake transaction."""
         self.require_permission('messaging')
@@ -475,6 +517,9 @@ class Service:
             settings = self.db.setting('templates', {})
             results = []
             for channel in channels:
+                if not self.channel_enabled(channel):
+                    results.append(dict(channel=channel, state='channel_disabled'))
+                    continue
                 destination, consent = (contact['phone'], contact['whatsapp_consent']) if channel == 'whatsapp' else (contact['email'], contact['email_consent'])
                 if not destination:
                     # Nothing was queued: say so rather than reporting a send that cannot happen.
@@ -510,6 +555,12 @@ class Service:
         fields.setdefault("policy", self.db.setting("decline_policy", "NO_CUSTOMER_CHARGE"))
         if not isinstance(fields.get("initial_estimate", 0), int) or fields.get("initial_estimate", 0) < 0:
             raise RuleError("Enter the initial estimate as a nonnegative whole-paise amount.")
+        # When the shop requires an estimate, the counter has to state one per product.
+        # Blank is "not asked"; an explicit zero is a real answer meaning no charge, so
+        # zero is accepted and only a missing value is refused.
+        if "initial_estimate" not in fields and app_settings.value(self.db, 'require_initial_estimate'):
+            raise RuleError("This shop requires an initial estimate for every product. "
+                            "Enter the estimate, or 0 if the repair is free of charge.")
         fields.setdefault("intake_ref", "REF-" + uuid.uuid4().hex[:10].upper())
         if fields.get("route", "in_house") not in ROUTES:
             raise RuleError("Invalid repair route.")
@@ -599,7 +650,30 @@ class Service:
             self.notify(c, ident, "received", "Your device has been received for assessment. We will record your approval before starting quoted paid repair.")
             if operation_id:
                 insert(c, 'commands', operation_id=operation_id, kind='intake', result_id=ident)
+        # The card record itself is written above and is never optional: it is the shop's
+        # immutable proof of what was received. This setting only decides whether the
+        # customer's printed copy is produced now or on demand at the counter.
+        if app_settings.value(self.db, 'auto_job_card'):
+            self.customer_job_card(ident, f'intake:{ident}')
         return ident
+
+    def customer_job_card(self, job_id, event_key):
+        """Produce the customer's copy of an already-recorded job card.
+
+        Called after the intake transaction has committed, so a printing or disk problem
+        cannot undo a receipt the customer has already handed products for. The failure is
+        recorded rather than swallowed, and the copy can be printed again from the counter.
+        """
+        from .job_cards import JobCards
+        card = self.db.one('SELECT id FROM job_cards WHERE event_key=?', (event_key,))
+        if not card:
+            return None
+        try:
+            return JobCards(self).print(card['id'])
+        except Exception as exc:
+            with self.db.transaction() as c:
+                self.audit(c, 'job', job_id, 'job_card_print_failed', {'reason': str(exc)[:300]})
+            return None
 
     @staticmethod
     def _bind_evidence(c, attachment_id, customer_id, job_id, kinds, message):
@@ -904,6 +978,9 @@ class Service:
                 self.audit(c, 'job', job_id, 'lifecycle', {'action': 'quote', 'before': current['stage'], 'after': 'awaiting_approval', 'quote_id': ident})
             from .domain import rupees
             self.notify(c, job_id, "quote_issued", f"Quotation version {v}: {scope}. Total {rupees(total)}. Please contact the shop to approve or decline this specific quotation.", ident)
+        self.announce('quotation', job_id, ident,
+                      f'Your quotation version {v} is attached. Please confirm before we begin work.',
+                      'quotation', source_id=ident)
         return ident
 
     def _quote_for_decision(self, c, quote_id):
@@ -1013,7 +1090,11 @@ class Service:
                 raise RuleError("Zero-charge warranty work needs a warranty summary, not a money posting.")
             from .billing import Billing
             Billing(self).guard_final_bill(c, j["id"], q["total"])
-            return self._post(c, "customer", j["customer_id"], "invoice", q["total"], operation_id, job_id=j["id"], quote_id=quote_id, payload=dict(q), notes="Issued customer bill")
+            entry = self._post(c, "customer", j["customer_id"], "invoice", q["total"], operation_id, job_id=j["id"], quote_id=quote_id, payload=dict(q), notes="Issued customer bill")
+            job, billed = j["id"], entry
+        self.announce('invoice', job, billed, 'Your bill for this repair is attached.',
+                      'bill', source_id=billed)
+        return billed
 
     def reverse(self, entry_id, reason, operation_id):
         self.require_permission('correct_finance')

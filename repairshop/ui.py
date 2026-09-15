@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
     #: service call can never disagree.
     SCREENS = {
         'New Repair Intake': 'intake', 'Customers': 'customer_records',
-        'Products sold': 'customer_records', 'Dispatch & receive': 'handover',
+        'Products sold': 'register_sale', 'Dispatch & receive': 'handover',
         'Inventory': 'inventory', 'Directories': 'directories',
         'Quotations': 'create_quote', 'Customer accounts': 'collect_payment',
         'Vendor accounts': 'vendor_accounts', 'Reports': 'reports',
@@ -384,7 +384,9 @@ class MainWindow(QMainWindow):
         grid.cellDoubleClicked.connect(lambda *_:self.safe(lambda:self.job_detail(self.selected(grid)['id'])))
         data=self.q.dashboard()
         details = [f"{r['account_type'].title()} balance: {rupees(r['balance'])}" for r in data['balances']]
-        details += [f"Products awaiting collection: {data['sales']}", f"Loose accessories: {sum(r['units'] for r in data['locations'] if r['type']=='accessory')}"]
+        if data['sales'] is not None:
+            details += [f"Products awaiting collection: {data['sales']}"]
+        details += [f"Loose accessories: {sum(r['units'] for r in data['locations'] if r['type']=='accessory')}"]
         text=' · '.join(details)
         backup=data['backup']
         footer, footer_layout = panel('Shop status')
@@ -424,7 +426,8 @@ class MainWindow(QMainWindow):
         self.layout.addLayout(cards)
         secondary = QHBoxLayout()
         accessory = sum(r["units"] for r in data["locations"] if r["type"] == "accessory")
-        secondary.addWidget(QLabel(f"Loose accessories: {accessory}     •     Sold items awaiting collection: {data['sales']}     •     Overdue jobs: {data['overdue']}"))
+        sold = f"Sold items awaiting collection: {data['sales']}     •     " if data['sales'] is not None else ''
+        secondary.addWidget(QLabel(f"Loose accessories: {accessory}     •     {sold}Overdue jobs: {data['overdue']}"))
         secondary.addStretch()
         self.layout.addLayout(secondary)
         self.toolbar([("+ New intake", self.intake, True), ("+ Customer", self.customer_form, False), ("View overdue", lambda: self.filtered_jobs(overdue=True), False)])
@@ -505,7 +508,11 @@ class MainWindow(QMainWindow):
 
     def sales(self):
         self.toolbar([("+ Sold product", self.sale_form, True), ("Collect selected product", lambda: self.sale_collect(self.selected(grid)["id"]), False), ("+ Warranty/service job", lambda: self.intake(sale=self.selected(grid)), False), ("Add purchase proof", lambda: self.attach(sale_id=self.selected(grid)["id"]), False)])
-        grid = self.table(self.db.rows("SELECT s.*,c.name AS customer FROM sales s JOIN customers c ON c.id=s.customer_id ORDER BY s.id DESC LIMIT 200"), ["id", "customer", "device", "serial", "invoice_ref", "sale_date", "amount", "provider", "warranty_end", "collected"])
+        columns = ["id", "customer", "device", "serial", "invoice_ref", "sale_date", "amount"]
+        if self.s.may('view_internal_cost'):
+            columns += ["cost", "provider"]
+        columns += ["warranty_end", "collected"]
+        grid = self.table(self.q.sales(), columns)
 
     def sale_form(self):
         d = Form("Register a sold product", self)
@@ -556,7 +563,7 @@ class MainWindow(QMainWindow):
 
     def notifications(self):
         self.toolbar([("Preview selected", lambda: self.message_preview(self.selected(grid)), True), ("Retry confirmed failure", lambda: (Outbox(self.s).action(self.selected(grid)["id"], "retry"), self.refresh()), False), ("Cancel selected", lambda: (Outbox(self.s).action(self.selected(grid)["id"], "cancel"), self.refresh()), False), ("Process queue", self.background, False), ("Configure channels", self.channel_settings, False)])
-        if self.s.user['role']=='owner':
+        if self.s.may('messaging_admin'):
             self.toolbar([('Configure staff / vendor recipients',self.recipient_form,False),('Send saved statement PDF',self.send_document_form,False)])
         grid = self.table(self.db.rows("SELECT * FROM outbox ORDER BY id DESC LIMIT 300"), ["id", "job_id", "event", "channel", "destination", "state", "attempts", "error", "created"])
         self.layout.addWidget(QLabel("Captured = local test only. Accepted = provider accepted, delivery unknown. Uncertain outcomes are never automatically resent."))
@@ -1109,11 +1116,11 @@ class MainWindow(QMainWindow):
 
     def custody(self):
         self.toolbar([("Record handover / receipt", self.move_form, True), ("Open selected job", lambda: self.job_detail(self.selected(grid)["job_id"]), False)])
-        grid = self.table(self.db.rows("SELECT i.id,i.job_id,j.number,i.description,i.type,i.serial,h.location,h.quantity FROM holdings h JOIN items i ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id WHERE h.quantity>0 AND j.stage NOT IN ('collected','closed') AND h.location!='customer' ORDER BY i.id DESC LIMIT 300"))
+        grid = self.table(self.q.holdings())
 
     def move_form(self, ident=None):
         d = Form("Dispatch, receive or collect", self, "Record an actual handover. Departure goes to transit; receipt acknowledgment goes to the destination. Partial quantities remain at their original holder.")
-        rows = self.db.rows("SELECT i.*,h.location,h.quantity AS available,j.number FROM holdings h JOIN items i ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id WHERE h.quantity>0 AND j.stage NOT IN ('collected','closed')" + (" AND i.job_id=?" if ident else "") + " ORDER BY i.id DESC LIMIT 500", (ident,) if ident else ())
+        rows = self.q.holdings(job_id=ident, movable=True)
         choice = d.select("item", "Item / current holder", [(f"{r['number']} · {r['description']} · {r['location']} · {r['available']} available", n) for n, r in enumerate(rows)])
         from .domain import staff_custody
         locations = [("Customer collection", "customer")]

@@ -109,8 +109,13 @@ class Documents:
             summary = (f"{p['device']} · DEV-{p['device_id']:06d}\n"
                 f"Category: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\n"
                 f"Serial: {p['serial'] or 'Not recorded'}\nComplaint: {p['complaint']}\nCondition: {p['condition']}\n"
-                f"Received: {local_time(p['effective'])} {timezone_name()} · Staff: {p['staff']}\n"
-                f"Initial estimate: {rupees(j['initial_estimate'] or 0)}")
+                f"Received: {local_time(p['effective'])} {timezone_name()} · Staff: {p['staff']}")
+            # A figure the shop chose not to show is left out of the document entirely,
+            # not merely unlabelled elsewhere on the page.
+            if show_estimate:
+                summary += f"\nInitial estimate: {rupees(j['initial_estimate'] or 0)}"
+            if show_completion and j['repair_due']:
+                summary += f"\nEstimated completion: {j['repair_due']}"
             if j['customer_requirement']:
                 summary += f"\nAdditional customer requirement: {j['customer_requirement']}"
             sections.append((j['number']+' / '+p['card_number'], summary))
@@ -119,18 +124,26 @@ class Documents:
         advance=self.db.one("""SELECT -COALESCE(sum(amount),0) n FROM entries WHERE account_type='customer'
             AND kind='receipt' AND notes='Intake advance' AND job_id IN ("""+','.join('?' for _ in jobs)+')',
             tuple(j['id'] for j in jobs))['n']
-        sections.append(('Initial estimate',
-            'Total initial estimate: ' + rupees(estimate)
-            + '\nAdvance received: ' + rupees(advance)
-            + '\nEstimated balance against this initial estimate: ' + rupees(estimate - advance)))
-        sections.append(('Please note','The initial estimate above is the figure given when the products were '
-            'received. It is not the final repair quotation. Any chargeable repair is quoted after diagnosis '
-            'and started only after your recorded approval.'))
+        if show_estimate:
+            money = 'Total initial estimate: ' + rupees(estimate)
+            if show_advance:
+                money += ('\nAdvance received: ' + rupees(advance)
+                          + '\nEstimated balance against this initial estimate: ' + rupees(estimate - advance))
+            sections.append(('Initial estimate', money))
+            sections.append(('Please note','The initial estimate above is the figure given when the products were '
+                'received. It is not the final repair quotation. Any chargeable repair is quoted after diagnosis '
+                'and started only after your recorded approval.'))
+        elif show_advance:
+            sections.append(('Advance received', rupees(advance)))
         return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],
             paper=paper or self.paper(document='intake_receipt'))
 
     def attach(self, source, title, job_id=None, sale_id=None, kind="evidence"):
         self.s.require_permission('customer_records')
+        # Authorize the repair before reading, validating or publishing the file, so a
+        # refused attach writes nothing to disk and records nothing in the database.
+        if job_id:
+            self.s.require_job_access(job_id)
         source = Path(source)
         allowed = {'.pdf', '.jpg', '.jpeg', '.png'}
         suffix = source.suffix.lower()

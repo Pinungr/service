@@ -72,7 +72,41 @@ class Queries:
             AND (o.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=o.job_id AND """ + scope + """))
             GROUP BY state""", tuple(scope_args))
         overdue = self.db.one("SELECT count(*) AS n FROM jobs j WHERE j.stage NOT IN ('collected','closed') AND (j.repair_due<? OR j.collection_due<? OR j.return_due<?) AND " + scope, (today(), today(), today(), *scope_args))["n"]
-        return dict(locations=locations, stages=stages, balances=balances, messages=messages, overdue=overdue, sales=self.db.one("SELECT count(*) AS n FROM sales WHERE collected=0")["n"], backup=self.db.one("SELECT * FROM backups WHERE state='verified' ORDER BY id DESC LIMIT 1"))
+        return dict(locations=locations, stages=stages, balances=balances, messages=messages, overdue=overdue, sales=(self.db.one("SELECT count(*) AS n FROM sales WHERE collected=0")["n"] if self.s.may('register_sale') else None), backup=self.db.one("SELECT * FROM backups WHERE state='verified' ORDER BY id DESC LIMIT 1"))
+
+    def holdings(self, job_id=None, movable=False):
+        """Items the signed-in user may see, for the dispatch / receive screens.
+
+        The custody screens used to read `holdings` directly, which showed a technician
+        every other technician's products and custodians. They go through here now, so the
+        list obeys the same job scope as everything else.
+        """
+        self.s.require_permission('handover')
+        if job_id:
+            self.s.require_job_access(job_id)
+        scope, scope_args = self.s.scope_jobs()
+        columns = ("i.*,h.location,h.quantity AS available,j.number" if movable
+                   else "i.id,i.job_id,j.number,i.description,i.type,i.serial,h.location,h.quantity")
+        where, args = ["h.quantity>0", "j.stage NOT IN ('collected','closed')"], []
+        if not movable:
+            where.append("h.location!='customer'")
+        if job_id:
+            where.append('i.job_id=?')
+            args.append(job_id)
+        where.append(scope)
+        args.extend(scope_args)
+        return self.db.rows(f"""SELECT {columns} FROM holdings h JOIN items i ON h.item_id=i.id
+            JOIN jobs j ON j.id=i.job_id WHERE """ + ' AND '.join(where) + ' ORDER BY i.id DESC LIMIT 500', tuple(args))
+
+    def sales(self, limit=200):
+        """Sold products. Shop cost and supplier are internal and only shown to roles
+        that may see them."""
+        self.s.require_permission('register_sale')
+        internal = "s.cost,s.provider," if self.s.may('view_internal_cost') else ''
+        return self.db.rows(f"""SELECT s.id,s.customer_id,s.device,s.serial,s.invoice_ref,s.invoice_date,
+            s.sale_date,s.amount,{internal}s.warranty_start,s.warranty_end,s.warranty_terms,
+            s.collected,s.collector,s.acknowledgment,c.name AS customer
+            FROM sales s JOIN customers c ON c.id=s.customer_id ORDER BY s.id DESC LIMIT ?""", (limit,))
 
     def ledger(self, account_type, account_id, start, end):
         self.s.require_permission('collect_payment')
@@ -110,7 +144,7 @@ class Queries:
         result["holdings"] = self.db.rows("SELECT i.id,i.type,i.description,i.serial,h.location,h.quantity FROM items i JOIN holdings h ON i.id=h.item_id WHERE i.job_id=? AND h.quantity>0", (job_id,))
         result["movements"] = self.db.rows("SELECT m.* FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? ORDER BY m.id DESC", (job_id,))
         result["audit"] = self.db.rows("SELECT a.created,u.name AS actor,a.action,a.payload FROM audit a LEFT JOIN users u ON a.actor=u.id WHERE a.entity='job' AND a.entity_id=? ORDER BY a.id DESC LIMIT 300", (job_id,)) if self.s.user["role"] == "owner" else []
-        if self.s.user['role']!='owner':
+        if not self.s.may('view_internal_cost'):
             from .inventory import public_values
             result=public_values(result)
         return result

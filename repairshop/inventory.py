@@ -45,7 +45,7 @@ class Inventory:
         if view=='out':rows=[r for r in rows if r['active'] and r['available']==0]
         for r in rows:
             r['warranty']=f"{r['warranty_duration']} {r['warranty_unit']}" if r['warranty_duration'] else 'Not recorded'
-        return rows if self.s.user['role']=='owner' else public_values(rows)
+        return rows if self.s.may('view_internal_cost') else public_values(rows)
 
     def balance(self,c,ident):
         r=c.execute('SELECT COALESCE(sum(delta),0),COALESCE(sum(reserved_delta),0),COALESCE(sum(issued_delta),0) FROM stock_movements WHERE stock_id=?',(ident,)).fetchone()
@@ -189,9 +189,9 @@ class Inventory:
         self.s.require()
         rows=self.db.rows('''SELECT m.*,s.name part,s.sku,u.name staff,j.number job FROM stock_movements m JOIN stock_items s ON s.id=m.stock_id
             JOIN users u ON u.id=m.actor LEFT JOIN jobs j ON j.id=m.job_id WHERE (? IS NULL OR m.stock_id=?) AND (? IS NULL OR m.job_id=?) ORDER BY m.id DESC''',(stock_id,stock_id,job_id,job_id))
-        if self.s.user['role']!='owner':
+        if not self.s.may('view_internal_cost'):
             for r in rows:r['snapshot']=json.dumps(public_values(json.loads(r['snapshot'])))
         for r in rows:
             snapshot=json.loads(r['snapshot']);r['supplier']=snapshot.get('supplier','Legacy: not recorded');r['invoice']=snapshot.get('invoice','');r['purchase_date']=snapshot.get('purchase_date')
-            if self.s.user['role']=='owner':r['purchase_cost']=snapshot.get('purchase_cost')
+            if self.s.may('view_internal_cost'):r['purchase_cost']=snapshot.get('purchase_cost')
         return rows

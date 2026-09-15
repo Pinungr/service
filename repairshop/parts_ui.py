@@ -33,8 +33,8 @@ class RepairRecords(QWidget):
                 ('Order external part',lambda:self.procurement('order')),('Receive external part',lambda:self.procurement('receive'))],
             'warranty':[('Repair warranty',self.repair_warranty),('Create claim',self.claim),('Edit warranty (owner)',self.edit_warranty),('Update claim',self.update_claim),
                 ('Manual warranty check',self.manual_warranty),('Manual check history',self.manual_history),('Privileged override (owner)',lambda:self.edit_warranty(True))]}
-        if kind=='cards' and self.s.user['role']=='owner':actions['cards'].append(('Print internal copy (owner)',lambda:self.print_card(True)))
-        if kind=='parts' and self.s.user['role']=='owner':actions['parts'].append(('Write off part (owner)',self.writeoff))
+        if kind=='cards' and self.s.may('view_internal_cost'):actions['cards'].append(('Print internal copy (owner)',lambda:self.print_card(True)))
+        if kind=='parts' and self.s.may('manage_inventory'):actions['parts'].append(('Write off part (owner)',self.writeoff))
         for i,(title,fn) in enumerate(actions[kind]):
             b=button(title,lambda checked=False,f=fn:self.ws.support(f),i==0);bar.addWidget(b);self.action_buttons[title]=b
             b.setEnabled(not self.w.db.readonly or title=='View card')
@@ -62,7 +62,7 @@ class RepairRecords(QWidget):
                 r['warranty']=f"{r['warranty_duration']} {r['warranty_unit']}"
             self.info.setText('Search inventory first. Reserve stock, record its physical issue, then install it after customer approval. External parts keep their own supplier and receipt record.')
             columns=['name','quantity','source','customer_price','stock_state','stock_location','procurement_status','status','warranty_expiry','supplier','installed_by','installed_at','warranty','brand','model','part_number','serial']
-            if self.s.user['role']=='owner':columns[3:3]=['purchase_cost','margin']
+            if self.s.may('view_internal_cost'):columns[3:3]=['purchase_cost','margin']
             self.grid.fill(rows,columns)
         else:
             job=self.s.job(self.ident)
@@ -88,12 +88,12 @@ class RepairRecords(QWidget):
         r=self.grid.selected()
         if self.kind=='warranty':
             locked=bool(r and r.get('claim_id'))
-            self.action_buttons['Edit warranty (owner)'].setEnabled(bool(r) and not locked and self.s.user['role']=='owner' and not self.w.db.readonly)
+            self.action_buttons['Edit warranty (owner)'].setEnabled(bool(r) and not locked and self.s.may('correct_warranty') and not self.w.db.readonly)
             self.detail.setText(f"WARRANTY STATUS MANAGED BY ACTIVE CLAIM · WC-{r['claim_id']:06d} · {r['claim_state']}" if locked else '')
             return
         if not r or self.kind!='parts':
             self.detail.setText('');return
-        internal=f"Purchase cost: {rupees(r['purchase_cost'])} / unit · Margin: {rupees(r['margin'])} · " if self.s.user['role']=='owner' else ''
+        internal=f"Purchase cost: {rupees(r['purchase_cost'])} / unit · Margin: {rupees(r['margin'])} · " if self.s.may('view_internal_cost') else ''
         self.detail.setText(f"{r['name']} · {r['status'].upper()} · Qty {r['quantity']} · {r.get('supplier','')}\n{internal}Customer price: {rupees(r['customer_price'])} / unit\nInstalled: {r['installed_at'] or 'Pending'} by {r['installed_by'] or 'Not recorded'} · Warranty: {r['warranty_duration']} {r['warranty_unit']} · Expires: {r.get('warranty_expiry') or 'Starts on installation'} · Provider: {r['warranty_provider'] or 'No warranty'}")
 
     def view_card(self):

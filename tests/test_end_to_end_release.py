@@ -158,7 +158,7 @@ def test_a_full_day_at_the_counter(service, tmp_path):
     expected = Returns(service).expected(mobile)
     assert expected['items'], 'the return screen is built from the outbound manifest'
     life.execute(mobile, 'receive', dict(counterparty='Counter staff', condition='Intact', acknowledgment='R9',
-                                         storage='shop:Front desk', repair_result='REPAIRED',
+                                         repair_result='REPAIRED',
                                          receiver_kind='storage', operation_id='e2e-receive'))
     verification = Returns(service).verifications(mobile)[0]
     assert verification['complete'] and not verification['discrepancies']

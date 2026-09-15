@@ -115,12 +115,12 @@ class Lifecycle:
         for r in rows:
             r['time'] = local_time(r['created'])
             payload = json.loads(r['payload'])
-            if self.s.user['role']!='owner':
+            if not self.s.may('view_internal_cost'):
                 from .inventory import public_values
                 payload=public_values(payload);r['payload']=json.dumps(payload)
             r['event'] = ACTIONS.get(payload.get('action'), r['action'].replace('_', ' ').title())
             # Financial detail visibility remains owner-only; business events stay readable.
-            if self.s.user['role'] != 'owner' and r['action'] in ('expense_allocated', 'finance_posted') and payload.get('account_type') != 'customer':
+            if not self.s.may('view_internal_cost') and r['action'] in ('expense_allocated', 'finance_posted') and payload.get('account_type') != 'customer':
                 r['details'] = 'Account record updated'
             else:
                 def readable(obj):
@@ -128,7 +128,7 @@ class Lifecycle:
                     for key,value in obj.items():
                         if key in ('action','before','after','version','actor'):
                             continue
-                        if self.s.user['role']!='owner' and key in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price','purchase_cost','cost','estimate'):
+                        if not self.s.may('view_internal_cost') and key in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price','purchase_cost','cost','estimate'):
                             continue
                         if isinstance(value,dict):
                             parts.append(readable(value))
@@ -144,7 +144,7 @@ class Lifecycle:
     def snapshot(self, ident):
         with self.db.read_snapshot():
             value=self._snapshot(ident)
-            if self.s.user['role']!='owner':
+            if not self.s.may('view_internal_cost'):
                 from .inventory import public_values
                 value=public_values(value)
             return value
@@ -345,7 +345,7 @@ class Lifecycle:
             if not away and self.db.one('''SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id
                 WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND '''+sql_in_shop('h.location'),(j['id'],)):
                 actions.append('hand_over')
-            if self.s.user['role']=='owner':
+            if self.s.may('resolve_exception'):
                 actions.append('resolve_item')
             if away and stage in ('final_qc','billing','ready_repaired','ready_unrepaired'):
                 actions.append('receive')
@@ -361,7 +361,7 @@ class Lifecycle:
             elif stage=='external_diagnosis':actions=['arrive','details','decline']
         if stage not in ('closed','collected'):
             actions.append('parts');actions.append('manual_warranty')
-            if self.s.user['role']=='owner':actions.append('costing')
+            if self.s.may('view_internal_cost'):actions.append('costing')
         return list(dict.fromkeys(actions))
 
     def tracker(self, j, data, events):
@@ -791,6 +791,12 @@ class Lifecycle:
                 self._set(c,j,data,stage,action,p)
         finally:
             _command.reset(token)
+        # Only after the lifecycle transaction has committed: the customer is never told
+        # about a repair step that failed to save.
+        if action=='complete_repair':
+            self.s.announce('completion', ident, data.get('repair_completed') or action,
+                            'Your repair is complete. The summary of work and warranty is attached.',
+                            'warranty_summary')
 
     @staticmethod
     def _notes(notes):

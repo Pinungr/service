@@ -108,6 +108,11 @@ class CustomerRecords:
 
     def save_photo(self, image, customer_id, person_role='owner', person_name='', device_id=None, job_id=None, captured=None):
         self.s.require_permission('customer_records')
+        # Belonging to the same customer is not authorization: a photo attached to an
+        # existing repair has to be one this user may work on. Checked before the image
+        # is encoded, published to disk or recorded, so a refusal leaves nothing behind.
+        if job_id:
+            self.s.require_job_access(job_id)
         if person_role not in ('owner', 'submitter', 'product', 'accessory', 'return') or (person_role == 'product') != bool(device_id):
             raise RuleError('Choose whose photo is being saved.')
         if person_role == 'return' and not job_id:
@@ -177,6 +182,8 @@ class CustomerRecords:
         row = self.db.one('SELECT * FROM attachments WHERE id=? AND sha256 IS NOT NULL', (attachment_id,))
         if not row:
             raise RuleError('Select a photo with a recorded checksum.')
+        if row['job_id']:
+            self.s.require_job_access(row['job_id'])
         source = Path(source)
         if not source.is_file() or source.stat().st_size > 50 * 1024**2:
             raise RuleError('Choose the original photo from a backup, up to 50 MB.')
@@ -198,16 +205,27 @@ class CustomerRecords:
         return folder
 
     def overview(self, customer_id):
-        self.s.require()
+        """One customer's repairs, limited to what this user may see.
+
+        A shared customer never widens access: each repair is filtered by the same job
+        scope used everywhere else, so one technician cannot read another's work through
+        a customer they happen to share. Money is shown only to roles that handle it.
+        """
+        self.s.require_permission('customer_records')
         customer = self.db.one('SELECT * FROM customers WHERE id=?', (customer_id,))
         if not customer:
             raise RuleError('Customer not found.')
+        scope, scope_args = self.s.scope_jobs()
+        money = self.s.may('collect_payment') or self.s.may('billing')
         jobs = self.db.rows('''SELECT j.*,COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,
-            (SELECT COALESCE(sum(amount),0) FROM entries WHERE job_id=j.id AND account_type='customer') AS balance,
+            ''' + ("(SELECT COALESCE(sum(amount),0) FROM entries WHERE job_id=j.id AND account_type='customer')"
+                   if money else 'NULL') + ''' AS balance,
             (SELECT path FROM attachments WHERE device_id=j.device_id AND kind='product_photo' ORDER BY id DESC LIMIT 1) AS thumbnail
             FROM jobs j LEFT JOIN assignments a ON a.id=j.assignment_id LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id
-            WHERE j.customer_id=? ORDER BY j.id DESC''', (customer_id,))
-        holdings = self.db.rows('''SELECT i.job_id,i.type,h.location,h.quantity FROM items i JOIN holdings h ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id WHERE j.customer_id=? AND h.quantity>0''', (customer_id,))
+            WHERE j.customer_id=? AND ''' + scope + ' ORDER BY j.id DESC', (customer_id, *scope_args))
+        holdings = self.db.rows('''SELECT i.job_id,i.type,h.location,h.quantity FROM items i
+            JOIN holdings h ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id
+            WHERE j.customer_id=? AND h.quantity>0 AND ''' + scope, (customer_id, *scope_args))
         by_job = {}
         for holding in holdings:
             by_job.setdefault(holding['job_id'], []).append(holding)
@@ -242,7 +260,7 @@ class CustomerRecords:
                     key = {'vendor': 'vendors', 'centre': 'service_centres', 'transit': 'in_transit'}.get(prefix)
                     if key:
                         sets[key].add(device)
-                    if h['type'] == 'device' and prefix in ('shop', 'technician') and job['stage'] in ('received', 'inspection', 'warranty_check', 'route_selection', 'diagnosis', 'awaiting_estimate', 'awaiting_approval', 'approved', 'under_repair', 'waiting_parts', 'testing', 'technician_testing', 'final_qc', 'billing'):
+                    if h['type'] == 'device' and in_shop(h['location']) and job['stage'] in ('received', 'inspection', 'warranty_check', 'route_selection', 'diagnosis', 'awaiting_estimate', 'awaiting_approval', 'approved', 'under_repair', 'waiting_parts', 'testing', 'technician_testing', 'final_qc', 'billing'):
                         sets['under_repair_in_shop'].add(device)
             else:
                 history.append(job)
@@ -262,7 +280,10 @@ class CustomerRecords:
         return dict(customer=customer, outstanding=outstanding, history=history, visits=visits,
                     counts={k: len(v) for k, v in sets.items()},
             all_ready=bool(outstanding) and all(j['ready'] for j in outstanding),
-            devices=self.db.rows('SELECT * FROM devices WHERE customer_id=? ORDER BY id', (customer_id,)),
+            devices=self.db.rows('SELECT * FROM devices WHERE customer_id=? ORDER BY id', (customer_id,))
+                    if self.s.may('view_all_jobs') else
+                    [r for r in self.db.rows('SELECT * FROM devices WHERE customer_id=? ORDER BY id', (customer_id,))
+                     if r['id'] in {j['device_id'] for j in jobs}],
             photos=self.db.rows("SELECT * FROM attachments WHERE customer_id=? AND kind='customer_photo' ORDER BY id DESC", (customer_id,)))
 
     #: Job columns a customer may see. Anything not listed here — internal costs, hold
@@ -270,6 +291,26 @@ class CustomerRecords:
     CUSTOMER_JOB_FIELDS = ('number', 'device', 'serial', 'complaint', 'damage', 'received',
                            'stage', 'initial_estimate', 'customer_requirement', 'deposit',
                            'repair_due', 'collection_due', 'actual_completion', 'actual_collection')
+
+    @staticmethod
+    def _customer_product(device, category, jobs, sales):
+        """The product as its owner may see it.
+
+        Built from a whitelist rather than by removing fields from a database row, so a
+        column added later is private until someone deliberately shares it. The shop's
+        purchase cost and its supplier are never part of this.
+        """
+        return dict(
+            product=device['name'], category=category, brand=device['brand'],
+            model=device['model'], serial=device['serial'],
+            purchases=[dict(sale_date=s['sale_date'], invoice_reference=s['invoice_ref'],
+                            amount_paid=s['amount'], warranty_start=s['warranty_start'],
+                            warranty_end=s['warranty_end'], warranty_terms=s['warranty_terms'])
+                       for s in sales],
+            repairs=[dict(number=j['number'], received=j['received'], reported_issue=j['complaint'],
+                          visible_condition=j['damage'], status=j['stage'],
+                          completed=j['actual_completion'], collected=j['actual_collection'])
+                     for j in jobs])
 
     def _customer_job(self, c, job, overview):
         """What the customer is entitled to see about their own repair."""
@@ -374,12 +415,17 @@ class CustomerRecords:
                 managed_path(self.db.root, device_folder + '/Product-Photos').mkdir(parents=True, exist_ok=True)
                 device_jobs = c.execute('SELECT * FROM jobs WHERE device_id=? ORDER BY id', (device['id'],)).fetchall()
                 category = c.execute('SELECT name FROM masters WHERE id=?', (device['category_id'],)).fetchone()
-                details = dict(device)
-                details['category'] = category[0] if category else 'Not specified'
-                details['repairs'] = [dict(j) for j in device_jobs]
-                details['sales'] = [dict(r) for r in c.execute('SELECT * FROM sales WHERE device_id=?', (device['id'],))]
-                details['photos'] = [dict(r) for r in c.execute('SELECT * FROM attachments WHERE device_id=?', (device['id'],))]
-                self._summary(c, customer_id, device_folder + '/product-details.txt', 'Device ID: DEV-%06d\n%s' % (device['id'], readable(details)))
+                sales = [dict(r) for r in c.execute('SELECT * FROM sales WHERE device_id=?', (device['id'],))]
+                category = category[0] if category else 'Not specified'
+                self._summary(c, customer_id, device_folder + '/product-details.txt',
+                              'Device ID: DEV-%06d\n%s' % (device['id'],
+                              readable(self._customer_product(device, category, device_jobs, sales))))
+                self._summary(c, customer_id,
+                              f'Internal/CUST-{customer_id:06d}/DEV-{device["id"]:06d}/internal-product-details.txt',
+                              readable(dict(dict(device), category=category,
+                                            repairs=[dict(j) for j in device_jobs], sales=sales,
+                                            photos=[dict(r) for r in c.execute(
+                                                'SELECT * FROM attachments WHERE device_id=?', (device['id'],))])))
                 for job in device_jobs:
                     job_folder = device_folder + '/Repairs/' + slug(job['number'])
                     summary_row = next((r for r in overview['outstanding'] + overview['history'] if r['id'] == job['id']), {})

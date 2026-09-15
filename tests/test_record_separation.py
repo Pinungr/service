@@ -122,8 +122,9 @@ def test_the_two_trees_are_physically_separate(loaded):
     assert customers and internal
     assert not any('Internal' in p.parts for p in customers)
     assert not any('Customers' in p.parts for p in internal)
-    assert {p.name for p in customers} >= {'customer-job-summary.txt', 'customer-details.txt'}
-    assert {p.name for p in internal} == {'internal-job-details.txt'}
+    assert {p.name for p in customers} >= {'customer-job-summary.txt', 'customer-details.txt',
+                                           'product-details.txt'}
+    assert {p.name for p in internal} == {'internal-job-details.txt', 'internal-product-details.txt'}
 
 
 def test_an_internal_document_is_never_filed_with_the_customer(loaded):

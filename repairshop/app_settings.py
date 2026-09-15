@@ -4,6 +4,10 @@ Staff should not answer the same questions on every intake: which paper, whether
 print, whether to message the customer. The owner sets those once here and normal
 operations read them.
 
+Customer consent is deliberately not a setting here: it can never be switched off, so it
+is enforced unconditionally in code rather than offered as something an owner might turn
+against the customer.
+
 Nothing in this file decides whether a customer may actually be contacted. A global
 setting only says what the shop *wants* to do; the customer's recorded contact details
 and consent still decide what is allowed, and that check stays in `queue_customer_document`.
@@ -43,16 +47,16 @@ SETTINGS = {
     'paper_invoice': _paper('Invoice paper size'),
     'include_photos': Setting(False, 'Documents & printing', 'Include photos in customer messages'),
 
-    'auto_job_card': Setting(True, 'After intake', 'Create the job card automatically'),
+    'auto_job_card': Setting(True, 'After intake', 'Auto Generate Customer Job Card (the shop copy is always recorded)'),
     'auto_print': Setting(False, 'After intake', 'Open documents for printing automatically'),
 
-    'whatsapp_enabled': Setting(False, 'WhatsApp', 'Send customer WhatsApp messages'),
+    # Master switches. They gate notifications the shop already sends, so they default
+    # on; turning one off stops that channel everywhere, at queue time and at send time.
+    'whatsapp_enabled': Setting(True, 'WhatsApp', 'Send WhatsApp messages at all'),
     'whatsapp_attach_pdf': Setting(True, 'WhatsApp', 'Attach the PDF where the template allows it'),
-    'require_whatsapp_consent': Setting(True, 'WhatsApp', 'Require recorded WhatsApp consent'),
 
-    'email_enabled': Setting(False, 'Email', 'Send customer emails'),
+    'email_enabled': Setting(True, 'Email', 'Send emails at all'),
     'email_attach_pdf': Setting(True, 'Email', 'Attach the PDF'),
-    'require_email_consent': Setting(True, 'Email', 'Require recorded email consent'),
 
     'show_estimate_on_receipt': Setting(True, 'Estimates', 'Show the initial estimate on the intake receipt'),
     'show_advance_on_receipt': Setting(True, 'Estimates', 'Show the advance received on the intake receipt'),

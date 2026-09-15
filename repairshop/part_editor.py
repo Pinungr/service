@@ -13,7 +13,7 @@ def choose_and_plan(records,row=None):
     grid=Grid();layout.addWidget(grid,1);inventory=Inventory(r.s);result={}
     def reload():
         cols=['sku','name','brand','compatibility','available','customer_price','warranty']
-        if r.s.user['role']=='owner':cols.insert(5,'purchase_cost')
+        if r.s.may('view_internal_cost'):cols.insert(5,'purchase_cost')
         grid.fill([s for s in inventory.rows(search.text()) if s['active']],cols)
     def stock():result.update(stock=r.w.selected(grid));d.accept()
     def external():result.update(external=True);d.accept()
@@ -42,7 +42,7 @@ def edit_part(r,row=None,stock=None):
         f.submit(save)
     add_supplier=button('+ New external supplier',lambda:r.w.safe(new_supplier));d.layout.addRow(add_supplier)
     for key,title in [('invoice','Supplier invoice'),('purchase_cost','Internal unit purchase cost (INR)'),('customer_price','Unit customer selling price (INR)'),('warranty_duration','Warranty duration (0 = not recorded)'),('warranty_provider','Warranty provider'),('warranty_terms','Warranty coverage / exclusions'),('requested_by','Part requested by'),('request_notes','Repairer requirement / diagnosis'),('notes','Source / part notes')]:
-        if key=='purchase_cost' and r.s.user['role']!='owner':continue
+        if key=='purchase_cost' and not r.s.may('view_internal_cost'):continue
         value=str(values.get(key,0)/100) if key in ('purchase_cost','customer_price') else values.get(key,0 if key=='warranty_duration' else assigned['name'] if key=='requested_by' and assigned else '')
         d.text(key,title,value,multiline=key in ('warranty_terms','request_notes','notes'))
     d.date('purchase_date','Purchase date',values.get('purchase_date'));d.select('warranty_unit','Warranty unit',['days','months','years'],values.get('warranty_unit','months'))

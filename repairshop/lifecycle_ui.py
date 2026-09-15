@@ -83,7 +83,7 @@ class JobWorkspace(QDialog):
         self.dispatch_tab=None
         self.party_quote_tab=None
         self.cost_panel=None
-        if window.s.user['role']=='owner':
+        if window.s.may('view_internal_cost'):
             from .costing_ui import CostPanel
             self.cost_panel=CostPanel(self);self.tabs.addTab(self.cost_panel,'Internal costing')
         utility_toggle=button('Utilities && administrative actions',lambda:self.utilities.setVisible(not self.utilities.isVisible()))
@@ -142,7 +142,7 @@ class JobWorkspace(QDialog):
             group=(self.exception_buttons if action in ('adopt','change_route','decline','repair_failed','rework','resolve_item','details')
                    else self.tools if action in ('parts','manual_warranty','costing','hand_over') else self.buttons)
             group.addWidget(b)
-        if self.window.s.user['role']=='owner' and v['route']!='in_house':
+        if self.window.s.may('vendor_accounts') and v['route']!='in_house':
             self.tools.addWidget(button('Third-party invoice / payment',lambda:self.support(lambda:self.payment('vendor'))))
         # A caption with no buttons under it reads as a missing feature.
         self.actions_caption.setVisible(self.buttons.count()>0)
@@ -157,7 +157,7 @@ class JobWorkspace(QDialog):
             self.dispatch_tab=DispatchPanel(self)
             wrapper=QScrollArea();wrapper.setWidgetResizable(True);wrapper.setWidget(self.dispatch_tab)
             self.tabs.addTab(wrapper,'Third-party dispatch')
-            if self.window.s.user['role']=='owner':
+            if self.window.s.may('view_internal_cost'):
                 from .party_quotes_ui import PartyQuotePanel
                 self.party_quote_tab=PartyQuotePanel(self)
                 quotes=QScrollArea();quotes.setWidgetResizable(True);quotes.setWidget(self.party_quote_tab)
@@ -279,10 +279,10 @@ class JobWorkspace(QDialog):
                 for key,title in [('external_reference','Service center / vendor job number'),('claim_number','Warranty claim number'),('contact_person','Contact person'),('address','Address'),('phone','Phone'),('specialization','Brand / specialization'),('transport','Courier / transport'),('vendor_status','External repair status')]:
                     d.text(key,title,details.get(key,''))
                 d.date('expected_return','Expected return',v['return_due'])
-                if self.window.s.user['role']=='owner':
+                if self.window.s.may('view_internal_cost'):
                     for k,title in [('vendor_parts','Vendor parts cost'),('vendor_labour','Vendor labour cost'),('transport_cost','Transport cost'),('other_cost','Other cost'),('customer_price','Proposed customer price')]:
                         d.text(k,title+' (INR)',str(details.get(k,0)/100))
-            elif self.window.s.user['role']=='owner':
+            elif self.window.s.may('view_internal_cost'):
                 d.text('estimated_parts','Estimated parts cost (INR)',details.get('estimated_parts',''))
                 d.text('estimated_labour','Estimated labour cost (INR)',details.get('estimated_labour',''))
             d.text('notes','Progress notes',details.get('notes',''),multiline=True)
@@ -482,7 +482,7 @@ class JobWorkspace(QDialog):
         for key,title in [('demonstrated','Device / unrepaired condition demonstrated to customer'),('accepted','Customer accepted the device'),('accessories_returned','All listed accessories returned'),('payment_checked','Payment completed or owner-approved credit reviewed')]:d.check(key,title)
         d.text('received_by','Received by',v['customer'])
         d.text('acknowledgment','Customer confirmation / signed receipt reference',multiline=True)
-        if self.window.s.user['role']=='owner':d.text('credit_reason','Owner-approved credit reason (only if balance remains)',multiline=True)
+        if self.window.s.may('release_with_balance'):d.text('credit_reason','Owner-approved credit reason (only if balance remains)',multiline=True)
         d.text('notes','Final notes',multiline=True)
         d.buttons.button(QDialogButtonBox.StandardButton.Save).setText('COMPLETE HANDOVER')
         if d.submit(lambda p:self.life.execute(self.ident,'handover',p,v['version'])):

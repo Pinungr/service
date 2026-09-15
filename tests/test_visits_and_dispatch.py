@@ -316,7 +316,7 @@ def test_receive_from_third_party_closes_the_current_dispatch(service, customer)
     life.execute(ident, 'start_repair')
     life.execute(ident, 'complete_repair', dict(notes='Board replaced', parts='Board'))
     life.execute(ident, 'receive', dict(counterparty='Counter staff', condition='Intact',
-                                        acknowledgment='Return R1', storage='shop:Front desk',
+                                        acknowledgment='Return R1',
                                         repair_result='REPAIRED'))
     assert Dispatches(service).current(ident) is None
     assert [r['status'] for r in Dispatches(service).history(ident)] == ['RETURNED']

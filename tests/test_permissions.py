@@ -50,9 +50,10 @@ def test_the_owner_can_do_everything_and_a_technician_cannot(service):
     assert ROLES['owner'] == set(PERMISSIONS)
     for denied in ('billing', 'collect_payment', 'view_internal_cost', 'settings',
                    'user_management', 'backup_restore', 'view_all_jobs', 'reports',
-                   'vendor_accounts', 'assign_job'):
+                   'vendor_accounts', 'register_sale', 'financial_reports'):
         assert not allowed('technician', denied), f'technician must not have {denied}'
-    for granted in ('intake', 'handover', 'repair', 'customer_records'):
+    # A technician is operational staff: they receive products and decide who repairs them.
+    for granted in ('intake', 'handover', 'repair', 'customer_records', 'assign_job'):
         assert allowed('technician', granted)
 
 
@@ -93,8 +94,9 @@ def test_a_technician_taking_a_product_in_gains_nothing_else(service):
     staff(service, 'amit', 'technician')
     service.login('amit', 'TestPassword123')
     job = service.intake(customer, 'Dell Laptop', 'No power', operation_id=uuid.uuid4().hex)
+    # Assigning is part of their job; money, configuration and staff admin are not.
+    service.assign(job, 'in_house', technician_id=service.user['id'])
     for operation, permission in (
-            (lambda: service.assign(job, 'in_house', technician_id=service.user['id']), 'assign job'),
             (lambda: service.settings({'shop_name': 'Mine'}), 'settings'),
             (lambda: service.save_staff('x', 'X', 'counter', 'TestPassword123'), 'role'),
             (lambda: service.post('customer', customer, 'receipt', 100, uuid.uuid4().hex), 'collect payment')):
@@ -203,9 +205,9 @@ def test_a_technician_cannot_run_counter_only_lifecycle_steps(service):
     from repairshop.lifecycle import ACTION_PERMISSIONS
     from repairshop.permissions import allowed as may
     counter_only = {a for a, p in ACTION_PERMISSIONS.items() if not may('technician', p)}
-    assert {'select_route', 'bill', 'payment', 'handover', 'decision', 'quote'} <= counter_only
+    assert {'bill', 'payment', 'handover', 'decision', 'quote'} <= counter_only
     technician_can = {a for a, p in ACTION_PERMISSIONS.items() if may('technician', p)}
-    assert {'diagnose', 'start_repair', 'complete_repair', 'hand_over'} <= technician_can
+    assert {'diagnose', 'start_repair', 'complete_repair', 'hand_over', 'select_route'} <= technician_can
     assert 'bill' not in technician_can and 'costing' not in technician_can
 
 
