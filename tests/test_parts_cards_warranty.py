@@ -6,14 +6,14 @@ from repairshop.parts import Parts
 from repairshop.job_cards import JobCards
 from repairshop.warranties import Warranties,warranty_expiry
 from repairshop.documents import Documents
-from repairshop.domain import RuleError
+from repairshop.domain import RuleError, today
 from test_lifecycle import route,dispatch,diagnosis,approve,complete,qc,deliver,fresh
 
 
 def plan(s,job,source='supplier',duration=3,price=90000):
     parts=Parts(s)
     values=dict(name='Battery',brand='Demo',model='B50',part_number='PART-B50',serial='SERIAL-B50',quantity=1,source=source,purchase_cost=40000,customer_price=price,
-        warranty_duration=duration,warranty_unit='months',warranty_provider='Test Repair Shop',warranty_terms='Manufacturing defects only',invoice='INV-001',purchase_date=date.today().isoformat())
+        warranty_duration=duration,warranty_unit='months',warranty_provider='Test Repair Shop',warranty_terms='Manufacturing defects only',invoice='INV-001',purchase_date=today())
     if source=='stock':
         stock=parts.stock_item('Battery',40000,price,part_number='PART-B50');parts.adjust_stock(stock,2,'Purchase INV-001');values['inventory_id']=stock
     elif source in ('supplier','technician'):
@@ -82,7 +82,7 @@ def test_part_source_approval_install_warranty_and_delivery(service,customer,sou
     p=Parts(service).rows(ident)[0]
     assert p['purchase_cost']==40000 and p['customer_price']==90000 and p['margin']==50000
     assert p['estimate_id']==quote and p['card_id'] and p['installed_by']=='Amit'
-    assert p['status']=='installed' and p['warranty_expiry']==warranty_expiry(date.today().isoformat(),3,'months')
+    assert p['status']=='installed' and p['warranty_expiry']==warranty_expiry(today(),3,'months')
     q=service.db.one('SELECT * FROM quotes WHERE id=?',(quote,))
     assert q['total']==100000 and any(x.get('part_id')==part for x in json.loads(q['lines']))
     assert 'purchase_cost' not in q['lines']
@@ -184,9 +184,9 @@ def test_new_tabs_show_parts_cards_and_warranty(qtbot,service,customer):
 
 def test_repair_warranty_is_structured_and_audited(service,customer):
     ident,life,part,q=installed(service,customer)
-    w=Warranties(service);wid=w.repair_warranty(ident,'Workmanship',date.today().isoformat(),6,'months','Our shop','Labour only')
+    w=Warranties(service);wid=w.repair_warranty(ident,'Workmanship',today(),6,'months','Our shop','Labour only')
     row=service.db.one('SELECT * FROM part_warranties WHERE id=?',(wid,))
-    assert row['part_id'] is None and row['source']=='repair' and row['expiry']==warranty_expiry(date.today().isoformat(),6,'months')
+    assert row['part_id'] is None and row['source']=='repair' and row['expiry']==warranty_expiry(today(),6,'months')
 
 
 def test_claim_replacement_full_flow_and_dashboard_filters(service,customer):

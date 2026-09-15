@@ -1,6 +1,6 @@
 """Structured parts, stock movements and customer-approved part revisions."""
 import json
-from .domain import RuleError, now, day
+from .domain import RuleError, now, day, today
 from .persistence import insert
 
 
@@ -154,8 +154,11 @@ class Parts:
         self.s.require()
         if not installed_by.strip():
             raise RuleError('Record who installed the part.')
-        stamp=day(installed_date) if installed_date else now()[:10]
-        if stamp>now()[:10]:
+        # Installation is a business date, so it follows the shop's own calendar. Using the
+        # UTC date dated a part installed after midnight IST to the previous day and expired
+        # its warranty a day early.
+        stamp=day(installed_date) if installed_date else today()
+        if stamp>today():
             raise RuleError('Installation cannot be in the future.')
         with self.db.transaction() as c:
             p=self.db.one('SELECT * FROM repair_parts WHERE id=?',(part_id,))
