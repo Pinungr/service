@@ -59,11 +59,15 @@ def intake_warranty(data):
                     reason='No warranty status was recorded at intake; verify it manually.')
     reasons = {'EXPIRED': 'Warranty had already expired when the product was collected.',
                'NONE': 'The customer reported no warranty at collection.',
-               'NOT_STARTED': 'The recorded warranty had not started at collection.'}
-    return dict(eligible=status not in reasons, status=status or 'UNKNOWN',
+               'NOT_STARTED': 'The recorded warranty had not started at collection.',
+               'UNKNOWN': 'Warranty was not confirmed as valid when the product was collected.'}
+    # The guided Warranty Check stage exists only for a product that was explicitly
+    # recorded as covered at intake. Unknown is preserved as unknown, but it no longer
+    # forces staff through a warranty-verification stage that the shop did not choose.
+    return dict(eligible=status == 'VALID', status=status or 'UNKNOWN',
                 expiry=snapshot.get('expiry') or snapshot.get('expiry_date'),
                 checked_on=snapshot.get('checked_on'),
-                reason=reasons.get(status, 'Warranty status at intake requires verification.'))
+                reason=reasons.get(status, 'Warranty was not confirmed as valid when the product was collected.'))
 
 
 #: The permission each guided lifecycle step needs. Steps with no entry are open to any
@@ -545,7 +549,10 @@ class Lifecycle:
                     if snapshot['eligible']:
                         stage='warranty_check'
                     else:
-                        data['warranty_status']='out_of_warranty'
+                        # Keep an unknown customer-reported status distinct from an
+                        # explicitly expired/absent warranty while still skipping the
+                        # Warranty Check stage as required by intake policy.
+                        data['warranty_status']='unknown' if snapshot['status']=='UNKNOWN' else 'out_of_warranty'
                         data['warranty_skipped']=snapshot['reason']
                         self.s.audit(c,'job',ident,'warranty_stage_skipped',snapshot)
                         stage='route_selection'
@@ -568,8 +575,8 @@ class Lifecycle:
                             if action=='select_route' else 'Receive the physical device at the shop before changing its repair route.')
                     route=p.get('route')
                     status=data.get('warranty_status')
-                    if status not in ('under_warranty','out_of_warranty','shop_warranty'):
-                        raise RuleError('Verify warranty first. Use the warranty details action for a legacy job.')
+                    if status not in ('under_warranty','out_of_warranty','shop_warranty','unknown'):
+                        raise RuleError('Record the intake warranty status first. Use the warranty details action for a legacy job.')
                     if status=='under_warranty' and route!='warranty_centre' and v['warranty'].get('decision') not in ('rejected','partial'):
                         raise RuleError('Valid manufacturer warranty uses an authorized service center. Record a rejection before selecting a paid route.')
                     if route=='warranty_centre' and status!='under_warranty':
@@ -629,7 +636,7 @@ class Lifecycle:
                         contact_id=v['assignment']['contact_id'],reference=p.get('reference',''),
                         transport_mode=p.get('transport_mode') or ('COURIER' if p.get('carrier','').strip() else 'BY_HAND'),
                         transport=p.get('transport') or ({'courier_name':p['carrier'].strip()} if p.get('carrier','').strip() else {}),
-                        amount=p.get('amount',0),expected_return=day(p.get('expected_return')),
+                        amount=p.get('amount',0),paid_by=p.get('paid_by','shop'),expected_return=day(p.get('expected_return')),
                         condition=p.get('condition',''),notes=p.get('notes',''),
                         manifest=sorted(selected),consent=True))
                 elif action in ('dispatch','arrive','receive','return_dispatch'):

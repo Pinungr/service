@@ -265,15 +265,26 @@ def test_valid_intake_warranty_still_shows_the_warranty_stage(service, customer)
     assert any(step['key'] == 'warranty_check' for step in life.snapshot(job)['tracker'])
 
 
-def test_expired_or_absent_warranty_skips_the_warranty_stage(service, customer):
-    for status in ('EXPIRED', 'NONE'):
+def test_only_valid_intake_warranty_shows_the_warranty_stage(service, customer):
+    # NOT_STARTED is derived from a shop sale, not reportable at a customer intake.
+    for status in ('EXPIRED', 'NONE', 'UNKNOWN'):
         job, life = guided(service, customer, status)
         assert service.job(job)['stage'] == 'route_selection'
         v = life.snapshot(job)
-        assert v['data']['warranty_status'] == 'out_of_warranty'
+        expected = 'unknown' if status == 'UNKNOWN' else 'out_of_warranty'
+        assert v['data']['warranty_status'] == expected
         assert not any(step['key'] == 'warranty_check' for step in v['tracker'])
         assert service.db.one("""SELECT 1 n FROM audit WHERE entity='job' AND entity_id=?
             AND action='warranty_stage_skipped'""", (job,))
+
+
+def test_unknown_warranty_skips_check_and_can_continue_to_a_paid_route(service, customer):
+    job, life = guided(service, customer, 'UNKNOWN')
+    assert service.job(job)['stage'] == 'route_selection'
+    life.execute(job, 'select_route', {'route': 'in_house', 'confirmed': True,
+                                       'technician_id': service.user['id']})
+    assert service.job(job)['route'] == 'in_house'
+    assert life.snapshot(job)['warranty_status'] == 'unknown'
 
 
 def test_warranty_eligibility_uses_the_intake_snapshot_not_today(service, customer):
