@@ -326,7 +326,10 @@ class CustomerOverview(QDialog):
         actions = FlowLayout()
         for title, fn in [('New intake', lambda: self.new_intake()), ('Open customer folder / Retry folders', self.open_folder), ('Refresh', self.reload), ('Recover selected customer photo', self.recover)]:
             control = button(title, lambda checked=False, fn=fn: window.safe(fn))
-            control.setEnabled(title == 'Refresh' or not window.db.readonly)
+            allowed = title == 'Refresh' or not window.db.readonly
+            if title == 'Open customer folder / Retry folders':
+                allowed = allowed and window.s.may('customer_export')
+            control.setEnabled(allowed)
             actions.addWidget(control)
         layout.addLayout(actions)
         self.counts = QLabel()
@@ -338,7 +341,17 @@ class CustomerOverview(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         self.grids = {}
-        for key, title in [('visits', 'Visits'), ('outstanding', 'Outstanding work'), ('history', 'Historical work'), ('devices', 'All physical devices'), ('photos', 'Customer photo history'), ('sales', 'Products sold'), ('quotes', 'Quotations'), ('payments', 'Payments & refunds'), ('messages', 'Communications')]:
+        tabs = [('visits', 'Visits'), ('outstanding', 'Outstanding work'), ('history', 'Historical work'),
+                ('devices', 'All physical devices'), ('photos', 'Customer photo history')]
+        if window.s.may('register_sale'):
+            tabs.append(('sales', 'Products sold'))
+        # Quotes are customer-facing, but remain scoped to the jobs this user may open.
+        tabs.append(('quotes', 'Quotations'))
+        if window.s.may('collect_payment'):
+            tabs.append(('payments', 'Payments & refunds'))
+        if window.s.may('messaging'):
+            tabs.append(('messages', 'Communications'))
+        for key, title in tabs:
             grid = Grid()
             self.grids[key] = grid
             self.tabs.addTab(grid, title)
@@ -378,13 +391,18 @@ class CustomerOverview(QDialog):
                         item.setText('Missing photo')
         self.grids['devices'].fill(data['devices'], ['id', 'name', 'brand', 'model', 'serial', 'created'])
         self.grids['photos'].fill(data['photos'], ['id', 'person_role', 'person_name', 'captured', 'path'])
-        db = self.window.db
-        self.grids['sales'].fill(db.rows('SELECT * FROM sales WHERE customer_id=? ORDER BY id DESC', (self.customer_id,)))
-        self.grids['quotes'].fill(db.rows('SELECT q.* FROM quotes q JOIN jobs j ON j.id=q.job_id WHERE j.customer_id=? ORDER BY q.id DESC', (self.customer_id,)))
-        self.grids['payments'].fill(db.rows("SELECT id,posted,kind,amount,reference,job_id FROM entries WHERE account_type='customer' AND account_id=? ORDER BY id DESC", (self.customer_id,)))
-        self.grids['messages'].fill(db.rows('SELECT event,channel,destination,state,created FROM outbox WHERE contact_id=? ORDER BY id DESC', (self.customer_id,)))
+        from .queries import Queries
+        q = Queries(self.window.s)
+        if 'sales' in self.grids:
+            self.grids['sales'].fill(q.customer_sales(self.customer_id))
+        self.grids['quotes'].fill(q.customer_quotes(self.customer_id))
+        if 'payments' in self.grids:
+            self.grids['payments'].fill(q.customer_payments(self.customer_id))
+        if 'messages' in self.grids:
+            self.grids['messages'].fill(q.customer_messages(self.customer_id))
 
     def open_folder(self):
+        self.window.s.require_permission('customer_export')
         self.window.run(lambda: self.records.sync_customer(self.customer_id), 'Updating customer folders…', callback=lambda path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))), refresh=False)
 
     def new_intake(self, device_id=None):

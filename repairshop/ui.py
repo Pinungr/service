@@ -518,14 +518,22 @@ class MainWindow(QMainWindow):
         d = Form("Register a sold product", self)
         d.add("customer_id", "Customer", CustomerSelector(self.s))
         d.add("category_id", "Category", MasterSelector(self.s, "category"))
-        for key, label in (("device", "Brand / model"), ("serial", "Serial number (optional)"), ("invoice_ref", "Invoice reference"), ("provider", "Warranty provider"), ("warranty_terms", "Warranty terms")):
+        for key, label in (("device", "Brand / model"), ("serial", "Serial number (optional)"), ("invoice_ref", "Invoice reference"), ("warranty_terms", "Warranty terms")):
             d.text(key, label, multiline=key == "warranty_terms")
+        # Supplier/provider and shop cost are internal commercial data. Counter staff can
+        # register the customer-facing sale without being presented with fields the
+        # service will (correctly) refuse them permission to save.
+        if self.s.may('view_internal_cost'):
+            d.text("provider", "Warranty / supplier provider")
         for key, label in (("sale_date", "Sale date"), ("invoice_date", "Invoice date"), ("warranty_start", "Warranty starts"), ("warranty_end", "Warranty ends")):
             d.date(key, label, today() if key in ("sale_date", "invoice_date") else None)
         d.text("amount", "Sale amount (INR)", "0")
-        d.text("cost", "Shop cost (INR)", "0")
+        if self.s.may('view_internal_cost'):
+            d.text("cost", "Shop cost (INR)", "0")
         def save(v):
-            v["amount"], v["cost"] = money(v["amount"]), money(v["cost"])
+            v["amount"] = money(v["amount"])
+            if "cost" in v:
+                v["cost"] = money(v["cost"])
             self.s.save_sale(**v)
         if d.submit(save):
             self.refresh()

@@ -108,6 +108,52 @@ class Queries:
             s.collected,s.collector,s.acknowledgment,c.name AS customer
             FROM sales s JOIN customers c ON c.id=s.customer_id ORDER BY s.id DESC LIMIT ?""", (limit,))
 
+    def customer_sales(self, customer_id):
+        """Sold products visible on one customer's overview.
+
+        The old Qt screen selected ``sales.*`` directly, which bypassed the permission
+        layer and exposed shop cost/provider to anyone who could open customer records.
+        Keep the projection here beside the normal Sales query so both screens obey the
+        same permission rules.
+        """
+        self.s.require_permission('register_sale')
+        internal = "s.cost,s.provider," if self.s.may('view_internal_cost') else ''
+        return self.db.rows(f"""SELECT s.id,s.customer_id,s.device,s.serial,s.invoice_ref,s.invoice_date,
+            s.sale_date,s.amount,{internal}s.warranty_start,s.warranty_end,s.warranty_terms,
+            s.collected,s.collector,s.acknowledgment
+            FROM sales s WHERE s.customer_id=? ORDER BY s.id DESC""", (customer_id,))
+
+    def customer_quotes(self, customer_id):
+        """Customer-visible quotations, restricted to jobs the current user may open."""
+        self.s.require_permission('customer_records')
+        scope, scope_args = self.s.scope_jobs()
+        return self.db.rows("""SELECT q.id,q.job_id,j.number,q.version,q.scope,q.total,q.valid_until,
+            q.state,q.created
+            FROM quotes q JOIN jobs j ON j.id=q.job_id
+            WHERE j.customer_id=? AND """ + scope + " ORDER BY q.id DESC",
+            (customer_id, *scope_args))
+
+    def customer_payments(self, customer_id):
+        """Customer ledger rows only for roles allowed to collect/view customer money."""
+        self.s.require_permission('collect_payment')
+        scope, scope_args = self.s.scope_jobs()
+        sql = """SELECT e.id,e.posted,e.kind,e.amount,e.method,e.reference,e.job_id,j.number
+            FROM entries e LEFT JOIN jobs j ON j.id=e.job_id
+            WHERE e.account_type='customer' AND e.account_id=?
+              AND (e.job_id IS NULL OR (j.id IS NOT NULL AND """ + scope + ")) " + \
+              "ORDER BY e.id DESC"
+        return self.db.rows(sql, (customer_id, *scope_args))
+
+    def customer_messages(self, customer_id):
+        """Communication audit for users who are allowed to manage customer messaging."""
+        self.s.require_permission('messaging')
+        scope, scope_args = self.s.scope_jobs()
+        sql = """SELECT o.event,o.channel,o.destination,o.state,o.created,o.job_id,j.number
+            FROM outbox o LEFT JOIN jobs j ON j.id=o.job_id
+            WHERE o.contact_id=? AND (o.job_id IS NULL OR (j.id IS NOT NULL AND """ + scope + ")) " + \
+              "ORDER BY o.id DESC"
+        return self.db.rows(sql, (customer_id, *scope_args))
+
     def ledger(self, account_type, account_id, start, end):
         self.s.require_permission('collect_payment')
         if account_type == "vendor":
