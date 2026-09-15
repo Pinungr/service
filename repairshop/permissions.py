@@ -12,6 +12,7 @@ being able to see shop margins, other technicians' repairs, settings or the ledg
 PERMISSIONS = (
     'intake',               # receive a product and create the repair job
     'customer_records',     # create or correct customers, devices and their photos
+    'customer_export',      # open/share the complete customer-safe filesystem package
     'assign_job',           # choose the route and who is responsible for the repair
     'handover',             # record a physical custody movement
     'repair',               # diagnosis, repair progress, technician testing
@@ -46,7 +47,7 @@ PERMISSIONS = (
 )
 
 _COUNTER = {
-    'intake', 'customer_records', 'assign_job', 'handover', 'quality_check', 'repair',
+    'intake', 'customer_records', 'customer_export', 'assign_job', 'handover', 'quality_check', 'repair',
     'manage_parts', 'manage_warranty',
     'create_quote', 'approve_quote', 'billing', 'collect_payment', 'customer_delivery',
     'view_all_jobs', 'reports', 'directories', 'messaging', 'register_sale',

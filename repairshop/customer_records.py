@@ -395,7 +395,14 @@ class CustomerRecords:
             publish(target, data)
         c.execute('INSERT INTO folder_files(path,customer_id,sha256) VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256', (relative, customer_id, digest(data)))
 
-    def sync_customer(self, customer_id):
+    def sync_customer(self, customer_id, *, system=False):
+        # A complete customer package may contain summaries for several repair jobs. It
+        # is a customer-facing export, not a technician's scoped working view, so only
+        # roles explicitly trusted to export/share customer files may open/generate it
+        # interactively. The background folder worker uses ``system=True`` to keep the
+        # projection current without granting that permission to the logged-in user.
+        if not system:
+            self.s.require_permission('customer_export')
         if self.db.readonly:
             return
         # The worker holds the same guard used by backups: summaries and referenced photos form one snapshot.
@@ -404,10 +411,10 @@ class CustomerRecords:
             managed_path(self.db.root, folder + '/Customer-Photos').mkdir(parents=True, exist_ok=True)
             customer = dict(c.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone())
             overview = self.overview(customer_id)
+            # The filesystem under Customers/ is deliberately safe to hand to the
+            # customer. Shop-wide balance and operational dashboard counts belong in the
+            # application/internal records, not in a shareable identity file.
             lines = [f'Customer ID: CUST-{customer_id:06d}', *[f'{k.title()}: {customer[k]}' for k in ('name', 'phone', 'email', 'address', 'alternate')],
-                'Counts (overlapping location/progress views; do not add): ' + json.dumps(overview['counts']),
-                'All outstanding items ready for collection' if overview['all_ready'] else 'Some items are not ready, or no items are outstanding.',
-                'Customer balance: ' + rupees(c.execute("SELECT COALESCE(sum(amount),0) FROM entries WHERE account_type='customer' AND account_id=?", (customer_id,)).fetchone()[0]),
                 'Photo history:\n' + readable(overview['photos'])]
             self._summary(c, customer_id, folder + '/customer-details.txt', '\n'.join(lines))
             for device in c.execute('SELECT * FROM devices WHERE customer_id=?', (customer_id,)).fetchall():
@@ -445,7 +452,7 @@ class CustomerRecords:
         errors = []
         for row in self.db.rows("SELECT customer_id FROM folder_queue WHERE error='' ORDER BY customer_id LIMIT ?", (limit,)):
             try:
-                self.sync_customer(row['customer_id'])
+                self.sync_customer(row['customer_id'], system=True)
             except Exception as exc:
                 with self.db.transaction() as c:
                     c.execute('UPDATE folder_queue SET error=? WHERE customer_id=?', (str(exc), row['customer_id']))

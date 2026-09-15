@@ -594,7 +594,7 @@ class CustomerSelector(QWidget):
         self.create = create
         if create:
             self.create_button = button('+ New customer', self.new_customer)
-            self.create_button.setEnabled(not service.db.readonly and service.user['role'] in ('owner','counter'))
+            self.create_button.setEnabled(not service.db.readonly and service.may('customer_records'))
             layout.addWidget(self.create_button)
             self.hint = QLabel()
             self.hint.setWordWrap(True)

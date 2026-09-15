@@ -77,21 +77,43 @@ class Warranties:
     def __init__(self,service):
         self.s,self.db=service,service.db
 
-    def rows(self,device_id):
+    def _require_device_access(self, device_id):
+        """A device history is visible only if the user may open one of its jobs.
+
+        Device ids are easy to guess and warranty rows span multiple visits, so merely
+        being logged in is not a sufficient read boundary. Broad operational roles keep
+        their existing ``view_all_jobs`` access; technicians need an actually scoped job
+        for the physical device.
+        """
         self.s.require()
+        if self.s.may('view_all_jobs'):
+            return
+        scope, args = self.s.scope_jobs()
+        row = self.db.one('SELECT j.id FROM jobs j WHERE j.device_id=? AND ' + scope + ' LIMIT 1',
+                          (device_id, *args))
+        if not row:
+            raise RuleError('This device is not assigned to you.')
+
+    def rows(self,device_id):
+        self._require_device_access(device_id)
         rows=self.db.rows('SELECT w.*,j.number original_job FROM part_warranties w JOIN jobs j ON j.id=w.job_id WHERE w.device_id=? ORDER BY w.expiry DESC,w.id DESC',(device_id,))
         for r in rows:
-            claim=self.active_claim(r['id'])
+            claim=self.active_claim(r['id'], access_checked=True)
             r['claim_id']=claim['id'] if claim else None
             r['claim_state']=claim['status'] if claim else ''
             r['effective_status']='CLAIM IN PROGRESS' if claim else 'EXPIRED' if r['status']=='ACTIVE' and r['expiry']<today() else r['status']
         return rows
 
-    def active_claim(self,warranty_id):
+    def active_claim(self,warranty_id, access_checked=False):
+        if not access_checked:
+            warranty=self.db.one('SELECT device_id FROM part_warranties WHERE id=?',(warranty_id,))
+            if not warranty:
+                return None
+            self._require_device_access(warranty['device_id'])
         return self.db.one("SELECT * FROM warranty_claims WHERE warranty_id=? AND status!='CLOSED' ORDER BY id DESC LIMIT 1",(warranty_id,))
 
     def claims(self,device_id):
-        self.s.require()
+        self._require_device_access(device_id)
         return self.db.rows('SELECT c.*,j.number claim_job,o.number original_job,w.name part FROM warranty_claims c JOIN jobs j ON j.id=c.new_job_id JOIN jobs o ON o.id=c.original_job_id JOIN part_warranties w ON w.id=c.warranty_id WHERE c.device_id=? ORDER BY c.id DESC',(device_id,))
 
     def repair_warranty(self,job_id,name,start_date,duration,unit,provider,terms=''):
