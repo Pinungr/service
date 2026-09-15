@@ -71,6 +71,51 @@ def rupees(paise):
     return f"INR {Decimal(paise or 0) / 100:,.2f}"
 
 
+# ---- custody vocabulary -------------------------------------------------
+# A custody location answers "who is responsible for this item right now".
+#
+#   staff:<user id>           an authorized staff/admin user is holding it
+#   technician:<user id>      a technician user is holding it
+#   technician:master-<id>    a directory technician is holding it
+#   vendor: / centre:         an external repairer has it
+#   transit:<carrier>         a carrier is moving it
+#   customer                  it is back with its owner
+#   exception:<reason>        it is lost, written off or otherwise resolved
+#   shop:<place>              historical: a shop storage place rather than a person
+#
+# `shop:` is kept because existing databases contain it and that history must stay
+# readable, but new receipts record the person who actually took the item.
+STAFF_CUSTODY = ('staff:', 'technician:')
+SHOP_CUSTODY = ('shop:',) + STAFF_CUSTODY
+AWAY_CUSTODY = ('vendor:', 'centre:', 'transit:')
+
+
+def in_shop(location):
+    """Is the item in the shop's own possession, with a person or a storage place?"""
+    return str(location or '').startswith(SHOP_CUSTODY)
+
+
+def is_away(location):
+    """Is the item with an external repairer or a carrier?"""
+    return str(location or '').startswith(AWAY_CUSTODY)
+
+
+def custody_kind(location):
+    location = str(location or '')
+    if location == 'customer':
+        return 'customer'
+    return location.split(':', 1)[0] if ':' in location else location
+
+
+def staff_custody(user_id):
+    return 'staff:' + str(int(user_id))
+
+
+def sql_in_shop(column):
+    """The same 'in the shop's possession' test, for use inside a SQL predicate."""
+    return '(' + ' OR '.join(f"{column} LIKE '{prefix}%'" for prefix in SHOP_CUSTODY) + ')'
+
+
 def norm(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 

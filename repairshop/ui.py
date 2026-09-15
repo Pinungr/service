@@ -397,7 +397,9 @@ class MainWindow(QMainWindow):
             box = QVBoxLayout(card)
             box.setContentsMargins(18, 14, 18, 14)
             box.addWidget(QLabel(label))
-            value = QLabel(str(counts.get((key, "device"), 0)))
+            # Items held by staff, by a technician or on a shop shelf are all "at shop".
+            kinds = ("shop", "staff", "technician") if key == "shop" else (key,)
+            value = QLabel(str(sum(counts.get((k, "device"), 0) for k in kinds)))
             value.setObjectName("metric")
             value.setStyleSheet("color:" + color)
             box.addWidget(value)
@@ -819,7 +821,7 @@ class MainWindow(QMainWindow):
             if hasattr(d, 'wizard'):
                 d.wizard.category_changed()
         category.box.currentIndexChanged.connect(load_accessories)
-        d.section('Accessories & storage')
+        d.section('Accessories')
         d.layout.addRow("Accessories actually received", accessory_box)
         def add_accessory():
             extra = Form("Add reusable accessory", d)
@@ -835,9 +837,6 @@ class MainWindow(QMainWindow):
                     check.setChecked(check.text() in selected_names)
             extra.submit(save)
         d.layout.addRow("", button("+ Add new accessory choice", add_accessory))
-        storage = MasterSelector(self.s, "storage")
-        d.add("storage_id", "Shop storage", storage)
-        storage.box.setCurrentIndex(1 if storage.box.count()>1 else 0)
         d.section('Dates, consent & payments')
         # Route is selected after inspection and warranty verification in the guided workspace.
         d.date("repair_due", "Estimated repair completion")
@@ -852,7 +851,7 @@ class MainWindow(QMainWindow):
         d.text("intake_ref", "Visit reference (groups these products)")
         support = IntakePhotos(self, d, checks, source, sale, parent, draft)
         from .visit_intake import VisitIntake
-        visit=VisitIntake(self,d,support,checks,storage,draft)
+        visit=VisitIntake(self,d,support,checks,draft)
         from .intake_wizard import IntakeWizard
         IntakeWizard(self,d,support,visit,checks,draft)
         result = []
@@ -1057,7 +1056,10 @@ class MainWindow(QMainWindow):
         d.select("item_id", "Original item", [(r["description"] + " · " + r["serial"], r["id"]) for r in self.db.rows("SELECT * FROM items WHERE job_id=?", (ident,))])
         d.text("description", "Replacement device / item")
         d.text("serial", "Replacement serial")
-        d.text("location", "Actual holder", "shop:Front desk")
+        from .domain import staff_custody
+        d.select("location", "Actual holder",
+                 [(self.s.user["name"] + " (me)", staff_custody(self.s.user["id"]))]
+                 + [("Shop place: " + r["name"], "shop:" + r["name"]) for r in self.s.masters("storage")])
         d.text("terms", "Warranty terms actually supplied", multiline=True)
         d.text("evidence", "Evidence / replacement reference", multiline=True)
         d.submit(lambda v: self.s.replacement(**v))
@@ -1087,7 +1089,11 @@ class MainWindow(QMainWindow):
         d = Form("Dispatch, receive or collect", self, "Record an actual handover. Departure goes to transit; receipt acknowledgment goes to the destination. Partial quantities remain at their original holder.")
         rows = self.db.rows("SELECT i.*,h.location,h.quantity AS available,j.number FROM holdings h JOIN items i ON h.item_id=i.id JOIN jobs j ON j.id=i.job_id WHERE h.quantity>0 AND j.stage NOT IN ('collected','closed')" + (" AND i.job_id=?" if ident else "") + " ORDER BY i.id DESC LIMIT 500", (ident,) if ident else ())
         choice = d.select("item", "Item / current holder", [(f"{r['number']} · {r['description']} · {r['location']} · {r['available']} available", n) for n, r in enumerate(rows)])
-        locations = [("Customer collection", "customer")] + [("Shop: " + r["name"], "shop:" + r["name"]) for r in self.s.masters("storage")]
+        from .domain import staff_custody
+        locations = [("Customer collection", "customer")]
+        locations += [(r["name"] + " · " + r["role"].title(), staff_custody(r["id"]))
+                      for r in self.db.rows("SELECT id,name,role FROM users WHERE active=1 ORDER BY name")]
+        locations += [("Shop place: " + r["name"], "shop:" + r["name"]) for r in self.s.masters("storage")]
         for kind in ("vendor", "centre", "technician", "transporter"):
             prefix = "transit" if kind == "transporter" else kind
             locations += [(kind.title() + ": " + r["name"], prefix + ":" + r["name"]) for r in self.s.masters(kind)]

@@ -131,7 +131,7 @@ def _backfill_dispatches(c):
         assignment = c.execute('''SELECT a.contact_id,m.name FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id
             WHERE a.id=?''', (row['assignment_id'],)).fetchone()
         sent = c.execute("""SELECT min(m.happened) FROM movements m JOIN items i ON i.id=m.item_id
-            WHERE i.job_id=? AND m.from_location LIKE 'shop:%'
+            WHERE i.job_id=? AND (m.from_location LIKE 'shop:%' OR m.from_location LIKE 'staff:%' OR m.from_location LIKE 'technician:%')
             AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')""",
             (row['id'],)).fetchone()[0]
         carrier = (manifest.get('carrier') or '').strip()

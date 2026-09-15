@@ -1,6 +1,6 @@
 """Physical handovers over the existing holdings/movements ledger."""
 import uuid
-from .domain import RuleError,now
+from .domain import RuleError, now, in_shop, staff_custody
 
 
 class DeviceCustody:
@@ -13,10 +13,10 @@ class DeviceCustody:
         if not a:raise RuleError('Assign a technician first.')
         if not p.get('condition') or not p.get('acknowledgment'):raise RuleError('Record the physical condition and handover acknowledgment.')
         tech_location='technician:master-'+str(a['technician_master_id']) if a.get('technician_master_id') else 'technician:'+str(a['technician_id'])
-        destination=p.get('storage','shop:QC Area') if returning else tech_location
-        if returning and (not destination.startswith('shop:') or not destination[5:].strip()):raise RuleError('Choose the shop QC / storage destination.')
+        # A device coming back from the bench returns to the person recording the return.
+        destination=self.s.receiving_custody(p.get('storage')) if returning else tech_location
         rows=self.db.rows('SELECT i.*,h.quantity held,h.location FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0',(j['id'],))
-        rows=[h for h in rows if h['location']==tech_location] if returning else [h for h in rows if h['location'].startswith('shop:')]
+        rows=[h for h in rows if h['location']==tech_location] if returning else [h for h in rows if in_shop(h['location'])]
         if 'items' in p:rows=[h for h in rows if h['id'] in p['items']]
         if not any(h['type']=='device' for h in rows):raise RuleError('Include the physical device currently held by this sender.')
         # Different shop bins are separate actual handovers and therefore cards.
@@ -34,6 +34,42 @@ class DeviceCustody:
             if not p.get('bench','').strip():raise RuleError('Record the technician work area / bench.')
             data['technician_bench']=p['bench'];data['technician_handed']=now()
 
+    def handover(self,c,j,data,p):
+        """Hand the product to another authorized person inside the shop.
+
+        This is a physical transfer only: it never changes who the repair is assigned to,
+        because being responsible for a repair and actually holding the product are
+        different things. The previous custodian stays in the ledger.
+        """
+        self.s.require('owner','counter')
+        target=p.get('to_user_id')
+        person=self.db.one('SELECT id,name,role FROM users WHERE id=? AND active=1',(target,))
+        if not person:
+            raise RuleError('Choose an active member of staff to hand the product to.')
+        if not p.get('condition') or not p.get('acknowledgment'):
+            raise RuleError('Record the physical condition and handover acknowledgment.')
+        destination=staff_custody(person['id'])
+        rows=[h for h in self.db.rows('''SELECT i.*,h.quantity held,h.location FROM items i
+            JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0''',(j['id'],))
+            if in_shop(h['location']) and h['location']!=destination]
+        if 'items' in p:rows=[h for h in rows if h['id'] in p['items']]
+        if not any(h['type']=='device' for h in rows):
+            raise RuleError('The product is not currently held by anyone in the shop.')
+        from .job_cards import JobCards
+        for origin in sorted({h['location'] for h in rows}):
+            items=[h for h in rows if h['location']==origin];movements=[]
+            for h in items:
+                movements.append(self.s.move(h['id'],h['held'],origin,destination,person['name'],uuid.uuid4().hex,
+                    condition=p['condition'],acknowledgment=p['acknowledgment'],
+                    notes=p.get('notes','') or 'Internal handover'))
+            JobCards(self.s).issue(j['id'],'in_house_handover','movement:'+str(movements[0]),
+                dict(p,movement_ids=movements),
+                [dict(description=h['description'],quantity=h['held'],serial=h['serial'],condition=p['condition']) for h in items])
+        self.s.audit(c,'job',j['id'],'custody_handed_over',
+            {'to_user_id':person['id'],'to':person['name'],'role':person['role'],
+             'by':self.s.user['name'],'reason':p.get('notes','') or 'Internal handover'})
+        data['custodian_handed']=now()
+
     def external(self,c,j,data,v,action,p):
         self.s.require('owner','counter')
         if not p.get('counterparty') or not p.get('condition') or not p.get('acknowledgment'):
@@ -44,7 +80,7 @@ class DeviceCustody:
         if action=='dispatch':
             manifest=data.get('dispatch',{})
             if not manifest:raise RuleError('Create the dispatch record first.')
-            rows=[h for h in v['holdings'] if h['id'] in manifest['items'] and h['location'].startswith('shop:')]
+            rows=[h for h in v['holdings'] if h['id'] in manifest['items'] and in_shop(h['location'])]
             if not any(h['type']=='device' for h in rows):raise RuleError('The selected device is no longer at the shop; review dispatch.')
             carrier=p.get('carrier','').strip()
             if carrier:destination='transit:'+carrier
@@ -66,9 +102,9 @@ class DeviceCustody:
             rows=[h for h in v['holdings'] if h['location'].startswith(('centre:','vendor:','transit:'))]
             if not c.execute("SELECT 1 FROM job_cards WHERE job_id=? AND kind IN ('third_party_dispatch','service_center_dispatch','carrier_dispatch')",(j['id'],)).fetchone() and not data.get('legacy_review'):
                 raise RuleError('An outbound Job Card is required before a return can be recorded.')
-            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND m.from_location LIKE 'shop:%' AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
-            destination=p.get('storage','shop:Front desk');final=self.db.setting('shop_name','Repair shop')
-            if not destination.startswith('shop:') or not destination[5:].strip():raise RuleError('Choose a shop storage location for the return.')
+            if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND (m.from_location LIKE 'shop:%' OR m.from_location LIKE 'staff:%' OR m.from_location LIKE 'technician:%') AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
+            # The signed-in person receiving the item from the repairer becomes its custodian.
+            destination=self.s.receiving_custody(p.get('storage'));final=self.db.setting('shop_name','Repair shop')
             # The returned items are checked against the outbound manifest before custody
             # moves. A missing item must be reported, never silently ticked off.
             if not p.get('skip_verification'):
@@ -105,7 +141,7 @@ class DeviceCustody:
             JobCards(self.s).issue(j['id'],kind,'movement:'+str(moves[0]),dict(p,movement_ids=moves,final_destination=final),items)
         data['in_transit']=bool(c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location LIKE 'transit:%'",(j['id'],)).fetchone())
         if action=='receive':
-            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
+            remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
             if remaining:stage=j['stage'];data.pop('returned',None)
             else:
                 from .dispatch import Dispatches

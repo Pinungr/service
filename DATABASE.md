@@ -107,3 +107,38 @@ File layout: shop-only copies that carry purchase cost, third-party cost or marg
 written under `Internal/` instead of the customer's folder, and are recorded with
 attachment kind `internal_document` so no customer send path can select them. `Internal/`
 is included in backup, restore and restore-recovery alongside `managed` and `Customers`.
+
+## Custody identity — no front office, no office-storage default custodian
+
+No schema change and no data migration. Custody has always been a location string on
+`holdings`/`movements`, so this is a change to what new records contain, never a rewrite
+of what old ones say.
+
+A custody location now answers *who is responsible for this item*:
+
+| Value | Meaning |
+|---|---|
+| `staff:<user id>` | an authorized staff/admin user is holding it |
+| `technician:<user id>` / `technician:master-<id>` | a technician is holding it |
+| `vendor:` / `centre:` / `transit:` | an external repairer or a carrier has it |
+| `customer` | back with its owner |
+| `exception:<reason>` | lost, written off or otherwise resolved |
+| `shop:<place>` | **historical / optional** — a storage place rather than a person |
+
+`domain.in_shop()` and `domain.sql_in_shop()` are the single definition of "in the shop's
+own possession" and accept all of `shop:`, `staff:` and `technician:`. Every possession
+check in Python and SQL uses them, so historical `shop:` rows keep behaving exactly as
+before and remain readable, reportable and restorable.
+
+Intake no longer asks who received the product or which shelf it goes on. The signed-in
+user becomes both the receiver (`jobs.actor`) and the first custodian, and the intake
+movement runs `customer → staff:<that user>`. `Service.receiving_custody()` derives the
+identity from the session and refuses a staff identity belonging to anyone else, so one
+employee cannot record a colleague as having taken delivery. A `shop:` place is still
+accepted where a caller passes one explicitly.
+
+Assignment and custody stay independent: assigning a repair never moves the product, and
+`hand_over` records a real handover between two authorized people without touching the
+assignment. The identities behind the audit trail already existed and are unchanged —
+`jobs.actor` (received by), `assignments.actor` / `technician_id` (assigned by / to),
+`movements.actor` (who recorded a handover), `quotes.actor`, `entries.actor`.

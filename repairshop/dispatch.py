@@ -9,7 +9,7 @@ correction creates a new version that supersedes the previous one, with a
 mandatory reason, and both versions remain readable.
 """
 import json
-from .domain import RuleError, now, money
+from .domain import RuleError, now, money, in_shop
 from .persistence import insert
 
 TRANSPORT_MODES = {
@@ -102,7 +102,7 @@ class Dispatches:
             FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0''', (job['id'],)).fetchall())}
         for item in manifest:
             row = held.get(item)
-            if not row or not row['location'].startswith('shop:'):
+            if not row or not in_shop(row['location']):
                 raise RuleError('The shop does not currently hold every selected item. Refresh the dispatch manifest.')
         if not any(held[i]['type'] == 'device' for i in manifest):
             raise RuleError('Include the physical device in this dispatch.')

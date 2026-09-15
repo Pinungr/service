@@ -17,6 +17,18 @@ from repairshop.backup import Backups
 from repairshop.ui import MainWindow
 
 
+def held_at(service, item_id):
+    """Where an item actually is now. Intake custody belongs to the signed-in receiver."""
+    return service.db.one('SELECT location FROM holdings WHERE item_id=? AND quantity>0',
+                          (item_id,))['location']
+
+
+def with_me(service):
+    """The custody identity of the signed-in user."""
+    from repairshop.domain import staff_custody
+    return staff_custody(service.user['id'])
+
+
 def picture(color='#456f93'):
     image = QImage(100, 80, QImage.Format.Format_RGB32)
     image.fill(QColor(color))
@@ -206,15 +218,15 @@ def test_device_ownership_and_link_validation(service, customer, job):
 def test_readiness_requires_every_accessory_and_tracks_partial_collection(service, customer, job):
     records = CustomerRecords(service)
     adapter = service.db.one("SELECT id FROM items WHERE job_id=? AND description='Adapter'", (job,))['id']
-    service.move(adapter, 1, 'shop:Front desk', 'vendor:Repairer', 'Repairer', 'adapter-away')
+    service.move(adapter, 1, held_at(service, adapter), 'vendor:Repairer', 'Repairer', 'adapter-away')
     service.stage(job, 'ready_repaired', test_result='passed')
     data = records.overview(customer)
     assert data['counts']['outstanding'] == 1 and data['counts']['vendors'] == 1
     assert not data['all_ready'] and data['counts']['ready'] == 0
-    service.move(adapter, 1, 'vendor:Repairer', 'shop:Front desk', 'Repairer', 'adapter-back')
+    service.move(adapter, 1, 'vendor:Repairer', with_me(service), 'Repairer', 'adapter-back')
     assert records.overview(customer)['all_ready']
     device = service.db.one("SELECT id FROM items WHERE job_id=? AND type='device'", (job,))['id']
-    service.move(device, 1, 'shop:Front desk', 'customer', 'Owner', 'partial', acknowledgment='Signed')
+    service.move(device, 1, held_at(service, device), 'customer', 'Owner', 'partial', acknowledgment='Signed')
     data = records.overview(customer)
     assert data['outstanding'][0]['collection_status'] == 'Partially collected'
     assert data['counts']['outstanding'] == 1 and data['all_ready']
@@ -225,13 +237,13 @@ def test_readiness_requires_every_accessory_and_tracks_partial_collection(servic
 def test_external_completion_not_ready_and_unrepaired_distinct(service, customer, job):
     records = CustomerRecords(service)
     device = service.db.one("SELECT id FROM items WHERE job_id=? AND type='device'", (job,))['id']
-    service.move(device, 1, 'shop:Front desk', 'transit:Courier', 'Courier', 'dispatch')
+    service.move(device, 1, held_at(service, device), 'transit:Courier', 'Courier', 'dispatch')
     assert records.overview(customer)['counts']['in_transit'] == 1
     service.move(device, 1, 'transit:Courier', 'centre:Care', 'Care', 'arrival')
     service.stage(job, 'awaiting_return')
     data = records.overview(customer)
     assert not data['all_ready'] and data['counts']['service_centres'] == 1
-    service.move(device, 1, 'centre:Care', 'shop:Front desk', 'Care', 'return')
+    service.move(device, 1, 'centre:Care', with_me(service), 'Care', 'return')
     service.stage(job, 'ready_unrepaired', reason='Returned and checked; part unavailable')
     data = records.overview(customer)
     assert data['all_ready'] and data['outstanding'][0]['stage'] == 'ready_unrepaired'

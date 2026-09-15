@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QCheckBox
 from .ui_widgets import Form, Grid, button, FlowLayout
 from .dispatch import Dispatches, TRANSPORT_MODES
-from .domain import rupees, money, RuleError
+from .domain import rupees, money, RuleError, in_shop
 
 MODE_LABELS = [('By hand', 'BY_HAND'), ('Bus', 'BUS'), ('Courier', 'COURIER'), ('Other', 'OTHER')]
 FIELD_LABELS = {
@@ -143,7 +143,7 @@ class DispatchPanel(QWidget):
         checks = []
         for row in self.window.db.rows('''SELECT i.id,i.description,i.type,h.location,h.quantity FROM items i
             JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0''', (self.workspace.ident,)):
-            if not row['location'].startswith('shop:'):
+            if not in_shop(row['location']):
                 continue
             box = QCheckBox(f"{row['description']} · {row['quantity']} unit(s)")
             box.setChecked(row['id'] in current['manifest'] or row['type'] == 'device')

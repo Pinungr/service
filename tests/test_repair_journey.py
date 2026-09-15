@@ -374,7 +374,7 @@ def test_workspace_separates_stage_actions_from_general_tools(qtbot, service, cu
     tools = [d.tools.itemAt(i).widget().text() for i in range(d.tools.count())]
     stage = [d.buttons.itemAt(i).widget().text() for i in range(d.buttons.count())]
     assert set(tools) == {'Check shop inventory / manage required parts', 'Manual warranty check',
-                          'Review internal repair costs'}
+                          'Review internal repair costs', 'Hand product to another staff member'}
     assert not set(tools) & set(stage)
     # A newly received job has no other stage action, so its caption stays hidden.
     assert stage == [] and not d.actions_caption.isVisible() and d.tools_caption.isVisible()

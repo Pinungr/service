@@ -14,6 +14,18 @@ from repairshop.documents import Documents, safe_cell
 from repairshop.messaging import Outbox, Uncertain, Retryable
 
 
+def held_at(service, item_id):
+    """Where an item actually is now. Intake custody belongs to the signed-in receiver."""
+    return service.db.one('SELECT location FROM holdings WHERE item_id=? AND quantity>0',
+                          (item_id,))['location']
+
+
+def with_me(service):
+    """The custody identity of the signed-in user."""
+    from repairshop.domain import staff_custody
+    return staff_custody(service.user['id'])
+
+
 def item(s, job, name="ThinkPad T14"):
     return s.db.one("SELECT * FROM items WHERE job_id=? AND description=?", (job,name))["id"]
 
@@ -52,19 +64,20 @@ def test_in_house_technician_is_directory_record_not_login(service, customer):
 
 def test_device_only_dispatch_accessories_remain(service, job):
     ident = item(service, job)
-    move = service.move(ident, 1, "shop:Front desk", "vendor:Test", "Vendor Test", "dispatch-one")
-    assert service.move(ident, 1, "shop:Front desk", "vendor:Test", "Vendor Test", "dispatch-one") == move
+    origin = held_at(service, ident)
+    move = service.move(ident, 1, origin, "vendor:Test", "Vendor Test", "dispatch-one")
+    assert service.move(ident, 1, origin, "vendor:Test", "Vendor Test", "dispatch-one") == move
     with pytest.raises(RuleError, match="unavailable"):
-        service.move(ident, 1, "shop:Front desk", "vendor:Test", "Vendor Test", "dispatch-two")
-    assert service.db.one("SELECT quantity FROM holdings WHERE item_id=? AND location='shop:Front desk'", (item(service,job,"Adapter"),))["quantity"] == 1
+        service.move(ident, 1, with_me(service), "vendor:Test", "Vendor Test", "dispatch-two")
+    assert service.db.one("SELECT quantity FROM holdings WHERE item_id=? AND location=?", (item(service,job,"Adapter"), with_me(service)))["quantity"] == 1
 
 
 def test_partial_custody_conservation_and_closure(service, job):
     ident = item(service,job,"Mouse")
-    service.move(ident,1,"shop:Front desk","transit:Courier","Courier","m1")
+    service.move(ident,1,held_at(service,ident),"transit:Courier","Courier","m1")
     service.move(ident,1,"transit:Courier","vendor:Test","Vendor","m2")
     with pytest.raises(RuleError):
-        service.move(ident,2,"vendor:Test","shop:Front desk","Counter","m3")
+        service.move(ident,2,"vendor:Test",with_me(service),"Counter","m3")
     assert service.db.one("SELECT sum(quantity) n FROM holdings WHERE item_id=?",(ident,))["n"] == 2
     service.stage(job,"ready_unrepaired",reason="Checked; customer declined")
     with pytest.raises(RuleError,match="every"):
@@ -81,7 +94,7 @@ def test_assignments_do_not_move_and_keep_vendor_charges(service, job):
     service.post("vendor",b,"charge",20000,"bill-b",job_id=job)
     assert len(service.db.rows("SELECT * FROM assignments WHERE job_id=?",(job,))) == 2
     assert service.db.one("SELECT sum(amount) n FROM entries WHERE job_id=?",(job,))["n"] == 30000
-    assert service.db.one("SELECT location FROM holdings WHERE item_id=? AND quantity>0",(item(service,job),))["location"].startswith("shop:")
+    assert service.db.one("SELECT location FROM holdings WHERE item_id=? AND quantity>0",(item(service,job),))["location"].startswith("staff:")
 
 
 def test_owner_submitter_dedup_and_no_cost_leak(service, customer):
@@ -111,7 +124,7 @@ def test_accepted_warranty_retains_transport(service, customer):
 
 def test_replacement_preserves_serial_and_terms(service, job):
     old=item(service,job)
-    new=service.replacement(old,"Replacement ThinkPad","NEW123","shop:Front desk","Only remaining original warranty","Centre RMA #123")
+    new=service.replacement(old,"Replacement ThinkPad","NEW123",with_me(service),"Only remaining original warranty","Centre RMA #123")
     assert service.db.one("SELECT replaces_id FROM items WHERE id=?",(new,))["replaces_id"]==old
     assert "remaining original warranty" in service.db.one("SELECT payload FROM audit WHERE action='replacement_received'")["payload"]
 
@@ -151,13 +164,13 @@ def test_decline_policy_snapshot_and_refund_due(service, customer, policy, expec
 
 def test_external_completion_not_collection_ready(service, job):
     ident=item(service,job)
-    service.move(ident,1,"shop:Front desk","vendor:Test","Vendor","send")
+    service.move(ident,1,held_at(service,ident),"vendor:Test","Vendor","send")
     service.stage(job,"awaiting_return")
     message=service.db.one("SELECT payload FROM outbox WHERE event='awaiting_return'")
     assert "awaiting return" in message["payload"]
     with pytest.raises(RuleError,match="physically"):
         service.stage(job,"ready_repaired",test_result="passed")
-    service.move(ident,1,"vendor:Test","shop:Front desk","Counter","receive")
+    service.move(ident,1,"vendor:Test",with_me(service),"Counter","receive")
     with pytest.raises(RuleError,match="passed"):
         service.stage(job,"ready_repaired")
     service.stage(job,"ready_repaired",test_result="passed")
@@ -166,7 +179,7 @@ def test_external_completion_not_collection_ready(service, job):
 def test_unrepaired_collection_without_false_test(service, job):
     service.stage(job,"ready_unrepaired",reason="Unrepairable; checked on return")
     for row in service.db.rows("SELECT * FROM items WHERE job_id=?",(job,)):
-        service.move(row["id"],row["quantity"],"shop:Front desk","customer","Owner",f"collect-{row['id']}",acknowledgment="Signed")
+        service.move(row["id"],row["quantity"],held_at(service,row["id"]),"customer","Owner",f"collect-{row['id']}",acknowledgment="Signed")
     service.stage(job,"collected")
     service.stage(job,"closed")
     assert service.job(job)["test_result"]!="passed"
@@ -214,7 +227,7 @@ def test_collection_does_not_settle_debts(service, customer, job):
     service.invoice(q,"invoice")
     service.stage(job,"ready_unrepaired",reason="Returned without repair")
     for r in service.db.rows("SELECT * FROM items WHERE job_id=?",(job,)):
-        service.move(r["id"],r["quantity"],"shop:Front desk","customer","Owner",f"c{r['id']}",acknowledgment="Signed")
+        service.move(r["id"],r["quantity"],held_at(service,r["id"]),"customer","Owner",f"c{r['id']}",acknowledgment="Signed")
     service.stage(job,"closed")
     assert Queries(service).account_balances("vendor")[0]["balance"]==10000
     assert Queries(service).account_balances("customer")[0]["balance"]==20000
@@ -269,11 +282,11 @@ def test_workers_claim_once_and_ambiguous_outcome(service,job):
 
 def test_dashboard_units_not_movement_rows(service,job):
     ident=item(service,job)
-    service.move(ident,1,"shop:Front desk","vendor:Test","Vendor","s")
-    service.move(ident,1,"vendor:Test","shop:Front desk","Counter","r")
+    service.move(ident,1,held_at(service,ident),"vendor:Test","Vendor","s")
+    service.move(ident,1,"vendor:Test",with_me(service),"Counter","r")
     data=Queries(service).dashboard()
     counts={(r["location"],r["type"]):r["units"] for r in data["locations"]}
-    assert counts[("shop","device")]==1 and counts[("shop","accessory")]==3
+    assert counts[("staff","device")]==1 and counts[("staff","accessory")]==3
 
 
 def test_evidence_attachment_allowlist_and_signature(service,job,tmp_path):
@@ -478,7 +491,7 @@ def test_reminders_are_bounded_and_stop_after_collection(service,job):
     worker.schedule_reminders();worker.schedule_reminders()
     assert service.db.one("SELECT count(DISTINCT event_key) n FROM outbox WHERE event='collection_reminder'")['n']==1
     for r in service.db.rows('SELECT * FROM items WHERE job_id=?',(job,)):
-        service.move(r['id'],r['quantity'],'shop:Front desk','customer','Owner',f"collect-r{r['id']}",acknowledgment='Signed')
+        service.move(r['id'],r['quantity'],held_at(service,r['id']),'customer','Owner',f"collect-r{r['id']}",acknowledgment='Signed')
     service.stage(job,'collected')
     while worker.process_one():pass
     assert service.db.one("SELECT state FROM outbox WHERE event='collection_reminder'")['state']=='cancelled'

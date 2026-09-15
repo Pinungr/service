@@ -8,7 +8,7 @@ from datetime import datetime, timezone, date
 from zoneinfo import ZoneInfo
 import json
 import uuid
-from .domain import RuleError, now, day, rupees, today
+from .domain import RuleError, now, day, rupees, today, in_shop, sql_in_shop
 
 _command = ContextVar('repair_lifecycle_command', default=False)
 ROUTE_LABELS = {'in_house': 'IN-HOUSE REPAIR', 'warranty_centre': 'AUTHORIZED SERVICE CENTER', 'third_party': 'THIRD-PARTY REPAIR'}
@@ -22,6 +22,7 @@ LABELS = dict(received='RECEIVED', inspection='INITIAL INSPECTION', warranty_che
     collected='DELIVERED', closed='CLOSED')
 ACTIONS = {
     'hand_technician':'Hand device to technician','return_technician':'Return device from technician to QC',
+    'hand_over':'Hand product to another staff member',
     'return_dispatch':'Hand returning device to courier','parts':'Check shop inventory / manage required parts',
     'costing':'Review internal repair costs','manual_warranty':'Manual warranty check',
     'inspect': 'Perform initial inspection', 'inspection_done': 'Complete initial inspection',
@@ -130,11 +131,19 @@ class Lifecycle:
         data = json.loads(j['lifecycle_data'])
         holdings = self.holdings(ident)
         devices = [h for h in holdings if h['type'] == 'device' and not h['location'].startswith('exception:')]
-        names = {'shop': 'IN SHOP', 'technician': 'IN SHOP · TECHNICIAN', 'vendor': 'THIRD-PARTY TECHNICIAN',
-                 'centre': 'AUTHORIZED SERVICE CENTER', 'transit': 'IN TRANSIT', 'customer': 'WITH CUSTOMER'}
+        names = {'shop': 'IN SHOP', 'staff': 'IN SHOP', 'technician': 'IN SHOP · TECHNICIAN',
+                 'vendor': 'THIRD-PARTY TECHNICIAN', 'centre': 'AUTHORIZED SERVICE CENTER',
+                 'transit': 'IN TRANSIT', 'customer': 'WITH CUSTOMER'}
         locations = sorted({h['location'] for h in devices})
         data['in_transit']=any(h['location'].startswith('transit:') for h in devices)
-        location = ' / '.join(names.get(v.split(':')[0], v) + (': ' + v.split(':', 1)[1] if ':' in v else '') for v in locations) or 'LOCATION NEEDS REVIEW'
+        # A person holding an item reads as their name, not as the raw identity token.
+        def place(value):
+            kind=value.split(':')[0]
+            label=names.get(kind,value)
+            if kind in ('staff','technician'):
+                return label+' · '+self.s.custodian(value)['name']
+            return label+(': '+value.split(':',1)[1] if ':' in value else '')
+        location = ' / '.join(place(v) for v in locations) or 'LOCATION NEEDS REVIEW'
         assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,COALESCE(tm.name,u.name) AS technician FROM assignments a
             LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?''', (j['assignment_id'],)) or {}
         try:
@@ -143,8 +152,8 @@ class Lifecycle:
             profile={}
         if isinstance(profile,dict) and profile:
             assignment['details']=' · '.join(k.replace('_',' ').title()+': '+str(val) for k,val in profile.items() if val)
-        away = any(not v.startswith(('shop:', 'technician:')) and v != 'customer' for v in locations)
-        at_shop = bool(devices) and all(h['location'].startswith(('shop:', 'technician:')) for h in devices)
+        away = any(not in_shop(v) and v != 'customer' for v in locations)
+        at_shop = bool(devices) and all(in_shop(h['location']) for h in devices)
         responsible = (j['customer'] if locations == ['customer'] else
             assignment.get('party') if j['route']!='in_house' else assignment.get('technician')) or 'Shop counter · assignment needed'
         if away and data.get('route_details',{}).get('contact_person') and not any(v.startswith('transit:') for v in locations):
@@ -181,7 +190,16 @@ class Lifecycle:
             else:
                 row=self.db.one('SELECT name FROM users WHERE id=?',(token,))
             return (row or {}).get('name',location)
-        custodian=' / '.join(technician_name(v) if v.startswith('technician:') else self.db.setting('shop_name','Shop') if v.startswith('shop:') else j['customer'] if v=='customer' else v.split(':',1)[-1] for v in locations)
+        # "Currently with" names the responsible person, not a storage place.
+        holders=[dict(self.s.custodian(v), location=v) for v in locations]
+        for holder in holders:
+            if holder['kind']=='customer':holder['name']=j['customer']
+        custodian=' / '.join(h['name'] for h in holders) or 'Not recorded'
+        custodian_role=' / '.join(dict.fromkeys(h['role'] for h in holders))
+        since=self.db.one('''SELECT max(m.happened) AS held FROM movements m JOIN items i ON i.id=m.item_id
+            WHERE i.job_id=? AND m.to_location IN ('''+','.join('?' for _ in locations or [1])+')',
+            (ident,*locations)) if locations else None
+        custodian_since=(since or {}).get('held')
         destination=data.get('transit_destination','') if transit else ''
         if transit:
             status='RETURN DISPATCHED TO SHOP' if data.get('transit_direction')=='return' else 'DISPATCHED TO SERVICE CENTER' if j['route']=='warranty_centre' else 'DISPATCHED TO THIRD PARTY'
@@ -237,7 +255,7 @@ class Lifecycle:
                 attention.append('On hold: ' + j['hold_reason'])
             if not devices:
                 attention.append('Physical device location needs review')
-            if at_shop and any(h['type'] != 'device' and not h['location'].startswith(('shop:','exception:')) and h['location'] != 'customer' for h in holdings):
+            if at_shop and any(h['type'] != 'device' and not in_shop(h['location']) and not h['location'].startswith('exception:') and h['location'] != 'customer' for h in holdings):
                 attention.append('Accessories remain with an external holder')
         route_label=ROUTE_LABELS.get(j['route'],j['route'])
         if j['lifecycle_version'] and stage in ('received','inspection','warranty_check','route_selection'):
@@ -257,7 +275,9 @@ class Lifecycle:
             dispatch=dispatch, visit_number=(visit or {}).get('number',j['intake_ref']),
             current_card=f"CARD-{card['sequence']:02d} · {card['kind'].replace('_',' ')}" if card else 'LEGACY · no issued card',
             warranty_indicator=f"{active} active warranties · {sum(r['effective_status']=='CLAIM IN PROGRESS' for r in part_warranties)} claims in progress · {claims} unclosed claims",open_claims=claims,
-            current_custodian=custodian,final_destination=destination,assigned_technician=(assignment.get('technician') or 'Not assigned') if j['route']=='in_house' else 'Not applicable',
+            current_custodian=custodian,custodian_role=custodian_role,custodian_since=custodian_since,
+            custodians=holders,received_by=self.db.one('SELECT name FROM users WHERE id=?',(j['actor'],) ) or {},
+            final_destination=destination,assigned_technician=(assignment.get('technician') or 'Not assigned') if j['route']=='in_house' else 'Not applicable',
             current_location=location, responsible=responsible, pending_since=local_time(pending), pending_raw=pending,
             next_action=next_action, primary=primary, actions=actions, attention=attention, at_shop=at_shop, away=away,
             assignment=assignment, quote=quotes, warranty=warranty, warranty_status=data.get('warranty_status','Unknown / requires verification'),
@@ -297,6 +317,11 @@ class Lifecycle:
             actions.append('decline')
         if stage not in ('closed','collected'):
             actions.append('details')
+            # Anyone in the shop holding the product can pass it to another authorized
+            # person, whatever route the repair is on and whoever it is assigned to.
+            if not away and self.db.one('''SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id
+                WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND '''+sql_in_shop('h.location'),(j['id'],)):
+                actions.append('hand_over')
             if self.s.user['role']=='owner':
                 actions.append('resolve_item')
             if away and stage in ('final_qc','billing','ready_repaired','ready_unrepaired'):
@@ -364,7 +389,7 @@ class Lifecycle:
         attention_days = int(self.db.setting('lifecycle_attention_days', 3))
         external_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
         live_device = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%')"
-        device_outside_shop = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%' AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'technician:%')"
+        device_outside_shop = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'exception:%' AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%'))"
         external_accessory = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
         customer_balance = "COALESCE((SELECT sum(e.amount) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer'),0)"
         pending_since = "COALESCE((SELECT a.created FROM audit a WHERE a.entity='job' AND a.entity_id=j.id AND a.action IN ('received','lifecycle','stage_changed','quote_issued','quote_decision','custody_moved') AND (a.action!='lifecycle' OR json_extract(a.payload,'$.before') IS NOT json_extract(a.payload,'$.after')) ORDER BY a.created DESC,a.id DESC LIMIT 1),j.received)"
@@ -566,7 +591,7 @@ class Lifecycle:
                     if not p.get('consent') or not p.get('condition'):
                         raise RuleError('Record customer dispatch consent and the device condition.')
                     selected=set(p.get('items',[]))
-                    chosen=[h for h in v['holdings'] if h['id'] in selected and h['location'].startswith('shop:')]
+                    chosen=[h for h in v['holdings'] if h['id'] in selected and in_shop(h['location'])]
                     if not any(h['type']=='device' for h in chosen):
                         raise RuleError('Select the physical device and only the accessories being sent.')
                     data['dispatch']=dict(p,items=sorted(selected))
@@ -584,6 +609,9 @@ class Lifecycle:
                 elif action in ('hand_technician','return_technician'):
                     from .custody import DeviceCustody
                     DeviceCustody(self.s).technician(c,j,data,p,returning=action=='return_technician')
+                elif action=='hand_over':
+                    from .custody import DeviceCustody
+                    DeviceCustody(self.s).handover(c,j,data,p)
                 elif action == 'diagnose':
                     self._notes(notes)
                     if not v['at_shop'] and j['route']=='in_house':
@@ -787,7 +815,7 @@ class Lifecycle:
         if v['balance']<0:
             raise RuleError('Resolve the customer refund / credit balance before handover.')
         rows=[h for h in v['holdings'] if h['location']!='customer' and not h['location'].startswith('exception:')]
-        if not rows or any(not h['location'].startswith('shop:') for h in rows):
+        if not rows or any(not in_shop(h['location']) for h in rows):
             raise RuleError('Receive every device and accessory at the shop before customer handover.')
         # Recheck billing even if another screen changed the current quote or invoice.
         self._billing(c,j,data,{'confirmed':True})

@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from PyQt6.QtCore import QBuffer, QIODevice, Qt
 from PyQt6.QtGui import QImage, QImageReader
-from .domain import RuleError, now, rupees
+from .domain import RuleError, now, rupees, in_shop
 from .persistence import insert
 from .migration5 import slug
 from .local_files import managed_path, publish, digest
@@ -219,7 +219,7 @@ class CustomerRecords:
             collected = any(h['location'] == 'customer' for h in rows)
             job['location'] = ', '.join(sorted({h['location'] for h in remaining})) or 'No items held'
             job['collection_status'] = 'Partially collected' if collected and remaining else 'Collected' if collected else 'Resolved' if not remaining else 'Awaiting collection'
-            job['ready'] = bool(remaining) and not job['hold_reason'] and all(h['location'].startswith('shop:') for h in remaining) and (
+            job['ready'] = bool(remaining) and not job['hold_reason'] and all(in_shop(h['location']) for h in remaining) and (
                 job['stage'] == 'ready_repaired' and job['test_result'] == 'passed' or job['stage'] == 'ready_unrepaired' and bool(job['outcome']))
             job['product'] = f"{job['device']} · DEV-{job['device_id']:06d}" if job['device_id'] else job['device']
             job['tentative_collection'] = job['collection_due'] or 'Not set'

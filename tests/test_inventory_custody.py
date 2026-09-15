@@ -33,7 +33,7 @@ def test_technician_can_return_device_for_route_change_without_skipping_repair(s
     assert 'return_technician' in life.snapshot(job)['actions']
     life.execute(job,'return_technician',dict(condition='Intact',acknowledgment='Returned for specialist assessment'))
     assert service.job(job)['stage']=='diagnosis'
-    assert life.snapshot(job)['current_custodian']==service.db.setting('shop_name')
+    assert life.snapshot(job)['current_custodian']=='Owner'
     vendor=service.save_master('vendor','Board specialist')
     life.execute(job,'change_route',dict(route='third_party',contact_id=vendor,confirmed=True))
     assert service.job(job)['stage']=='ready_dispatch'
@@ -187,7 +187,7 @@ def test_courier_outbound_and_reverse_custody_cards_are_consistent(service,custo
     assert v['current_location']=='IN TRANSIT' and v['current_custodian']=='Blue Dart' and v['primary']=='receive'
     assert v['final_destination']=='Test Repair Shop' and 'RETURN DISPATCHED' in v['current_status']
     life.execute(job,'receive',dict(counterparty='Counter',condition='Intact',acknowledgment='Received return',repair_result='REPAIRED',vendor_invoice='V-200'))
-    v=life.snapshot(job);assert v['current_custodian']=='Test Repair Shop' and not v['final_destination']
+    v=life.snapshot(job);assert v['current_custodian']=='Owner' and not v['final_destination']
     card=json.loads(JobCards(service).rows(job)[-1]['snapshot'])
     assert card['from']['name']=='Blue Dart' and card['to']['name']=='Test Repair Shop'
     assert card['return_details']['work_performed']=='Repaired power circuit' and card['return_details']['vendor_invoice']=='V-200'
@@ -199,8 +199,8 @@ def test_in_house_assignment_handover_and_return_are_separate(service,customer):
     life.execute(job,'verify_warranty',dict(warranty_status='out_of_warranty',notes='No manufacturer warranty'))
     life.execute(job,'select_route',dict(route='in_house',technician_id=service.user['id'],confirmed=True))
     v=life.snapshot(job)
-    assert v['primary']=='hand_technician' and v['current_custodian']=='Test Repair Shop'
-    assert v['assigned_technician']=='Owner' and 'Front desk' in v['current_location']
+    assert v['primary']=='hand_technician' and v['current_custodian']=='Owner'
+    assert v['assigned_technician']=='Owner' and 'Owner' in v['current_location']
     assert not service.db.rows("SELECT * FROM movements WHERE to_location LIKE 'technician:%'")
     life.execute(job,'hand_technician',dict(bench='Bench 2',condition='Intact',acknowledgment='Signed by technician'))
     v=life.snapshot(job);assert v['current_custodian']=='Owner' and 'Bench 2' in v['current_location']
@@ -208,8 +208,9 @@ def test_in_house_assignment_handover_and_return_are_separate(service,customer):
     life.execute(job,'test',dict(result='passed',notes='Pass'))
     assert life.snapshot(job)['primary']=='return_technician'
     with pytest.raises(RuleError,match='Return the device'):life.execute(job,'qc',dict(notes='Cannot QC before return'))
+    # An explicit shop storage place is still accepted and still names that place.
     life.execute(job,'return_technician',dict(storage='shop:QC Area',condition='Intact',acknowledgment='QC received'))
-    assert life.snapshot(job)['current_custodian']=='Test Repair Shop' and life.snapshot(job)['primary']=='qc'
+    assert life.snapshot(job)['current_custodian']=='QC Area' and life.snapshot(job)['primary']=='qc'
     assert [r['kind'] for r in JobCards(service).rows(job)]==['customer_receiving','in_house_assignment','in_house_handover','in_house_return']
 
 

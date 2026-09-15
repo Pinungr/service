@@ -5,7 +5,7 @@ the owner confirms an actual receipt: opening this screen changes nothing. Items
 not come back are recorded as explicit discrepancies rather than silently ticked off.
 """
 import json
-from .domain import RuleError, now
+from .domain import RuleError, now, in_shop
 from .persistence import insert
 
 DISCREPANCIES = ('missing', 'damaged', 'wrong_item', 'quantity', 'other')
@@ -70,8 +70,8 @@ class Returns:
                             + ', '.join(unaccounted) + '. Confirm the units received or report a discrepancy.')
         if receiver_kind not in ('storage', 'person'):
             raise RuleError('Record whether the shop storage or a named person received the items.')
-        if receiver_kind == 'storage' and (not storage.startswith('shop:') or not storage[5:].strip()):
-            raise RuleError('Choose the shop storage location that received the items.')
+        if receiver_kind == 'storage' and not in_shop(storage):
+            raise RuleError('Record the person or shop place that received the items.')
         if receiver_kind == 'person' and not receiver_name.strip():
             raise RuleError('Record the name of the person who received the items.')
         with self.db.transaction() as c:

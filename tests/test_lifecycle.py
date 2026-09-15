@@ -3,7 +3,7 @@ import sqlite3
 import uuid
 import pytest
 from repairshop.lifecycle import Lifecycle
-from repairshop.domain import RuleError
+from repairshop.domain import RuleError, in_shop
 
 
 def fresh(s,customer):
@@ -207,7 +207,7 @@ def test_compound_handover_rolls_back_all_items(service,customer,monkeypatch):
         return original(*args,**kwargs)
     monkeypatch.setattr(service,'move',fail_second)
     with pytest.raises(RuntimeError):life.execute(ident,'handover',dict(demonstrated=True,accepted=True,accessories_returned=True,payment_checked=True,received_by='Owner',acknowledgment='Signed'))
-    assert all(h['location'].startswith('shop:') for h in life.holdings(ident))
+    assert all(in_shop(h['location']) for h in life.holdings(ident))
     assert not service.job(ident)['actual_collection']
 
 
@@ -256,7 +256,7 @@ def test_partial_accessory_return_remains_visible(service,customer):
     with pytest.raises(RuleError,match='every'):
         life.execute(ident,'handover',dict(demonstrated=True,accepted=True,accessories_returned=True,payment_checked=True,received_by='Owner',acknowledgment='Signed'))
     life.execute(ident,'receive',dict(counterparty='Shop',condition='Adapter intact',acknowledgment='R2'))
-    assert all(h['location'].startswith('shop:') for h in life.holdings(ident))
+    assert all(in_shop(h['location']) for h in life.holdings(ident))
 
 
 def test_replacement_preserves_original_and_delivers_new_serial(service,customer):
@@ -439,7 +439,7 @@ def test_handover_to_technician_still_works_after_initial_route(service,customer
     ident,life=ready_for_route(service,customer)
     tech=service.save_master('technician','Amit')
     life.execute(ident,'select_route',{'route':'in_house','technician_master_id':tech})
-    assert life.snapshot(ident)['current_custodian']==service.db.setting('shop_name')
+    assert life.snapshot(ident)['current_custodian']=='Owner'
     life.execute(ident,'hand_technician',dict(bench='Bench 2',condition='Intact',acknowledgment='Technician received'))
     v=life.snapshot(ident)
     assert v['current_custodian']=='Amit' and 'Bench 2' in v['current_location']

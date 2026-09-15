@@ -5,7 +5,7 @@ import uuid
 from datetime import date
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
-from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS
+from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind
 from .persistence import insert
 from .customer_records import dirty, customer_folder, device_record
 from .local_files import managed_path, digest
@@ -52,6 +52,47 @@ class Service:
         sql = 'SELECT 1 FROM assignments a WHERE a.id=? AND ' + self.OWNED_ASSIGNMENT
         args = (assignment_id, self.user['id'], self.user['id'])
         return bool(c.execute(sql, args).fetchone() if c else self.db.one(sql, args))
+
+    def receiving_custody(self, location=None):
+        """Where an item goes when this user physically takes it.
+
+        Defaults to the signed-in user. An explicit staff identity is only accepted when
+        it is that same user, so nobody can record a colleague as having taken delivery;
+        an explicit `shop:` place is still accepted because older databases and callers
+        use storage places and that history stays valid.
+        """
+        mine = staff_custody(self.user['id'])
+        if not location:
+            return mine
+        location = str(location)
+        if location.startswith('staff:') and location != mine:
+            raise RuleError('The receiving person is taken from your sign-in and cannot be recorded as someone else.')
+        if not in_shop(location):
+            raise RuleError('Items can only be taken into the shop by a person or into a shop storage place.')
+        return location
+
+    def custodian(self, location):
+        """Readable identity for one custody location: who has it, and what they are."""
+        location = str(location or '')
+        kind = custody_kind(location)
+        token = location.split(':', 1)[1] if ':' in location else ''
+        if kind == 'staff':
+            row = self.db.one('SELECT name,role FROM users WHERE id=?', (token,))
+            return dict(name=(row or {}).get('name', 'Staff member'), kind='staff',
+                        role=(row or {}).get('role', 'staff').title())
+        if kind == 'technician':
+            if token.startswith('master-'):
+                row = self.db.one("SELECT name FROM masters WHERE id=? AND kind='technician'", (token[7:],))
+                return dict(name=(row or {}).get('name', 'Technician'), kind='technician', role='Technician')
+            row = self.db.one('SELECT name,role FROM users WHERE id=?', (token,))
+            return dict(name=(row or {}).get('name', 'Technician'), kind='technician', role='Technician')
+        if kind == 'shop':
+            return dict(name=token or self.db.setting('shop_name', 'Shop'), kind='shop', role='Shop storage')
+        if kind == 'customer':
+            return dict(name='Customer', kind='customer', role='Customer')
+        labels = {'vendor': 'Third Party', 'centre': 'Authorized Service Center',
+                  'transit': 'In transit', 'exception': 'Unresolved'}
+        return dict(name=token or location, kind=kind, role=labels.get(kind, kind.title()))
 
     def guard_job_access(self, job, c=None):
         if self.user and self.user['role'] == 'technician' and not self.owns_job(job['assignment_id'], c):
@@ -410,10 +451,13 @@ class Service:
                         'outcomes': {r['channel']: r['state'] for r in results}})
             return results
 
-    def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
+    def intake(self, customer_id, device, complaint, accessories=(), storage=None, advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
         self.require("owner", "counter")
-        if not device.strip() or not complaint.strip() or not storage.startswith("shop:"):
-            raise RuleError("Device, complaint and shop storage are required.")
+        # Whoever is signed in is the person the customer handed the product to, so they
+        # become the receiver and the first custodian without being asked to say so.
+        storage = self.receiving_custody(storage)
+        if not device.strip() or not complaint.strip():
+            raise RuleError("Device and complaint are required.")
         allowed = {"submitter", "relationship", "update_contact_id", "sale_id", "parent_id", "category_id", "service_id", "serial", "origin", "damage", "route", "repair_due", "collection_due", "return_due", "policy", "transport_agreed", "assessment_agreed", "assessment_consent", "deposit", "intake_ref", "initial_estimate", "customer_requirement"}
         if not set(fields) <= allowed:
             raise RuleError("Unknown intake field.")
@@ -586,7 +630,7 @@ class Service:
         self.require("owner", "counter")
         if not isinstance(quantity, int) or quantity <= 0 or source == destination or not counterparty.strip():
             raise RuleError("Choose a positive quantity, different destination, and counterparty.")
-        if destination.split(":")[0] not in ("shop", "technician", "vendor", "centre", "transit", "customer", "exception"):
+        if destination.split(":")[0] not in ("shop", "staff", "technician", "vendor", "centre", "transit", "customer", "exception"):
             raise RuleError("Invalid custody destination.")
         if destination.startswith("exception"):
             self.require("owner")
@@ -612,7 +656,7 @@ class Service:
                 raise RuleError("Open a linked follow-up job for work after collection.")
             if destination == "customer" and j["stage"] not in ("ready_repaired", "ready_unrepaired"):
                 raise RuleError("Check the returned device and mark it ready before collection.")
-            if not source.startswith("shop:") and destination == "customer":
+            if not in_shop(source) and destination == "customer":
                 raise RuleError("Receive the item at the shop before customer collection.")
             if destination.startswith(("vendor:", "centre:", "transit:")) and not j["assessment_consent"]:
                 raise RuleError("Record customer assessment/transport consent before external dispatch.")
@@ -622,7 +666,7 @@ class Service:
             ident = insert(c, "movements", operation_id=operation_id, item_id=item_id, quantity=quantity, from_location=source, to_location=destination, happened=happened or now(), recorded=now(), actor=self.user["id"], counterparty=counterparty, reference=reference, condition=condition, notes=notes, acknowledgment=acknowledgment, reverses_id=reverses_id)
             self._touch(c, item["job_id"])
             self.audit(c, "job", item["job_id"], "custody_moved", {"movement": ident, "from": source, "to": destination, "quantity": quantity})
-            event = "collected" if destination == "customer" else "return_arrival" if destination.startswith("shop:") else "dispatch"
+            event = "collected" if destination == "customer" else "return_arrival" if in_shop(destination) else "dispatch"
             self.notify(c, item["job_id"], event, f"{item['description']}: {quantity} unit(s) handed to {counterparty}. Reference: {reference}.")
         return ident
 
@@ -721,8 +765,8 @@ class Service:
             if stage == "under_repair":
                 self._authorize_repair(c, j)
             if stage in ("ready_repaired", "ready_unrepaired"):
-                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
-                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.location LIKE 'shop:%'", (job_id,)).fetchone()[0] or 0
+                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND NOT ((h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
+                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%')", (job_id,)).fetchone()[0] or 0
                 if away or not at_shop:
                     raise RuleError("The device must be physically received at the shop.")
                 if stage == "ready_repaired" and (test_result or j["test_result"]) != "passed":

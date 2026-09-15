@@ -1,4 +1,4 @@
-from .domain import RuleError, today
+from .domain import RuleError, today, sql_in_shop
 
 
 class Queries:
@@ -22,8 +22,11 @@ class Queries:
                 where.append(key + "=?")
                 args.append(value)
         if location:
-            where.append("j.stage NOT IN ('collected','closed') AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON i.id=h.item_id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND h.location LIKE ?)")
-            args.append(location + "%")
+            # "shop" means the shop's own possession, whether that is a person or a shelf.
+            held = sql_in_shop('h.location') if location.rstrip(':') == 'shop' else 'h.location LIKE ?'
+            where.append("j.stage NOT IN ('collected','closed') AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON i.id=h.item_id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND " + held + ")")
+            if location.rstrip(':') != 'shop':
+                args.append(location + "%")
         if start:
             where.append("j.received>=?")
             args.append(start)

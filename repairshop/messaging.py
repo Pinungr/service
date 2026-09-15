@@ -207,7 +207,7 @@ class Outbox:
             if row['event'] == 'collection_reminder' and j['stage'] not in ('ready_repaired','ready_unrepaired'):
                 return 'cancelled','Collection reminder is no longer relevant.'
             if row['event'] in ('ready_repaired','ready_unrepaired','collection_reminder'):
-                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.location LIKE 'shop:%'", (j['id'],)).fetchone()[0]
+                at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%')", (j['id'],)).fetchone()[0]
                 if not at_shop:
                     return 'cancelled', 'The device is no longer at the shop for collection.'
             if row["event"] == "dates_revised" and json.loads(row["payload"])["job_version"] != j["version"]:

@@ -131,7 +131,7 @@ class IntakeWizard:
             ['customer_id', 'origin', 'submitter', 'relationship', 'update_contact_id'],
             ['device_id', 'category_id', 'device', 'brand', 'model', 'identity_unknown', 'serial',
              'warranty_status', 'warranty_expiry', 'warranty_provider', 'warranty_notes'],
-            ['complaint', 'damage', 'customer_requirement', 'no_accessories', 'service_id', 'repair_due', 'storage_id'],
+            ['complaint', 'damage', 'customer_requirement', 'no_accessories', 'service_id', 'repair_due'],
             ['initial_estimate', 'transport_agreed', 'advance', 'policy', 'assessment_agreed', 'assessment_consent',
              'deposit', 'collection_due', 'intake_ref']]
         by_widget = {widget: key for key, widget in form.fields.items()}
@@ -250,7 +250,6 @@ class IntakeWizard:
         if step == 2:
             if not values['complaint']: self.fail('complaint', 'Describe the problem reported by the customer.')
             if not values['service_id']: self.fail('service_id', 'Choose a repair / service type.')
-            if not values['storage_id']: self.fail('storage_id', 'Choose where the device will be stored.')
         if step == 3:
             for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed', 'initial_estimate'):
                 try:

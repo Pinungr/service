@@ -8,8 +8,8 @@ from .domain import RuleError,money
 
 
 class VisitIntake:
-    def __init__(self,window,form,support,checks,storage,draft=None):
-        self.w,self.form,self.support,self.checks,self.storage=window,form,support,checks,storage
+    def __init__(self,window,form,support,checks,draft=None):
+        self.w,self.form,self.support,self.checks=window,form,support,checks
         payload=json.loads(draft['payload']) if draft else {}
         self.products=payload.get('visit_products',[])
         form.visit_intake=self
@@ -54,9 +54,9 @@ class VisitIntake:
         if not p.get('device','').strip() or not p.get('complaint','').strip():
             raise RuleError('Enter the device description and reported fault for this product.')
         self.w.s.validate_intake_service(p.get('category_id'),p.get('service_id'))
-        storage=self.w.db.one("SELECT name FROM masters WHERE id=? AND kind='storage' AND active=1",(p.pop('storage_id',None),))
-        if not storage:raise RuleError('Choose shop storage for this product.')
-        p['storage']='shop:'+storage['name']
+        # Custody starts with whoever is signed in and took the product from the
+        # customer, so the counter is not asked to nominate a storage place or a receiver.
+        p.pop('storage_id',None)
         p.pop('photo_role',None);p.pop('visit_products',None)
         for key in ('advance','deposit','transport_agreed','assessment_agreed','initial_estimate'):
             p[key]=money(p.get(key) or '0')
