@@ -12,6 +12,27 @@ import keyring
 from .domain import now, RuleError
 
 
+#: What each stored outbox state means to the person reading the screen. A message that
+#: was refused for missing consent is never described as queued or sent.
+STATUS_LABELS = {
+    'pending': 'Queued',
+    'sending': 'Sending',
+    'retryable': 'Retrying after a temporary failure',
+    'accepted': 'Sent',
+    'captured': 'Sent (test mode)',
+    'blocked_consent': 'Blocked — consent missing',
+    'blocked_configuration': 'Blocked — messaging not configured',
+    'permanent_failure': 'Failed',
+    'uncertain': 'Unconfirmed — check before resending',
+    'cancelled': 'Cancelled',
+    'no_contact': 'Skipped — no contact information',
+}
+
+
+def status_label(state):
+    return STATUS_LABELS.get(state, str(state).replace('_', ' ').title())
+
+
 class Uncertain(Exception):
     pass
 
@@ -34,6 +55,37 @@ class WhatsApp:
     def __init__(self, config):
         self.config = config
 
+    def _upload(self, token, path, filename):
+        """Upload the PDF to the Cloud API media store and return its media id.
+
+        Uploading delivers nothing to the customer, so a lost connection here is always
+        safe to retry: only the message send itself can leave an uncertain outcome.
+        """
+        cfg = self.config
+        try:
+            with open(path, "rb") as handle:
+                response = httpx.post(
+                    f"https://graph.facebook.com/{cfg['api_version']}/{cfg['phone_number_id']}/media",
+                    headers={"Authorization": "Bearer " + token},
+                    data={"messaging_product": "whatsapp"},
+                    files={"file": (filename, handle, "application/pdf")}, timeout=60)
+        except OSError:
+            raise Permanent("The document to attach could not be read from disk.")
+        except httpx.ConnectError:
+            raise Retryable("Could not connect to provider to upload the document.")
+        except (httpx.TimeoutException, httpx.NetworkError):
+            raise Retryable("Document upload did not complete; nothing was sent yet.")
+        if response.status_code == 429:
+            raise Retryable("Provider rate limit while uploading the document; retry later.")
+        if response.status_code >= 500:
+            raise Retryable("Provider server error while uploading the document; nothing was sent yet.")
+        if response.status_code >= 400:
+            raise Permanent(f"WhatsApp rejected the document upload (HTTP {response.status_code}). Check the file type and account settings.")
+        try:
+            return response.json()["id"]
+        except (KeyError, ValueError):
+            raise Retryable("Provider did not return a document reference; nothing was sent yet.")
+
     def send(self, row, payload):
         cfg = self.config
         token = secret("whatsapp_token")
@@ -41,8 +93,17 @@ class WhatsApp:
         if not token or not cfg.get("phone_number_id") or not cfg.get("api_version") or not template.get("name"):
             raise RuleError("Configure WhatsApp credentials, API version and approved event template.")
         data = {"messaging_product": "whatsapp", "to": row["destination"].lstrip("+"), "type": "template", "template": {"name": template["name"], "language": {"code": template.get("language", "en")}}}
-        # This deployment uses a preapproved template with a single body variable.
-        data["template"]["components"] = [{"type": "body", "parameters": [{"type": "text", "text": payload["body"]}]}]
+        # This deployment uses a preapproved template with a single body variable. When a
+        # document is attached the same template carries it in an approved document
+        # header, so the customer receives the PDF the message refers to.
+        components = []
+        if payload.get("_attachment_path"):
+            filename = payload.get("_attachment_name") or "document.pdf"
+            media = self._upload(token, payload["_attachment_path"], filename)
+            components.append({"type": "header", "parameters": [
+                {"type": "document", "document": {"id": media, "filename": filename}}]})
+        components.append({"type": "body", "parameters": [{"type": "text", "text": payload["body"]}]})
+        data["template"]["components"] = components
         try:
             response = httpx.post(f"https://graph.facebook.com/{cfg['api_version']}/{cfg['phone_number_id']}/messages", headers={"Authorization": "Bearer " + token}, json=data, timeout=25)
         except httpx.ConnectError:
@@ -54,7 +115,8 @@ class WhatsApp:
         if response.status_code >= 500:
             raise Uncertain("Provider server error; acceptance could not be confirmed.")
         if response.status_code >= 400:
-            raise Permanent(f"WhatsApp rejected the request (HTTP {response.status_code}). Check account/template settings.")
+            detail = " The template also needs an approved document header to carry an attachment." if payload.get("_attachment_path") else ""
+            raise Permanent(f"WhatsApp rejected the request (HTTP {response.status_code}). Check account/template settings." + detail)
         try:
             return response.json()["messages"][0]["id"]
         except (KeyError, ValueError, IndexError):
@@ -176,7 +238,7 @@ class Outbox:
                 if not path or not path.is_file():
                     raise RuleError('The selected issued attachment is unavailable.')
                 payload['_attachment_path']=str(path)
-                payload['_attachment_name']='statement.pdf'
+                payload['_attachment_name']=path.name
             if self.db.setting("messaging_mode", "test") == "test" and self.adapters is None:
                 state, provider_id = "captured", "local-test-" + uuid.uuid4().hex
             else:

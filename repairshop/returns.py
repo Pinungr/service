@@ -54,7 +54,7 @@ class Returns:
         received = {int(k): int(v) for k, v in dict(received).items()}
         if set(received) - set(by_item):
             raise RuleError('Verify only the items recorded on the outbound dispatch.')
-        reported = self._clean_discrepancies(discrepancies, by_item)
+        reported = self._clean_discrepancies(discrepancies, by_item, self._evidence(job_id))
         # Items the owner brought into this receipt must balance. Items left out entirely
         # are a staged return: they stay recorded as still away and keep blocking handover,
         # which is different from claiming fewer units came back than were sent.
@@ -94,8 +94,18 @@ class Returns:
                           'receiver': receiver_name or storage})
             return ident
 
+    def _evidence(self, job_id):
+        """Photos that may be used as evidence for this return: this job's own photos.
+
+        A picture that merely belongs to the same customer proves nothing about what came
+        back from the repairer, so the attachment has to be recorded against this repair.
+        """
+        return {r['id'] for r in self.db.rows(
+            "SELECT id FROM attachments WHERE job_id=? AND kind IN ('product_photo','accessory_photo','return_photo')",
+            (job_id,))}
+
     @staticmethod
-    def _clean_discrepancies(discrepancies, by_item):
+    def _clean_discrepancies(discrepancies, by_item, evidence=()):
         result = []
         for entry in discrepancies or []:
             kind = entry.get('kind')
@@ -106,6 +116,8 @@ class Returns:
                 raise RuleError('Report a discrepancy against a dispatched item.')
             if not str(entry.get('notes', '')).strip():
                 raise RuleError('Explain every reported discrepancy.')
+            if entry.get('photo_id') is not None and int(entry['photo_id']) not in evidence:
+                raise RuleError('Attach a photo recorded against this repair as return evidence.')
             result.append(dict(item_id=int(item_id) if item_id is not None else None, kind=kind,
                                expected=int(entry.get('expected', by_item.get(int(item_id or 0), {}).get('expected', 0))),
                                received=int(entry.get('received', 0)), notes=str(entry['notes']).strip(),

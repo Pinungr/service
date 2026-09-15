@@ -77,3 +77,33 @@ New tables:
 
 Settings (`settings` table, no migration needed): `paper_size` (A4 or A5) and
 `include_photos` for customer WhatsApp/email.
+
+## Schema version 13 — corrected visit totals, technician identity
+
+`migration13.py` is additive and idempotent. No customer, job, deposit, payment,
+quotation or invoice record is deleted or rewritten.
+
+* `visits.estimated_total` is recomputed from `sum(jobs.initial_estimate)` for every
+  visit. Version 11 and 12 populated it from the customer's **deposit**, which is a
+  different figure. Deposits themselves are untouched and still live on `jobs.deposit`;
+  `visits.advance_total` still comes from money actually received. The migration records
+  how many visits it corrected in the audit log, and re-running it is a no-op.
+* New column `masters.user_id` links a directory technician (`kind='technician'`) to a
+  login account, with a partial unique index so one login maps to at most one directory
+  technician. Job ownership for a technician is checked through this link, so a repair
+  assigned via `assignments.technician_master_id` is reachable only by the technician it
+  belongs to. Existing rows keep `user_id` NULL and are simply reachable by no technician
+  until an owner links them.
+
+Migration transactions: `migration11` and `migration12` previously ran
+`executescript()` inside an open transaction. `executescript()` implicitly commits, so a
+later failure could leave the schema half-applied with `user_version` unchanged. Both now
+use `persistence.migration()`, which wraps the whole migration — including the
+`user_version` bump — in one transaction, and `persistence.run_script()`, which executes a
+script statement by statement without ending that transaction. Migrations 5 to 10 were
+reviewed and were already atomic.
+
+File layout: shop-only copies that carry purchase cost, third-party cost or margin are
+written under `Internal/` instead of the customer's folder, and are recorded with
+attachment kind `internal_document` so no customer send path can select them. `Internal/`
+is included in backup, restore and restore-recovery alongside `managed` and `Customers`.

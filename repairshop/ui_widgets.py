@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QLayout, QSizePolicy, QGridLayout, QApplication
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QTextEdit, QComboBox, QCheckBox, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QScrollArea, QMessageBox)
 from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QColor
-from .domain import rupees
+from .domain import rupees, zone as shop_zone
 
 
 class Cancelled(Exception):
@@ -692,7 +692,7 @@ class Grid(QTableWidget):
                     text = rupees(value)
                 elif isinstance(value, str) and "T" in value and len(value)>19 and value[4:5] == "-":
                     try:
-                        text = datetime.fromisoformat(value).astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y %H:%M")
+                        text = datetime.fromisoformat(value).astimezone(shop_zone()).strftime("%d %b %Y %H:%M")
                     except ValueError:
                         text = value
                 else:

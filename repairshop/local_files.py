@@ -9,7 +9,9 @@ from .domain import RuleError
 def managed_path(root, relative):
     root = Path(root).resolve()
     p = PurePosixPath(relative)
-    if p.is_absolute() or '..' in p.parts or '\\' in relative or ':' in relative or not p.parts or p.parts[0] not in ('managed', 'Customers'):
+    # `Internal` holds shop-only copies that carry costs or margin, kept deliberately
+    # outside `Customers` so a customer folder stays safe to hand over or export.
+    if p.is_absolute() or '..' in p.parts or '\\' in relative or ':' in relative or not p.parts or p.parts[0] not in ('managed', 'Customers', 'Internal'):
         raise RuleError('Invalid managed file path.')
     path = root.joinpath(*p.parts)
     for part in (path, *path.parents):

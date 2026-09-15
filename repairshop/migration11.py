@@ -5,6 +5,7 @@ job is attached to a visit reconstructed from its own recorded intake reference,
 two unrelated jobs are merged and no job is left without a visit.
 """
 import json
+from .persistence import migration, run_script
 
 
 def _has_column(c, table, column):
@@ -76,9 +77,8 @@ def _existing_triggers(c):
 
 
 def migrate(c):
-    c.execute('BEGIN IMMEDIATE')
-    try:
-        c.executescript(SCHEMA)
+    with migration(c, 11):
+        run_script(c, SCHEMA)
         if not _has_column(c, 'jobs', 'visit_id'):
             c.execute('ALTER TABLE jobs ADD COLUMN visit_id INTEGER REFERENCES visits(id)')
         c.execute('CREATE INDEX IF NOT EXISTS ix_job_visit ON jobs(visit_id,id)')
@@ -96,11 +96,6 @@ def migrate(c):
                          'is a versioned record. Existing jobs, custody movements and financial '
                          'entries are unchanged; each historical job was attached to a visit '
                          'rebuilt from its own recorded intake reference.'}),))
-        c.execute('PRAGMA user_version=11')
-        c.commit()
-    except Exception:
-        c.rollback()
-        raise
 
 
 def _backfill_visits(c):

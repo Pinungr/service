@@ -135,7 +135,7 @@ def test_failed_photo_save_keeps_image_and_allows_retry(qtbot):
 
 
 def test_required_photo_and_legacy_record_access(service):
-    customer = service.save_customer('Legacy person')
+    customer = service.save_customer('Legacy person', '9990000003', complete=False)
     assert CustomerRecords(service).overview(customer)['photos'] == []
     with pytest.raises(RuleError, match='required customer photo'):
         service.intake(customer, 'Laptop', 'Fault')
@@ -162,7 +162,7 @@ def test_owner_submitter_history_and_missing_photo(service, customer):
 
 def test_duplicate_names_folder_stability_and_confined_paths(service, customer):
     records = CustomerRecords(service)
-    twin = service.save_customer('Synthetic Customer')
+    twin = service.save_customer('Synthetic Customer', '9990000004', complete=False)
     first = records.sync_customer(customer)
     second = records.sync_customer(twin)
     assert first != second and first.is_dir() and second.is_dir()
@@ -195,7 +195,7 @@ def test_same_category_separate_products_and_repeat_repair(service, customer):
 
 
 def test_device_ownership_and_link_validation(service, customer, job):
-    other = service.save_customer('Different Owner')
+    other = service.save_customer('Different Owner', '9990000005', complete=False)
     CustomerRecords(service).save_photo(picture(), other)
     with pytest.raises(RuleError, match='belong'):
         service.intake(other, 'Laptop', 'Fault', device_id=service.job(job)['device_id'])

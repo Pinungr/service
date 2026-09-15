@@ -204,19 +204,19 @@ class Backups:
             old.mkdir()
             journal = root / 'restore-journal.json'
             from .local_files import publish
-            original_names = [name for name in ('shop.db', 'shop.db-wal', 'shop.db-shm', 'managed', 'Customers') if (root / name).exists()]
+            original_names = [name for name in ('shop.db', 'shop.db-wal', 'shop.db-shm', 'managed', 'Customers', 'Internal') if (root / name).exists()]
             publish(journal, json.dumps({'recovery': recovery.name, 'started': now(), 'original_names': original_names}).encode('utf-8'))
             moved = []
             installed = []
             try:
-                for name in ("shop.db", "shop.db-wal", "shop.db-shm", "managed", "Customers"):
+                for name in ("shop.db", "shop.db-wal", "shop.db-shm", "managed", "Customers", "Internal"):
                     path = root / name
                     if path.exists():
                         os.replace(path, old / name)
                         moved.append(name)
-                for name in ("shop.db", "managed", "Customers"):
+                for name in ("shop.db", "managed", "Customers", "Internal"):
                     source = staging / name
-                    if name in ("managed", "Customers"):
+                    if name in ("managed", "Customers", "Internal"):
                         source.mkdir(exist_ok=True)
                     os.replace(source, root / name)
                     installed.append(name)

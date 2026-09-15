@@ -5,6 +5,7 @@ still written, so historical records, folder projections and documents stay read
 new structured columns become the editable source.
 """
 import json
+from .persistence import migration, run_script
 
 COLUMNS = {
     'customers': [
@@ -121,14 +122,13 @@ def split_address(text):
 
 
 def migrate(c):
-    c.execute('BEGIN IMMEDIATE')
-    try:
+    with migration(c, 12):
         for table, columns in COLUMNS.items():
             present = _columns(c, table)
             for name, definition in columns:
                 if name not in present:
                     c.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
-        c.executescript(SCHEMA)
+        run_script(c, SCHEMA)
         existing = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
         for statement in filter(None, (s.strip() for s in TRIGGERS.split(';\n'))):
             if statement.split()[2] not in existing:
@@ -144,11 +144,6 @@ def migrate(c):
                          'versioned third-party quotations and return verification records. '
                          'Existing free-text addresses were copied into address line 1 and the '
                          'original address column is still maintained.'}),))
-        c.execute('PRAGMA user_version=12')
-        c.commit()
-    except Exception:
-        c.rollback()
-        raise
 
 
 def _backfill_addresses(c):

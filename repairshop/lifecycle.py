@@ -8,7 +8,7 @@ from datetime import datetime, timezone, date
 from zoneinfo import ZoneInfo
 import json
 import uuid
-from .domain import RuleError, now, day, rupees
+from .domain import RuleError, now, day, rupees, today
 
 _command = ContextVar('repair_lifecycle_command', default=False)
 ROUTE_LABELS = {'in_house': 'IN-HOUSE REPAIR', 'warranty_centre': 'AUTHORIZED SERVICE CENTER', 'third_party': 'THIRD-PARTY REPAIR'}
@@ -41,13 +41,7 @@ ACTIONS = {
 }
 
 
-def local_time(value):
-    if not value:
-        return 'Not recorded'
-    try:
-        return datetime.fromisoformat(value).astimezone(ZoneInfo('Asia/Kolkata')).strftime('%d %b %Y, %I:%M %p')
-    except ValueError:
-        return value
+from .domain import local_time  # noqa: F401  (kept importable from here for existing callers)
 
 
 def intake_warranty(data):
@@ -374,12 +368,14 @@ class Lifecycle:
         external_accessory = "EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type!='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))"
         customer_balance = "COALESCE((SELECT sum(e.amount) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer'),0)"
         pending_since = "COALESCE((SELECT a.created FROM audit a WHERE a.entity='job' AND a.entity_id=j.id AND a.action IN ('received','lifecycle','stage_changed','quote_issued','quote_decision','custody_moved') AND (a.action!='lifecycle' OR json_extract(a.payload,'$.before') IS NOT json_extract(a.payload,'$.after')) ORDER BY a.created DESC,a.id DESC LIMIT 1),j.received)"
-        overdue = f"(j.collection_due<date('now','+330 minutes') OR (j.repair_due<date('now','+330 minutes') AND j.stage NOT IN ('ready_repaired','ready_unrepaired')) OR (j.return_due<date('now','+330 minutes') AND {external_device}))"
+        # Comparisons use the date where the shop actually is, not the server's UTC date.
+        local = repr(today())
+        overdue = f"(j.collection_due<{local} OR (j.repair_due<{local} AND j.stage NOT IN ('ready_repaired','ready_unrepaired')) OR (j.return_due<{local} AND {external_device}))"
         attention = f"""(
             {overdue}
             OR j.stage IN ('final_qc','testing')
             OR (j.stage IN ('awaiting_approval','waiting_parts') AND julianday('now')-julianday({pending_since})>=?)
-            OR (j.stage='awaiting_approval' AND (SELECT q.valid_until FROM quotes q WHERE q.job_id=j.id ORDER BY q.version DESC LIMIT 1)<date('now','+330 minutes'))
+            OR (j.stage='awaiting_approval' AND (SELECT q.valid_until FROM quotes q WHERE q.job_id=j.id ORDER BY q.version DESC LIMIT 1)<{local})
             OR {customer_balance}>0
             OR (j.stage IN ('billing','ready_unrepaired','ready_repaired') AND {customer_balance}<0)
             OR j.hold_reason!=''
@@ -408,10 +404,11 @@ class Lifecycle:
         # Every supported filter is now expressed in SQL. Apply LIMIT/OFFSET before
         # building expensive per-job snapshots so a 50-row screen does not project
         # every matching job in the database first.
-        params=list(('%'+search+'%',)*7)+( [filter_key] )+condition_args
+        scope,scope_args=self.s.scope_jobs()
+        params=list(('%'+search+'%',)*7)+( [filter_key] )+condition_args+scope_args
         sql="""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN visits vi ON vi.id=j.visit_id
             WHERE (j.number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ? OR j.serial LIKE ? OR j.intake_ref LIKE ? OR vi.number LIKE ?)
-            AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" ORDER BY j.id DESC"
+            AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" AND "+scope+" ORDER BY j.id DESC"
         if limit:
             sql += " LIMIT ? OFFSET ?"
             params.extend((limit,offset))

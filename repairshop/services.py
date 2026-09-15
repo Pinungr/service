@@ -30,6 +30,34 @@ class Service:
             raise RuleError("Your role cannot perform this action.")
         self.user = live
 
+    # ---- technician job ownership ---------------------------------------
+    # A technician may only reach work assigned to them, whether the assignment names
+    # their login account directly or the directory technician record linked to it.
+    # Both the job read and the job write path check this, so hiding a button is never
+    # what keeps someone out of another technician's repair.
+    OWNED_ASSIGNMENT = """(a.technician_id=? OR (a.technician_master_id IS NOT NULL
+        AND a.technician_master_id IN (SELECT m.id FROM masters m
+            WHERE m.kind='technician' AND m.user_id IS NOT NULL AND m.user_id=?)))"""
+
+    def scope_jobs(self, alias='j'):
+        """SQL predicate and arguments limiting a job query to what this user may see."""
+        if not self.user or self.user['role'] != 'technician':
+            return '1=1', []
+        return (f"EXISTS(SELECT 1 FROM assignments a WHERE a.id={alias}.assignment_id AND "
+                + self.OWNED_ASSIGNMENT + ')', [self.user['id'], self.user['id']])
+
+    def owns_job(self, assignment_id, c=None):
+        if not assignment_id:
+            return False
+        sql = 'SELECT 1 FROM assignments a WHERE a.id=? AND ' + self.OWNED_ASSIGNMENT
+        args = (assignment_id, self.user['id'], self.user['id'])
+        return bool(c.execute(sql, args).fetchone() if c else self.db.one(sql, args))
+
+    def guard_job_access(self, job, c=None):
+        if self.user and self.user['role'] == 'technician' and not self.owns_job(job['assignment_id'], c):
+            raise RuleError('Technicians can open only their own assigned work.')
+        return job
+
     def audit(self, c, entity, ident, action, payload):
         insert(c, "audit", actor=self.user["id"] if self.user else None, created=now(), entity=entity, entity_id=ident, action=action, payload=json.dumps(payload, ensure_ascii=False))
         customer_id = ident if entity == 'customer' or (entity == 'account' and payload.get('account_type') == 'customer') else None
@@ -117,6 +145,8 @@ class Service:
             for k, v in values.items():
                 c.execute("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, json.dumps(v)))
             self.audit(c, "settings", None, "saved", values)
+        if 'timezone' in values:
+            self.db.apply_timezone()
 
     def masters(self, kind):
         return self.db.rows("SELECT * FROM masters WHERE kind=? AND active=1 ORDER BY name", (kind,))
@@ -135,10 +165,12 @@ class Service:
 
     PARTY_KINDS = ('vendor', 'centre', 'supplier')
 
-    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, **address_fields):
+    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, user_id=None, **address_fields):
         self.require("owner", "counter")
         if kind not in MASTER_KINDS or not norm(name):
             raise RuleError("Choose a directory and enter a name.")
+        if user_id is not None and kind != 'technician':
+            raise RuleError("Only a technician directory entry can be linked to a login account.")
         from . import addresses
         if not set(address_fields) <= set(addresses.FIELDS):
             raise RuleError("Unknown directory address field.")
@@ -156,6 +188,10 @@ class Service:
         with self.db.transaction() as c:
             if photo_id and not c.execute("SELECT 1 FROM attachments WHERE id=?", (photo_id,)).fetchone():
                 raise RuleError("The selected directory photo is not available.")
+            if user_id is not None:
+                # The link is what lets job ownership be checked for a technician who is
+                # assigned through the directory rather than through their login account.
+                profile['user_id'] = self._technician_login(c, user_id, ident)
             existing = c.execute("SELECT * FROM masters WHERE kind=? AND normalized=?", (kind, norm(name))).fetchone()
             new_record=not existing and not ident
             if existing and not ident:
@@ -187,24 +223,70 @@ class Service:
             self.audit(c, "master", ident, "saved", dict({"kind": kind, "name": name, "active": active}, **profile))
         return ident
 
-    def save_customer(self, name, phone_number="", email="", address="", whatsapp_consent=False, email_consent=False, alternate="", ident=None, **address_fields):
+    @staticmethod
+    def _technician_login(c, user_id, master_id):
+        """Validate the login account a directory technician is being linked to."""
+        if not user_id:
+            return None
+        row = c.execute("SELECT id FROM users WHERE id=? AND active=1 AND role='technician'", (user_id,)).fetchone()
+        if not row:
+            raise RuleError("Link this technician to an active technician login account.")
+        clash = c.execute("""SELECT name FROM masters WHERE kind='technician' AND user_id=?
+            AND id IS NOT ?""", (user_id, master_id)).fetchone()
+        if clash:
+            raise RuleError("That login is already linked to the technician " + clash[0] + ".")
+        return user_id
+
+    def save_customer(self, name=None, phone_number=None, email=None, address=None, whatsapp_consent=None, email_consent=None, alternate=None, ident=None, complete=True, **address_fields):
+        """Create or correct a customer record.
+
+        Every rule the registration screen shows is enforced here as well, so a customer
+        created from anywhere else in the application is just as complete. `complete=False`
+        is the deliberate quick counter registration, which records a name and a contact
+        number now and the postal address later; it has to be asked for rather than being
+        what omitting arguments silently gives you.
+
+        An omitted argument on an update means "leave this as it is": only what is passed
+        changes, so correcting a name can never blank a phone number or a postal address.
+        """
         self.require("owner", "counter")
-        if not name.strip() or (email and ("@" not in email or "\n" in email or "\r" in email)):
-            raise RuleError("A name and valid optional email are required.")
         from . import addresses
         if not set(address_fields) <= set(addresses.FIELDS):
             raise RuleError("Unknown customer address field.")
-        # Structured fields are optional for quick counter registration; when any are
-        # supplied the whole postal address is validated and the legacy single-line
-        # `address` column is rewritten from them so existing documents stay readable.
-        structured = addresses.clean(address_fields, required=any(str(v or '').strip() for v in address_fields.values()))
-        if any(structured.values()):
-            address = addresses.readable(structured)
-        values = dict(name=name.strip(), phone=phone(phone_number), email=email.strip().lower(), address=address, whatsapp_consent=int(whatsapp_consent), email_consent=int(email_consent), alternate=alternate, **structured)
         with self.db.transaction() as c:
             before = None
             if ident:
-                before = dict(c.execute("SELECT * FROM customers WHERE id=?", (ident,)).fetchone())
+                row = c.execute("SELECT * FROM customers WHERE id=?", (ident,)).fetchone()
+                if not row:
+                    raise RuleError("Customer not found.")
+                before = dict(row)
+            supplied = dict(name=name, phone=phone_number, email=email, alternate=alternate,
+                            whatsapp_consent=whatsapp_consent, email_consent=email_consent)
+            merged = {k: (before or {}).get(k, '') if v is None else v for k, v in supplied.items()}
+            structured = {k: address_fields[k] if address_fields.get(k) is not None
+                          else (before or {}).get(k, '') for k in addresses.FIELDS}
+            if not str(merged['name'] or '').strip():
+                raise RuleError("Enter the customer's full name.")
+            if merged['email'] and ("@" not in merged['email'] or "\n" in merged['email'] or "\r" in merged['email']):
+                raise RuleError("Enter a valid email address or leave it blank.")
+            contact = phone(merged['phone'])
+            if not contact:
+                raise RuleError("Enter the customer's phone / WhatsApp number.")
+            # A record that already exists without a postal address stays readable and can
+            # still be corrected; a complete address is required as soon as one is being
+            # written, and always for a new customer.
+            require_address = (complete and before is None) \
+                or any(str((before or {}).get(k) or '').strip() for k in addresses.FIELDS) \
+                or any(str(v or '').strip() for v in address_fields.values())
+            structured = addresses.clean(structured, required=require_address)
+            composed = addresses.readable(structured) if any(structured.values()) \
+                else (address if address is not None else (before or {}).get('address', ''))
+            values = dict(name=str(merged['name']).strip(), phone=contact,
+                          email=str(merged['email'] or '').strip().lower(), address=composed,
+                          whatsapp_consent=int(bool(merged['whatsapp_consent'])),
+                          email_consent=int(bool(merged['email_consent'])),
+                          alternate=str(merged['alternate'] or ''), **structured)
+            if ident:
                 c.execute("UPDATE customers SET " + ",".join(k+"=?" for k in values) + " WHERE id=?", (*values.values(), ident))
             else:
                 ident = insert(c, "customers", **values, created=now())
@@ -248,16 +330,20 @@ class Service:
             for channel, destination, consent in (("whatsapp", contact["phone"], contact["whatsapp_consent"]), ("email", contact["email"], contact["email_consent"])):
                 if destination:
                     c.execute("INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,contact_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (key, job_id, quote_id, contact_id, channel, destination, event, json.dumps(payload), "pending" if consent else "blocked_consent", now(), now()))
-        # Notify owners and assigned technicians (both legacy user-based and new directory-based)
+        # Notify owners and the assigned technician. A staff recipient is always a login
+        # account, so a technician assigned through the directory is resolved to the
+        # account linked to that directory record instead of being looked up by an id that
+        # belongs to a different table.
         internal = c.execute("""SELECT r.* FROM recipients r JOIN users u ON u.id=r.entity_id
             WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND u.role='owner'
             UNION ALL
             SELECT r.* FROM recipients r JOIN users u ON u.id=r.entity_id
-            WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND u.id=(SELECT technician_id FROM assignments WHERE id=? AND technician_id IS NOT NULL)
-            UNION ALL
-            SELECT r.* FROM recipients r JOIN masters m ON m.id=r.entity_id
-            WHERE r.kind='staff' AND r.active=1 AND m.active=1 AND m.id=(SELECT technician_master_id FROM assignments WHERE id=? AND technician_master_id IS NOT NULL)""",
-            (j['assignment_id'], j['assignment_id'])).fetchall()
+            WHERE r.kind='staff' AND r.active=1 AND u.active=1 AND u.id=(
+                SELECT COALESCE(a.technician_id,
+                                (SELECT m.user_id FROM masters m
+                                 WHERE m.id=a.technician_master_id AND m.kind='technician' AND m.active=1))
+                FROM assignments a WHERE a.id=?)""",
+            (j['assignment_id'],)).fetchall()
         for recipient in internal:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,recipient_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',(key,job_id,quote_id,recipient['id'],recipient['channel'],recipient['destination'],event,json.dumps(payload),'pending' if recipient['consent'] else 'blocked_consent',now(),now()))
 
@@ -301,22 +387,28 @@ class Service:
             attachment = c.execute("SELECT * FROM attachments WHERE id=? AND kind='issued_document'", (attachment_id,)).fetchone()
             if not contact or not attachment:
                 raise RuleError('Choose a customer and a saved issued document.')
-            queued = []
+            settings = self.db.setting('templates', {})
+            results = []
             for channel in channels:
                 destination, consent = (contact['phone'], contact['whatsapp_consent']) if channel == 'whatsapp' else (contact['email'], contact['email_consent'])
                 if not destination:
+                    # Nothing was queued: say so rather than reporting a send that cannot happen.
+                    results.append(dict(channel=channel, state='no_contact'))
                     continue
-                payload = {'subject': event.replace('_', ' ').title(), 'body': message}
+                payload = {'subject': event.replace('_', ' ').title(), 'body': message,
+                           'template': settings.get(event, {})}
                 if self.db.setting('include_photos', False) and channel == 'email':
                     payload['include_photos'] = True
+                state = 'pending' if consent else 'blocked_consent'
                 c.execute('''INSERT OR IGNORE INTO outbox(event_key,job_id,contact_id,attachment_id,channel,destination,
                     event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
                     (f'{operation_id}:{channel}', job_id, customer_id, attachment_id, channel, destination,
-                     event, json.dumps(payload), 'pending' if consent else 'blocked_consent', now(), now()))
-                queued.append(channel)
+                     event, json.dumps(payload), state, now(), now()))
+                results.append(dict(channel=channel, state=state))
             self.audit(c, 'document', attachment_id, 'queued_for_customer',
-                       {'customer_id': customer_id, 'channels': queued, 'event': event})
-            return queued
+                       {'customer_id': customer_id, 'event': event,
+                        'outcomes': {r['channel']: r['state'] for r in results}})
+            return results
 
     def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
         self.require("owner", "counter")
@@ -383,7 +475,7 @@ class Service:
                 # A single product still becomes one visit with one job, so every job
                 # is reachable through the same customer -> visit -> jobs relationship.
                 visit_id = visits.create(c, customer_id, intake_ref=fields["intake_ref"],
-                                         estimated_total=fields.get("deposit", 0), advance_total=advance)['id']
+                                         estimated_total=fields.get("initial_estimate", 0), advance_total=advance)['id']
             ident = insert(c, "jobs", customer_id=customer_id, device=device, device_id=device_id, photo_id=photo_id, complaint=complaint, received=now(), actor=self.user["id"], lifecycle_version=int(guided), visit_id=visit_id, **fields)
             visits.attach(c, visit_id, ident)
             if warranty_snapshot is not None:
@@ -403,8 +495,9 @@ class Service:
                     raise RuleError("Record each serialized unit separately.")
                 if item.get("type", "accessory") == "accessory" and item.get("condition") and item["condition"] not in ITEM_CONDITIONS:
                     raise RuleError("Record each accessory as Working, Not Working, Not Tested or Damaged.")
-                if item.get("photo_id") and not c.execute("SELECT 1 FROM attachments WHERE id=? AND customer_id=?", (item["photo_id"], customer_id)).fetchone():
-                    raise RuleError("An accessory photo must be a saved photo for this customer.")
+                if item.get("photo_id"):
+                    self._bind_evidence(c, item["photo_id"], customer_id, ident, ('accessory_photo', 'product_photo'),
+                                        'An accessory photo must be a photo captured for this customer at this intake.')
                 item_id = insert(c, "items", job_id=ident, type=item.get("type", "accessory"), description=item["description"], quantity=item.get("quantity", 1), serial=item.get("serial", ""), condition=item.get("condition", ""), notes=item.get("notes", ""), photo_id=item.get("photo_id"))
                 insert(c, "holdings", item_id=item_id, location=storage, quantity=item.get("quantity", 1))
                 insert(c, "movements", operation_id=uuid.uuid4().hex, item_id=item_id, quantity=item.get("quantity", 1), from_location="customer", to_location=storage, happened=now(), recorded=now(), actor=self.user["id"], counterparty=fields.get("submitter", "") or "Device owner", notes="Initial receipt")
@@ -418,12 +511,32 @@ class Service:
                 insert(c, 'commands', operation_id=operation_id, kind='intake', result_id=ident)
         return ident
 
+    @staticmethod
+    def _bind_evidence(c, attachment_id, customer_id, job_id, kinds, message):
+        """Tie one photo to the record it is evidence for, and to nothing else.
+
+        Belonging to the same customer is not enough: a customer accumulates photos across
+        every visit, so an unrelated historical picture must not be usable as evidence for
+        this job. The attachment is claimed by this job the first time it is used, which
+        both proves the link afterwards and stops the same photo being reused elsewhere.
+        """
+        row = c.execute('SELECT id,kind,customer_id,job_id FROM attachments WHERE id=?', (attachment_id,)).fetchone()
+        if not row or row['customer_id'] != customer_id or row['kind'] not in kinds:
+            raise RuleError(message)
+        if row['job_id'] is not None and row['job_id'] != job_id:
+            raise RuleError(message + ' This photo already belongs to another repair.')
+        if c.execute('SELECT 1 FROM items WHERE photo_id=? AND job_id IS NOT ?', (attachment_id, job_id)).fetchone():
+            raise RuleError(message + ' This photo is already recorded against another item.')
+        if row['job_id'] is None:
+            c.execute('UPDATE attachments SET job_id=? WHERE id=?', (job_id, attachment_id))
+        return attachment_id
+
     def job(self, ident):
         self.require()
         row = self.db.one("SELECT j.*,c.name AS customer,c.phone,c.email FROM jobs j JOIN customers c ON c.id=j.customer_id WHERE j.id=?", (ident,))
         if not row:
             raise RuleError("Job not found.")
-        return row
+        return self.guard_job_access(row)
 
     def intake_visit(self,products,operation_id,draft_id=None,notes=''):
         """Receive one visit atomically; each physical device keeps its own job."""
@@ -443,7 +556,7 @@ class Service:
                 raise RuleError('Use one visit reference for these products.')
             from .visits import Visits
             visit=Visits(self).create(c,customer,intake_ref=reference,notes=notes,
-                estimated_total=sum(int(p.get('deposit') or 0) for p in products),
+                estimated_total=sum(int(p.get('initial_estimate') or 0) for p in products),
                 advance_total=sum(int(p.get('advance') or 0) for p in products))
             jobs=[]
             for index,product in enumerate(products):
@@ -462,10 +575,8 @@ class Service:
             raise RuleError("Job not found.")
         if version is not None and j["version"] != version:
             raise RuleError("This job changed. Refresh and review before saving.")
-        if self.user["role"] == "technician":
-            assignment = c.execute("SELECT technician_id, technician_master_id FROM assignments WHERE id=?", (j["assignment_id"],)).fetchone()
-            if not assignment or (assignment[0] != self.user["id"] and assignment[1] is None):
-                raise RuleError("Technicians can update only their assigned work.")
+        if self.user["role"] == "technician" and not self.owns_job(j["assignment_id"], c):
+            raise RuleError("Technicians can update only their assigned work.")
         return j
 
     def _touch(self, c, job_id):
@@ -792,7 +903,11 @@ class Service:
         return ident
 
     def invoice(self, quote_id, operation_id):
-        self.require("owner")
+        # Counter staff run the whole counter workflow: they issue the quotation, record
+        # the customer's approval and take payment, so they also raise the bill that
+        # follows from the approved quotation. Correcting a posted entry stays with the
+        # owner, in `reverse`.
+        self.require("owner", "counter")
         with self.db.transaction() as c:
             q = c.execute("SELECT * FROM quotes WHERE id=?", (quote_id,)).fetchone()
             if not q or q["state"] != "approved":
@@ -831,7 +946,9 @@ class Service:
         return {"agreed_charges": allowed, 'waivers_adjustments': corrections, "money_retained": retained, "balance_due": allowed + corrections - retained}
 
     def bill_decline(self, job_id, operation_id):
-        self.require("owner")
+        # Reached from the counter-permitted billing review, on the agreed return charges
+        # the customer already consented to at intake.
+        self.require("owner", "counter")
         with self.db.transaction() as c:
             j = self._job(c, job_id)
             if j["stage"] not in ("return_unrepaired", "ready_unrepaired"):

@@ -69,7 +69,7 @@ def test_failed_second_product_rolls_back_entire_visit_and_keeps_draft(service,c
 
 
 def test_visit_rejects_mixed_customers_and_duplicate_existing_device(service,customer):
-    other=service.save_customer('Another test customer')
+    other=service.save_customer('Another test customer','9990000006',complete=False)
     with pytest.raises(RuleError,match='same customer'):service.intake_visit([product(service,customer,'A'),product(service,other,'B')],'mixed')
     from repairshop.customer_records import device_record
     with service.db.transaction() as c:device=device_record(c,customer,'Physical laptop')

@@ -79,9 +79,7 @@ class MainWindow(QMainWindow):
             b = button(name.replace('&', '&&'), lambda checked=False, n=name: self.navigate(n))
             self.nav[name] = b
             links.addWidget(b)
-            if self.s.user["role"] == "technician" and name not in ("Dashboard", "Active Repairs"):
-                b.hide()
-            if self.s.user["role"] == "counter" and name in ("Vendor accounts", "Backups", "Settings & staff"):
+            if not self.may_open(name):
                 b.hide()
         links.addStretch()
         sidebar_scroll = QScrollArea()
@@ -125,8 +123,10 @@ class MainWindow(QMainWindow):
         self.busy.setAccessibleName('Background work in progress')
         self.statusBar().addPermanentWidget(self.busy)
         self.busy.hide()
-        self.statusBar().showMessage("Ready · All amounts in INR · Event times shown in Asia/Kolkata")
-        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.intake)
+        self.statusBar().showMessage("Ready · All amounts in INR · Event times shown in " + self.db.setting("timezone", "Asia/Kolkata"))
+        # The shortcut follows the same rule as the button it mirrors.
+        if self.may_open('New Repair Intake'):
+            QShortcut(QKeySequence("Ctrl+N"), self, activated=lambda: self.safe(self.intake))
         QShortcut(QKeySequence("F5"), self, activated=self.refresh)
         self.navigate("Dashboard")
         self.timer = QTimer(self)
@@ -224,7 +224,18 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Please review", str(exc))
 
+    # Screens a role may not use at all. Hiding a button is only tidiness: `navigate`
+    # refuses the screen and every service call behind it enforces the rule again.
+    HIDDEN = {'technician': lambda name: name not in ('Dashboard', 'Active Repairs'),
+              'counter': lambda name: name in ('Vendor accounts', 'Backups', 'Settings & staff')}
+
+    def may_open(self, name):
+        rule = self.HIDDEN.get(self.s.user['role'] if self.s.user else '')
+        return not (rule and rule(name))
+
     def navigate(self, name):
+        if not self.may_open(name):
+            raise RuleError('Your role cannot open ' + name + '.')
         self.page_name = name
         self.title.setText(name)
         descriptions = {"Dashboard": "Your shop at a glance · physical items and work progress", "Jobs": "Track each repair from intake to collection", "Dispatch & receive": "Choose the actual items handed over; accessories can stay at the shop", "Customer accounts": "Bills, receipts and refunds · balances remain after collection", "Vendor accounts": "Confirmed payables and monthly settlement", "Backups": "Verified recovery copies, long-term archives and historical viewing", "Notifications": "Preview and manage updates · provider acceptance is not delivery"}
@@ -709,6 +720,7 @@ class MainWindow(QMainWindow):
     def intake(self, sale=None, parent=None, draft=None, customer_id=None, device_id=None):
         if self.db.readonly:
             raise RuleError("Archive viewing is read-only.")
+        self.s.require('owner', 'counter')
         if draft:
             saved = json.loads(draft['payload'])
             parent = saved.get('parent_id')

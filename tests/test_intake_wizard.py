@@ -114,7 +114,7 @@ def test_source_switch_does_not_link_stale_sale(qtbot,service,customer,monkeypat
 
 def test_customer_search_alternate_number(qtbot,service):
     from repairshop.ui_widgets import CustomerSelector
-    ident=service.save_customer('Alternate contact',phone_number='9995551234',alternate='9994447777')
+    ident=service.save_customer('Alternate contact',phone_number='9995551234',alternate='9994447777',complete=False)
     selector=CustomerSelector(service); qtbot.addWidget(selector)
     selector.search.setText('9994447777')
     assert selector.box.findData(ident)>0

@@ -1,6 +1,6 @@
 """Issued event snapshots; holdings and movements remain the custody ledger."""
 import json
-from .domain import now, RuleError
+from .domain import now, RuleError, timezone_name
 from .persistence import insert
 
 
@@ -144,7 +144,7 @@ class JobCards:
             ('From',party(p['from'])),('To',party(p['to'])),('Device',f"DEV-{p['device_id']:06d} · {p['device']}\nType: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\nBrand: {p['brand'] or 'Not recorded'} · Model: {p['model'] or 'Not recorded'}\nSerial / IMEI: {p['serial'] or 'Not recorded'}"),
             ('Complaint and condition',p['complaint']+'\n'+p['condition']),
             ('Items handed over',[{k:r.get(k,'') for k in ('description','quantity','serial','condition')} for r in p['items']]),
-            ('Receipt details',f"Effective: {local_time(p['effective'])} IST\nReceived / recorded by: {p['staff']}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
+            ('Receipt details',f"Effective: {local_time(p['effective'])} {timezone_name()}\nReceived / recorded by: {p['staff']}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
         if p.get('initial_estimate') is not None:
             warranty=p.get('intake_warranty') or {}
             sections.append(('Initial estimate given at collection',
@@ -173,7 +173,7 @@ class JobCards:
             if internal:
                 from .domain import rupees
                 sections.append(('INTERNAL COPY · repair costs',[dict(component=k.replace('_',' ').title(),amount=rupees(v)) for k,v in r['costs'].items() if k in ('stock_parts','supplier_parts','other_parts','vendor_parts','vendor_labour','in_house_cost','transport_cost','other_cost','service_center_charge','total_internal')]))
-        path=Documents(self.s).snapshot(('INTERNAL COPY · ' if internal else '')+p['kind'].replace('_',' ').title()+' · '+p['master_job']+' / '+p['card_number'],sections,card['job_id'],shop_name=p.get('shop_name'),paper=paper)
+        path=Documents(self.s).snapshot(('INTERNAL COPY · ' if internal else '')+p['kind'].replace('_',' ').title()+' · '+p['master_job']+' / '+p['card_number'],sections,card['job_id'],shop_name=p.get('shop_name'),paper=paper,internal=internal)
         with self.db.transaction() as c:
             self.s.audit(c,'job',card['job_id'],'job_card_printed',{'card_id':card_id,'card':p['card_number']})
         return path

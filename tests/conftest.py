@@ -14,7 +14,7 @@ def service(tmp_path):
 def customer(service):
     from PyQt6.QtGui import QImage, QColor
     from repairshop.customer_records import CustomerRecords
-    ident = service.save_customer("Synthetic Customer", "9990000001", "synthetic@example.invalid", whatsapp_consent=True, email_consent=True)
+    ident = service.save_customer("Synthetic Customer", "9990000001", "synthetic@example.invalid", whatsapp_consent=True, email_consent=True, complete=False)
     image = QImage(64, 64, QImage.Format.Format_RGB32)
     image.fill(QColor('#68a398'))
     CustomerRecords(service).save_photo(image, ident)

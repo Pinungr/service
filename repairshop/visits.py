@@ -12,6 +12,21 @@ from .migration11 import visit_number
 OPEN_STAGES = "j.stage NOT IN ('collected','closed')"
 
 
+def recalculate_estimate(c, visit_id):
+    """Keep `visits.estimated_total` equal to the initial estimates of its own jobs.
+
+    The estimate is what the repair was quoted to cost at the counter. It is a different
+    figure from the advance the customer paid, and from the later approved quotation and
+    final bill, so it is derived only from `jobs.initial_estimate` and never from money
+    received. Deriving it from the child jobs keeps single-product and multi-product
+    intake consistent and makes the calculation safe to re-run.
+    """
+    total = c.execute('SELECT COALESCE(sum(initial_estimate),0) FROM jobs WHERE visit_id=?',
+                      (visit_id,)).fetchone()[0] or 0
+    c.execute('UPDATE visits SET estimated_total=? WHERE id=?', (int(total), visit_id))
+    return int(total)
+
+
 class Visits:
     def __init__(self, service):
         self.s, self.db = service, service.db
@@ -33,6 +48,7 @@ class Visits:
 
     def attach(self, c, visit_id, job_id):
         c.execute('UPDATE jobs SET visit_id=? WHERE id=? AND visit_id IS NULL', (visit_id, job_id))
+        recalculate_estimate(c, visit_id)
         self.s.audit(c, 'visit', visit_id, 'job_created_from_visit', {'job_id': job_id})
 
     def cancel(self, visit_id, reason):

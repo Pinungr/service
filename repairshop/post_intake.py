@@ -53,13 +53,20 @@ class PostIntakeDialog(QDialog):
         self.email = QCheckBox('Email the customer')
         self.print_copy = QCheckBox('Open for printing')
         contact = window.db.one('SELECT * FROM customers WHERE id=?', (rows[0]['customer_id'],)) or {}
-        self.whatsapp.setEnabled(bool(contact.get('phone')) and bool(documents))
-        self.email.setEnabled(bool(contact.get('email')) and bool(documents))
-        self.print_copy.setEnabled(bool(documents))
-        for box, reason in ((self.whatsapp, 'no WhatsApp number recorded'), (self.email, 'no email recorded')):
-            if not box.isEnabled() and documents:
-                box.setText(box.text() + ' — ' + reason)
+        # A channel is only offered when the customer can actually be reached on it and
+        # has consented, so the dialog never promises a message it is not allowed to send.
+        blocked = {}
+        for box, field, consent, label in ((self.whatsapp, 'phone', 'whatsapp_consent', 'WhatsApp'),
+                                           (self.email, 'email', 'email_consent', 'email')):
+            if not contact.get(field):
+                blocked[box] = 'no ' + label + ' contact recorded'
+            elif not contact.get(consent):
+                blocked[box] = label + ' consent not given — record consent on the customer first'
+            box.setEnabled(box not in blocked and bool(documents))
+            if box in blocked and documents:
+                box.setText(box.text() + ' — ' + blocked[box])
             layout.addWidget(box)
+        self.print_copy.setEnabled(bool(documents))
         layout.addWidget(self.print_copy)
         choice = FlowLayout()
         layout.addLayout(choice)
@@ -90,18 +97,22 @@ class PostIntakeDialog(QDialog):
             try:
                 if not attachment:
                     raise RuleError('The issued document could not be located for sending.')
-                queued = self.window.s.queue_customer_document(
+                results = self.window.s.queue_customer_document(
                     attachment['id'], customer_id, channels, 'intake_receipt',
                     'Your products have been received. The attached receipt lists each product, its '
                     'initial estimate and the advance recorded.', uuid.uuid4().hex, job_id=job_id)
-                notes.append('Queued for ' + ', '.join(queued) + '.' if queued
-                             else 'No channel had a usable destination.')
+                from .messaging import status_label
+                notes += [r['channel'].title() + ': ' + status_label(r['state']) for r in results]
             except Exception as exc:
                 notes.append('Could not queue the message: ' + str(exc) + ' The intake is saved.')
         if self.print_copy.isChecked() and self.documents:
+            paper = self.paper.currentData() or 'A4'
             try:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.documents[-1][1])))
-                notes.append('Opened the receipt for printing on ' + (self.paper.currentData() or 'A4') + '.')
+                # The receipt is rendered again for the chosen sheet, so A5 is a genuinely
+                # re-laid-out page rather than an A4 document described as A5.
+                path = self.window.docs.visit_receipt(self.jobs, paper=paper)
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                notes.append('Opened the ' + paper + ' receipt for printing.')
             except Exception as exc:
-                notes.append('Could not open the document for printing: ' + str(exc))
+                notes.append('Could not prepare the ' + paper + ' document for printing: ' + str(exc))
         self.status.setText('\n'.join(notes) or 'Nothing selected.')

@@ -31,7 +31,7 @@ def test_customer_selector_search_and_form_save(qtbot,service,customer):
     saved=[]
     from PyQt6.QtCore import QTimer
     QTimer.singleShot(50,lambda: form.buttons.button(QDialogButtonBox.StandardButton.Save).click())
-    assert form.submit(lambda v:saved.append(service.save_customer(v["name"])))
+    assert form.submit(lambda v:saved.append(service.save_customer(v["name"],"9990000007",complete=False)))
     assert service.db.one("SELECT name FROM customers WHERE id=?",(saved[0],))["name"]=="New UI Customer"
 
 

@@ -12,7 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from openpyxl import Workbook
-from .domain import now, rupees, RuleError
+from .domain import now, rupees, RuleError, timezone_name
 from .persistence import insert
 from .customer_records import CustomerRecords
 from .local_files import managed_path, publish
@@ -52,7 +52,7 @@ def pdf(path, title, shop, sections, wide=False, paper='A4'):
         styles["Heading2"].fontSize = 11
         styles["Heading3"].fontSize = 9.5
     width = page[0] - 2 * margin
-    story = [Paragraph(html.escape(shop), styles["Title"]), Paragraph(html.escape(title), styles["Heading2"]), Paragraph("Issued " + local_time(now()) + ' IST', styles["Normal"]), Spacer(1, 10 if compact else 16)]
+    story = [Paragraph(html.escape(shop), styles["Title"]), Paragraph(html.escape(title), styles["Heading2"]), Paragraph("Issued " + local_time(now()) + ' ' + timezone_name(), styles["Normal"]), Spacer(1, 10 if compact else 16)]
     for heading, content in sections:
         story.append(Paragraph(html.escape(heading), styles["Heading3"]))
         if isinstance(content, list) and content:
@@ -101,7 +101,7 @@ class Documents:
             summary = (f"{p['device']} · DEV-{p['device_id']:06d}\n"
                 f"Category: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\n"
                 f"Serial: {p['serial'] or 'Not recorded'}\nComplaint: {p['complaint']}\nCondition: {p['condition']}\n"
-                f"Received: {local_time(p['effective'])} IST · Staff: {p['staff']}\n"
+                f"Received: {local_time(p['effective'])} {timezone_name()} · Staff: {p['staff']}\n"
                 f"Initial estimate: {rupees(j['initial_estimate'] or 0)}")
             if j['customer_requirement']:
                 summary += f"\nAdditional customer requirement: {j['customer_requirement']}"
@@ -151,19 +151,19 @@ class Documents:
                 target.unlink(missing_ok=True)
                 raise
 
-    def generate(self, kind, job_id, source_id=None):
+    def generate(self, kind, job_id, source_id=None, paper=None):
         self.s.require("owner", "counter")
         from .job_cards import JobCards
         card_kind={'intake_receipt':'customer_receiving','collection_receipt':'customer_delivery'}
         if kind in card_kind:
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind']==card_kind[kind]]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'])
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper)
         if kind in ('dispatch_manifest','return_manifest'):
             ending='dispatch' if kind=='dispatch_manifest' else 'return'
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind'].endswith(ending)]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'])
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper)
             raise RuleError('This legacy job has no external card. Review its history and record a new actual dispatch/return before printing a card.')
         j = self.s.job(job_id)
         sections = [("Customer & device", f"{j['customer']} · {j['phone']}\n{j['device']} · Serial: {j['serial'] or 'Unknown'}\nSubmitted by: {j['submitter'] or j['customer']} ({j['relationship'] or 'owner'})" )]
@@ -215,16 +215,27 @@ class Documents:
                     raise RuleError('Complete QC and final billing before generating the final invoice.')
                 sections.append(('Final account',f"Invoiced: {rupees(bill['invoiced'])}\nBalance: {rupees(bill['balance'])}"))
         branding = json.loads(q.get('snapshot', '{}')).get('shop', {}).get('shop_name') if kind == 'quotation' else None
-        return self.snapshot(title, sections, job_id=job_id, shop_name=branding)
+        return self.snapshot(title, sections, job_id=job_id, shop_name=branding, paper=paper)
 
     def paper(self, override=None):
         """A4 unless the owner chose A5, with an explicit print-time override allowed."""
         choice = (override or self.db.setting('paper_size', 'A4') or 'A4').upper()
         return choice if choice in PAPER else 'A4'
 
-    def snapshot(self, title, sections, job_id=None, shop_name=None, paper=None):
+    def snapshot(self, title, sections, job_id=None, shop_name=None, paper=None, internal=False):
+        """Render one document. Internal copies are kept out of the customer's folder.
+
+        The customer folder is what gets opened, copied or handed over when someone asks
+        for "the customer's file", so anything carrying purchase costs, third-party costs
+        or margin is filed under the shop's own internal area instead. The record itself is
+        kept either way; only where it lives, and the attachment kind, differ.
+        """
         self.s.require("owner", "counter")
-        relative = CustomerRecords(self.s).document_folder(job_id) + '/' + uuid.uuid4().hex + '.pdf'
+        if internal:
+            self.s.require("owner")
+        folder = ('Internal/Repairs/' + str(job_id or 'general')) if internal \
+            else CustomerRecords(self.s).document_folder(job_id)
+        relative = folder + '/' + uuid.uuid4().hex + '.pdf'
         with self.db.guard:
             path = managed_path(self.db.root, relative)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,7 +246,7 @@ class Documents:
                     os.fsync(stream.fileno())
                 os.rename(pending, path)
                 with self.db.transaction() as c:
-                    insert(c, "attachments", job_id=job_id, kind="issued_document", path=relative, title=title, created=now(), actor=self.s.user["id"])
+                    insert(c, "attachments", job_id=job_id, kind="internal_document" if internal else "issued_document", path=relative, title=title, created=now(), actor=self.s.user["id"])
                     self.s.audit(c, "job" if job_id else "document", job_id, "document_issued", {"title": title, "path": relative})
             except Exception:
                 pending.unlink(missing_ok=True)

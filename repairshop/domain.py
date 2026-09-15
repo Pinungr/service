@@ -1,11 +1,54 @@
 from datetime import datetime, timezone, date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import re
 import unicodedata
+
+#: The shop's own timezone. Timestamps are stored in UTC and only ever converted for
+#: display and for "is this overdue today" comparisons. `Database` publishes the
+#: configured value here at startup so there is one source of truth and no hardcoded
+#: UTC offset anywhere in the application.
+DEFAULT_TIMEZONE = 'Asia/Kolkata'
+_timezone = DEFAULT_TIMEZONE
 
 
 class RuleError(ValueError):
     """A business validation error safe to show to staff."""
+
+
+def use_timezone(name):
+    global _timezone
+    try:
+        ZoneInfo(name or DEFAULT_TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise RuleError('Unknown timezone: ' + str(name))
+    _timezone = name or DEFAULT_TIMEZONE
+    return _timezone
+
+
+def zone():
+    try:
+        return ZoneInfo(_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def timezone_name():
+    return _timezone
+
+
+def today():
+    """The current date where the shop actually is, for due-date comparisons."""
+    return datetime.now(zone()).date().isoformat()
+
+
+def local_time(value):
+    if not value:
+        return 'Not recorded'
+    try:
+        return datetime.fromisoformat(value).astimezone(zone()).strftime('%d %b %Y, %I:%M %p')
+    except ValueError:
+        return value
 
 
 def now():

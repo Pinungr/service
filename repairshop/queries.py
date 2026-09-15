@@ -1,5 +1,4 @@
-from datetime import date
-from .domain import RuleError
+from .domain import RuleError, today
 
 
 class Queries:
@@ -33,7 +32,10 @@ class Queries:
             args.append(end + "T99")
         if overdue:
             where.append("j.stage NOT IN ('collected','closed') AND (j.repair_due<? OR j.collection_due<? OR j.return_due<?)")
-            args.extend([date.today().isoformat()] * 3)
+            args.extend([today()] * 3)
+        scope, scope_args = self.s.scope_jobs()
+        where.append(scope)
+        args.extend(scope_args)
         args.append(offset)
         return self.db.rows("""SELECT j.id,j.number,c.name AS customer,c.phone,j.device,j.serial,j.stage,j.route,
             COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,j.repair_due,j.collection_due,j.return_due,
@@ -48,7 +50,7 @@ class Queries:
         stages = self.db.rows("SELECT stage,count(*) AS jobs FROM jobs WHERE stage NOT IN ('collected','closed') GROUP BY stage")
         balances = self.db.rows("SELECT account_type,sum(amount) AS balance FROM entries GROUP BY account_type") if self.s.user["role"] == "owner" else []
         messages = self.db.rows("SELECT state,count(*) AS messages FROM outbox WHERE state NOT IN ('accepted','captured','cancelled','delivered','read') GROUP BY state")
-        overdue = self.db.one("SELECT count(*) AS n FROM jobs WHERE stage NOT IN ('collected','closed') AND (repair_due<? OR collection_due<? OR return_due<?)", (date.today().isoformat(),) * 3)["n"]
+        overdue = self.db.one("SELECT count(*) AS n FROM jobs WHERE stage NOT IN ('collected','closed') AND (repair_due<? OR collection_due<? OR return_due<?)", (today(),) * 3)["n"]
         return dict(locations=locations, stages=stages, balances=balances, messages=messages, overdue=overdue, sales=self.db.one("SELECT count(*) AS n FROM sales WHERE collected=0")["n"], backup=self.db.one("SELECT * FROM backups WHERE state='verified' ORDER BY id DESC LIMIT 1"))
 
     def ledger(self, account_type, account_id, start, end):
@@ -108,7 +110,7 @@ class Queries:
             self.s.require('owner')
             return self.db.rows("SELECT j.number,p.name,p.brand,p.model,p.part_number,p.serial,p.quantity,p.source,p.supplier_snapshot,p.purchase_cost,p.customer_price,(p.customer_price-p.purchase_cost)*p.quantity AS margin,p.installed_by,p.installed_at,p.status"+base.replace(' FROM jobs j',' FROM repair_parts p JOIN jobs j ON j.id=p.job_id')+' ORDER BY j.id,p.id',args)
         if kind == 'part_warranties':
-            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status!='CLOSED') THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<date('now','+330 minutes') THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',args)
+            return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status!='CLOSED') THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<? THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',[today()]+list(args))
         if kind == 'warranty_claims':
             return self.db.rows('SELECT j.number,wc.original_job_id,wc.device_id,wc.part_id,wc.complaint,wc.status,wc.resolution,wc.replacement_part_id'+base.replace(' FROM jobs j',' FROM warranty_claims wc JOIN jobs j ON j.id=wc.new_job_id')+' ORDER BY wc.id',args)
         if kind == 'job_cards':

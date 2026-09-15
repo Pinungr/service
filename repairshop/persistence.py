@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.pool import NullPool
 from .domain import RuleError
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SCHEMA = """
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','counter','technician')), active INTEGER NOT NULL DEFAULT 1);
@@ -84,6 +84,7 @@ class Database:
                     raise RuleError("Historical viewer needs the current schema; restore an older archive into a working copy first.")
         else:
             self.migrate()
+        self.apply_timezone()
 
     def recover_interrupted_restore(self):
         journal = self.root / 'restore-journal.json'
@@ -96,7 +97,7 @@ class Database:
         previous = recovery / 'previous'
         failed = recovery / 'interrupted-candidate'
         failed.mkdir(exist_ok=True)
-        for name in ('shop.db', 'shop.db-wal', 'shop.db-shm', 'managed', 'Customers'):
+        for name in ('shop.db', 'shop.db-wal', 'shop.db-shm', 'managed', 'Customers', 'Internal'):
             old = previous / name
             current = self.root / name
             if old.exists():
@@ -184,6 +185,10 @@ class Database:
                 if version == 11:
                     from .migration12 import migrate
                     migrate(c)
+                    version = 12
+                if version == 12:
+                    from .migration13 import migrate
+                    migrate(c)
             finally:
                 c.close()
 
@@ -263,7 +268,57 @@ class Database:
         row = self.one("SELECT value FROM settings WHERE key=?", (key,))
         return json.loads(row["value"]) if row else default
 
+    def apply_timezone(self):
+        """Publish the shop's configured timezone so display and due dates agree."""
+        from .domain import use_timezone, DEFAULT_TIMEZONE, RuleError
+        try:
+            return use_timezone(self.setting('timezone', DEFAULT_TIMEZONE))
+        except RuleError:
+            return use_timezone(DEFAULT_TIMEZONE)
+
 
 def insert(c, table, **values):
     keys = ",".join(values)
     return c.execute(f"INSERT INTO {table}({keys}) VALUES ({','.join('?' for _ in values)})", tuple(values.values())).lastrowid
+
+
+def statements(sql):
+    """Split a SQL script into complete statements, keeping trigger BEGIN...END bodies whole."""
+    pending, found = '', []
+    for line in sql.splitlines(keepends=True):
+        pending += line
+        if pending.strip() and sqlite3.complete_statement(pending):
+            found.append(pending.strip())
+            pending = ''
+    if pending.strip():
+        found.append(pending.strip())
+    return found
+
+
+def run_script(c, sql):
+    """Execute a SQL script without ending the caller's transaction.
+
+    `executescript` implicitly commits any open transaction before it runs, which would
+    silently break a migration into separately committed pieces. Running the statements
+    one at a time keeps every migration inside the single transaction that wraps it.
+    """
+    for statement in statements(sql):
+        c.execute(statement)
+
+
+@contextmanager
+def migration(c, version):
+    """One migration, applied completely or not at all.
+
+    The schema change and the `user_version` bump commit together, so an interrupted
+    upgrade always leaves a database that is entirely the old version or entirely the new
+    one, and re-running the upgrade starts from a clean state.
+    """
+    c.execute('BEGIN IMMEDIATE')
+    try:
+        yield c
+        c.execute(f'PRAGMA user_version={int(version)}')
+        c.commit()
+    except BaseException:
+        c.rollback()
+        raise

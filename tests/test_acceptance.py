@@ -38,7 +38,7 @@ def test_reusable_normalized_directories_restart(service):
 
 
 def test_shared_phone_does_not_merge_customers(service, customer):
-    other = service.save_customer("Different Owner", "9990000001")
+    other = service.save_customer("Different Owner", "9990000001", complete=False)
     assert other != customer
 
 
@@ -85,7 +85,7 @@ def test_assignments_do_not_move_and_keep_vendor_charges(service, job):
 
 
 def test_owner_submitter_dedup_and_no_cost_leak(service, customer):
-    other=service.save_customer("Submitter", "9990000001","synthetic@example.invalid",whatsapp_consent=True,email_consent=True)
+    other=service.save_customer("Submitter", "9990000001","synthetic@example.invalid",whatsapp_consent=True,email_consent=True,complete=False)
     job=service.intake(customer,"Laptop","Fault",submitter="Submitter",relationship="Sibling",update_contact_id=other)
     messages=service.db.rows("SELECT * FROM outbox WHERE job_id=?",(job,))
     assert len(messages)==2
@@ -233,7 +233,8 @@ def test_shared_transport_and_included_cost_not_double_counted(service,customer,
 
 
 def test_offline_outbox_survives_restart_and_consent(service,customer,job):
-    service.save_customer("Synthetic Customer","9990000001","synthetic@example.invalid",ident=customer)
+    service.save_customer("Synthetic Customer","9990000001","synthetic@example.invalid",ident=customer,
+                          whatsapp_consent=False,email_consent=False)
     other=Service(Database(service.db.root))
     other.login("owner","CorrectHorse123!")
     worker=Outbox(other)
@@ -299,7 +300,7 @@ def test_backup_restore_attachments_balances_and_readonly(service,customer,job,t
     with pytest.raises(RuleError):
         with view.transaction(): pass
     assert view.one("SELECT sum(amount) n FROM entries")["n"]==-10000
-    service.save_customer("After backup")
+    service.save_customer("After backup", "9990000002", complete=False)
     with pytest.raises(RuleError):
         backup.restore(path,"yes")
     recovery=backup.restore(path,"RESTORE")

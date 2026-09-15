@@ -50,13 +50,13 @@ def test_address_requires_line1_district_and_state(service):
 
 
 def test_quick_registration_without_any_address_still_works(service):
-    ident = service.save_customer('Counter Walk-in', '9990000024')
+    ident = service.save_customer('Counter Walk-in', '9990000024', complete=False)
     assert service.db.one('SELECT pincode FROM customers WHERE id=?', (ident,))['pincode'] == ''
 
 
 def test_migration_moves_free_text_address_into_line1(service, tmp_path):
     import shutil
-    ident = service.save_customer('Legacy Address', '9990000025')
+    ident = service.save_customer('Legacy Address', '9990000025', complete=False)
     with service.db.transaction() as c:
         c.execute("UPDATE customers SET address=?,address_line1='',address_line2='' WHERE id=?",
                   ('9 Old Street\nShivajinagar', ident))
@@ -234,7 +234,7 @@ def test_messaging_failure_does_not_roll_back_the_intake(service, customer, monk
     assert Visits(service).for_customer(customer)[0]['products'] == 1
     assert service.db.one('SELECT count(*) n FROM outbox')['n'] >= 0
     queued = service.queue_customer_document(attachment, customer, ['whatsapp', 'email'], 'intake_receipt', 'Hi', 'op-2')
-    assert set(queued) == {'whatsapp', 'email'}
+    assert {r['channel']: r['state'] for r in queued} == {'whatsapp': 'pending', 'email': 'pending'}
 
 
 def test_print_and_photo_settings_are_validated(service):
