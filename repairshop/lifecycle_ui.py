@@ -233,7 +233,7 @@ class JobWorkspace(QDialog):
             d.text('condition','Device condition',v['damage'],multiline=True)
             d.text('acknowledgment','Physical handover acknowledgment')
             if action=='hand_technician':d.text('bench','Technician work area / bench',v['data'].get('technician_bench',''))
-            else:d.select('storage','Taken back by',self.receiver_choices())
+            else:d.layout.addRow(label('Taken back by: '+self.window.s.user['name']+' (you)'))
             d.text('notes','Handover notes',multiline=True)
         elif action in ('dispatch','arrive','receive','return_dispatch'):
             manifest=v['data'].get('dispatch',{})
@@ -243,7 +243,7 @@ class JobWorkspace(QDialog):
             d.text('reference','Tracking / external job reference',manifest.get('reference',''))
             d.text('acknowledgment','Acknowledgment / receipt reference',multiline=True)
             if action in ('dispatch','return_dispatch'):d.text('carrier','Carrier (blank = direct handover)' if action=='dispatch' else 'Courier receiving the return',manifest.get('carrier','') if action=='dispatch' else '')
-            if action=='receive':d.select('storage','Received by',self.receiver_choices())
+            if action=='receive':d.layout.addRow(label('Received by: '+self.window.s.user['name']+' (you)'))
             d.text('notes','Notes',multiline=True)
             if action=='receive':
                 return self.receive_from_external(v,d)
@@ -361,13 +361,6 @@ class JobWorkspace(QDialog):
             layout.addWidget(b)
         layout.addWidget(button('Cancel',d.reject));d.exec()
 
-    def receiver_choices(self):
-        """Who takes the product back. Defaults to the signed-in person; shop places remain."""
-        from .domain import staff_custody
-        me=self.window.s.user
-        return ([(me['name']+' (me)',staff_custody(me['id']))]
-                +[('Shop place: '+r['name'],'shop:'+r['name']) for r in self.window.s.masters('storage')])
-
     def receive_from_external(self,v,d):
         """Check the returned items against the outbound dispatch manifest before custody moves."""
         from .returns import Returns,DISCREPANCIES
@@ -379,8 +372,7 @@ class JobWorkspace(QDialog):
         d.text('parts_reported','Parts / replacements reported by repairer',v['data'].get('parts_used',''),multiline=True)
         d.text('vendor_invoice','Third-party / service centre invoice',v['data'].get('route_details',{}).get('vendor_invoice',''))
         d.select('repair_result','Repair result',[('Use recorded repair outcome',None)]+[(x,x) for x in ('REPAIRED','PARTIALLY REPAIRED','NOT REPAIRABLE','REPAIR DECLINED','RETURNED WITHOUT REPAIR','REPLACED')])
-        d.select('receiver_kind','Received by',[('Shop storage','storage'),('A named person','person')],'storage')
-        d.text('receiver_mobile','Receiving person mobile (if a person received it)')
+        d.layout.addRow(label('Received by: '+self.window.s.user['name']+' (you)'))
         d.layout.addRow(label('OUTBOUND ITEM  ·  units actually received now'))
         controls,reports=[],[]
         for row in expected['items']:
@@ -403,7 +395,7 @@ class JobWorkspace(QDialog):
             p=dict(p,items=[i for i,_,q in controls if q.value()],
                    quantities={str(i):q.value() for i,_,q in controls},
                    discrepancies=discrepancies,operation_id=operation,
-                   receiver_kind=p.get('receiver_kind','storage'),received_by=p.get('counterparty',''))
+                   received_by=p.get('counterparty',''))
             p.pop('verified',None)
             self.life.execute(self.ident,'receive',p,v['version'])
         return d.submit(save)

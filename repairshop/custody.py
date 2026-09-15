@@ -7,14 +7,14 @@ class DeviceCustody:
     def __init__(self,service):self.s,self.db=service,service.db
 
     def technician(self,c,j,data,p,returning=False):
-        self.s.require('owner','counter')
+        self.s.require_permission('handover')
         if j['route']!='in_house':raise RuleError('This handover requires the in-house route.')
         a=self.db.one("SELECT a.*,COALESCE(tm.name,u.name) name FROM assignments a LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?",(j['assignment_id'],))
         if not a:raise RuleError('Assign a technician first.')
         if not p.get('condition') or not p.get('acknowledgment'):raise RuleError('Record the physical condition and handover acknowledgment.')
         tech_location='technician:master-'+str(a['technician_master_id']) if a.get('technician_master_id') else 'technician:'+str(a['technician_id'])
         # A device coming back from the bench returns to the person recording the return.
-        destination=self.s.receiving_custody(p.get('storage')) if returning else tech_location
+        destination=self.s.receiving_custody() if returning else tech_location
         rows=self.db.rows('SELECT i.*,h.quantity held,h.location FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0',(j['id'],))
         rows=[h for h in rows if h['location']==tech_location] if returning else [h for h in rows if in_shop(h['location'])]
         if 'items' in p:rows=[h for h in rows if h['id'] in p['items']]
@@ -41,7 +41,7 @@ class DeviceCustody:
         because being responsible for a repair and actually holding the product are
         different things. The previous custodian stays in the ledger.
         """
-        self.s.require('owner','counter')
+        self.s.require_permission('handover')
         target=p.get('to_user_id')
         person=self.db.one('SELECT id,name,role FROM users WHERE id=? AND active=1',(target,))
         if not person:
@@ -71,7 +71,7 @@ class DeviceCustody:
         data['custodian_handed']=now()
 
     def external(self,c,j,data,v,action,p):
-        self.s.require('owner','counter')
+        self.s.require_permission('handover')
         if not p.get('counterparty') or not p.get('condition') or not p.get('acknowledgment'):
             raise RuleError('Record the receiving person, condition and handover acknowledgment.')
         party=v['assignment'].get('party')
@@ -104,7 +104,7 @@ class DeviceCustody:
                 raise RuleError('An outbound Job Card is required before a return can be recorded.')
             if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND (m.from_location LIKE 'shop:%' OR m.from_location LIKE 'staff:%' OR m.from_location LIKE 'technician:%') AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
             # The signed-in person receiving the item from the repairer becomes its custodian.
-            destination=self.s.receiving_custody(p.get('storage'));final=self.db.setting('shop_name','Repair shop')
+            destination=self.s.receiving_custody();final=self.db.setting('shop_name','Repair shop')
             # The returned items are checked against the outbound manifest before custody
             # moves. A missing item must be reported, never silently ticked off.
             if not p.get('skip_verification'):
@@ -113,8 +113,6 @@ class DeviceCustody:
                 if 'items' in p:counts={k:v for k,v in counts.items() if k in set(p['items'])}
                 p['verification_id']=Returns(self.s).verify(j['id'],counts,
                     p.get('operation_id') or 'receive:'+str(j['id'])+':'+now(),
-                    receiver_kind=p.get('receiver_kind','storage'),receiver_name=p.get('received_by',''),
-                    receiver_mobile=p.get('receiver_mobile',''),storage=destination,
                     notes=p.get('notes',''),discrepancies=p.get('discrepancies',()))
             result=p.get('repair_result')
             if result and result not in ('REPAIRED','PARTIALLY REPAIRED','NOT REPAIRABLE','REPAIR DECLINED','RETURNED WITHOUT REPAIR','REPLACED'):raise RuleError('Select a supported repair return result.')

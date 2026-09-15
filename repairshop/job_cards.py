@@ -53,7 +53,7 @@ class JobCards:
             receiver=p.get('counterparty',self.s.user['name']),acknowledgment=p.get('acknowledgment',''),costs=JobCosts(self.s)._summary(j['id']))
 
     def issue(self, job_id, kind, event_key, payload=None, items=None):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('handover')
         p = payload or {}
         with self.db.transaction() as c:
             old = c.execute('SELECT id FROM job_cards WHERE event_key=?', (event_key,)).fetchone()
@@ -133,7 +133,7 @@ class JobCards:
     def print(self, card_id, internal=False, paper=None):
         from .documents import Documents
         from .lifecycle import local_time
-        self.s.require('owner','counter')
+        self.s.require_permission('handover')
         if internal:self.s.require('owner')
         card = self.db.one('SELECT * FROM job_cards WHERE id=?',(card_id,))
         if not card:

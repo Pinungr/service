@@ -29,11 +29,13 @@ class Dispatches:
 
     # ---- reads ----------------------------------------------------------
     def current(self, job_id):
+        self.s.require_job_access(job_id)
         row = self.db.one('''SELECT d.*,m.name AS party FROM dispatches d LEFT JOIN masters m ON m.id=d.contact_id
             WHERE d.job_id=? AND d.current=1 ORDER BY d.cycle DESC LIMIT 1''', (job_id,))
         return self._readable(row) if row else None
 
     def history(self, job_id):
+        self.s.require_job_access(job_id)
         return [self._readable(r) for r in self.db.rows('''SELECT d.*,m.name AS party
             FROM dispatches d LEFT JOIN masters m ON m.id=d.contact_id
             WHERE d.job_id=? ORDER BY d.cycle,d.version''', (job_id,))]
@@ -154,7 +156,7 @@ class Dispatches:
 
     def edit(self, job_id, values, version=None):
         """Normal editing, allowed only before the physical handover."""
-        self.s.require('owner', 'counter')
+        self.s.require_permission('handover')
         with self.db.transaction() as c:
             job = self.s._job(c, job_id, version)
             active = c.execute('SELECT * FROM dispatches WHERE job_id=? AND current=1 ORDER BY cycle DESC LIMIT 1', (job_id,)).fetchone()
@@ -166,7 +168,7 @@ class Dispatches:
 
     def amend(self, job_id, values, reason, operation_id=None):
         """Correct a sent dispatch by superseding it. The custody ledger is untouched."""
-        self.s.require('owner', 'counter')
+        self.s.require_permission('handover')
         if not reason or not reason.strip():
             raise RuleError('Record why this sent dispatch is being corrected.')
         with self.db.transaction() as c:

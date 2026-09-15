@@ -83,11 +83,12 @@ class Lifecycle:
         self.s, self.db = service, service.db
 
     def holdings(self, ident):
+        self.s.require_job_access(ident)
         return self.db.rows('''SELECT i.id,i.description,i.type,i.serial,h.location,h.quantity
             FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? AND h.quantity>0''', (ident,))
 
     def timeline(self, ident):
-        self.s.require()
+        self.s.require_job_access(ident)
         rows = self.db.rows("SELECT a.id,a.created,u.name AS actor,a.action,a.payload FROM audit a LEFT JOIN users u ON u.id=a.actor WHERE a.entity='job' AND a.entity_id=? ORDER BY a.created,a.id", (ident,))
         for r in rows:
             r['time'] = local_time(r['created'])

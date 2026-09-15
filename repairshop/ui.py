@@ -1057,9 +1057,8 @@ class MainWindow(QMainWindow):
         d.text("description", "Replacement device / item")
         d.text("serial", "Replacement serial")
         from .domain import staff_custody
-        d.select("location", "Actual holder",
-                 [(self.s.user["name"] + " (me)", staff_custody(self.s.user["id"]))]
-                 + [("Shop place: " + r["name"], "shop:" + r["name"]) for r in self.s.masters("storage")])
+        d.layout.addRow("Actual holder", QLabel(self.s.user["name"] + " (you)"))
+        d.values["location"] = lambda: staff_custody(self.s.user["id"])
         d.text("terms", "Warranty terms actually supplied", multiline=True)
         d.text("evidence", "Evidence / replacement reference", multiline=True)
         d.submit(lambda v: self.s.replacement(**v))
@@ -1093,7 +1092,6 @@ class MainWindow(QMainWindow):
         locations = [("Customer collection", "customer")]
         locations += [(r["name"] + " · " + r["role"].title(), staff_custody(r["id"]))
                       for r in self.db.rows("SELECT id,name,role FROM users WHERE active=1 ORDER BY name")]
-        locations += [("Shop place: " + r["name"], "shop:" + r["name"]) for r in self.s.masters("storage")]
         for kind in ("vendor", "centre", "technician", "transporter"):
             prefix = "transit" if kind == "transporter" else kind
             locations += [(kind.title() + ": " + r["name"], prefix + ":" + r["name"]) for r in self.s.masters(kind)]

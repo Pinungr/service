@@ -54,7 +54,8 @@ class Billing:
 
     def summary(self, job_id):
         """One consistent snapshot of every money figure for this job."""
-        self.s.require('owner', 'counter')
+        self.s.require_permission('billing')
+        self.s.require_job_access(job_id)
         with self.db.read_snapshot():
             return self._summary(job_id)
 

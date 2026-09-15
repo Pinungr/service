@@ -79,7 +79,7 @@ class Queries:
         return self.db.rows(f"SELECT e.account_id,p.name,sum(e.amount) AS balance FROM entries e JOIN {table} p ON p.id=e.account_id WHERE e.account_type=? GROUP BY e.account_id,p.name ORDER BY p.name", (account_type,))
 
     def history(self, job_id):
-        self.s.require()
+        self.s.require_job_access(job_id)
         result = {}
         for table in ("items", "assignments", "work", "warranty", "quotes", "attachments", "outbox"):
             result[table] = self.db.rows(f"SELECT * FROM {table} WHERE job_id=? ORDER BY id DESC", (job_id,))

@@ -17,7 +17,7 @@ class Returns:
 
     def expected(self, job_id):
         """Outbound manifest joined to what is currently away, for the receive screen."""
-        self.s.require()
+        self.s.require_job_access(job_id)
         from .dispatch import Dispatches
         dispatch = Dispatches(self.s).current(job_id)
         held = {r['id']: r for r in self.db.rows('''SELECT i.id,i.type,i.description,i.serial,h.location,h.quantity
@@ -45,10 +45,13 @@ class Returns:
         return dict(job_id=job_id, dispatch=dispatch, items=rows,
                     party=(dispatch or {}).get('party') or (dispatch or {}).get('contact_name') or '')
 
-    def verify(self, job_id, received, operation_id, receiver_kind='storage', receiver_name='',
-               receiver_mobile='', storage='', notes='', discrepancies=()):
-        """Record the physical check. Returns the verification id; custody is moved by the caller."""
-        self.s.require('owner', 'counter')
+    def verify(self, job_id, received, operation_id, notes='', discrepancies=()):
+        """Record the physical check of a return. Custody is moved by the caller.
+
+        The receiver is the signed-in user: the shop has no storage custodian and nobody
+        can record a colleague as having taken delivery, so there is nothing to pass in.
+        """
+        self.s.require_permission('handover')
         expected = self.expected(job_id)
         by_item = {r['item_id']: r for r in expected['items']}
         received = {int(k): int(v) for k, v in dict(received).items()}
@@ -68,12 +71,6 @@ class Returns:
         if unaccounted:
             raise RuleError('One or more dispatched items have not been verified: '
                             + ', '.join(unaccounted) + '. Confirm the units received or report a discrepancy.')
-        if receiver_kind not in ('storage', 'person'):
-            raise RuleError('Record whether the shop storage or a named person received the items.')
-        if receiver_kind == 'storage' and not in_shop(storage):
-            raise RuleError('Record the person or shop place that received the items.')
-        if receiver_kind == 'person' and not receiver_name.strip():
-            raise RuleError('Record the name of the person who received the items.')
         with self.db.transaction() as c:
             done = c.execute('SELECT id FROM return_verifications WHERE operation_id=?', (operation_id,)).fetchone()
             if done:
@@ -82,26 +79,34 @@ class Returns:
             complete = bool(by_item) and all(received.get(i, 0) == r['expected'] for i, r in by_item.items())
             ident = insert(c, 'return_verifications', job_id=job_id,
                            dispatch_id=(expected['dispatch'] or {}).get('id'), operation_id=operation_id,
-                           complete=int(complete and not reported), receiver_kind=receiver_kind,
-                           receiver_name=receiver_name.strip(), receiver_mobile=receiver_mobile.strip(),
-                           storage=storage, checked=json.dumps(received), notes=notes.strip(),
+                           complete=int(complete and not reported),
+                           received_by_user_id=self.s.user['id'],
+                           checked=json.dumps(received), notes=notes.strip(),
                            created=now(), actor=self.s.user['id'])
             for item in reported:
-                insert(c, 'return_discrepancies', verification_id=ident, created=now(), **item)
+                photo = item.pop('photo_id', None)
+                discrepancy = insert(c, 'return_discrepancies', verification_id=ident, created=now(), **item)
+                if photo:
+                    # The photo becomes evidence of this return event and of nothing else.
+                    insert(c, 'return_evidence', verification_id=ident, discrepancy_id=discrepancy,
+                           attachment_id=photo, created=now(), actor=self.s.user['id'])
             self.s.audit(c, 'job', job_id, 'return_verified',
                          {'verification_id': ident, 'complete': complete, 'received': received,
                           'discrepancies': [dict(d, item_id=d['item_id']) for d in reported],
-                          'receiver': receiver_name or storage})
+                          'received_by': self.s.user['name']})
             return ident
 
     def _evidence(self, job_id):
-        """Photos that may be used as evidence for this return: this job's own photos.
+        """Photos that may be used as evidence for the return being recorded now.
 
-        A picture that merely belongs to the same customer proves nothing about what came
-        back from the repairer, so the attachment has to be recorded against this repair.
+        A picture is only evidence of a return if it was taken as one, for this repair,
+        and has not already been attached to an earlier return event. An intake photo of
+        the same product is therefore never silently reusable as proof of damage in
+        transit, even though it shares the job id.
         """
         return {r['id'] for r in self.db.rows(
-            "SELECT id FROM attachments WHERE job_id=? AND kind IN ('product_photo','accessory_photo','return_photo')",
+            """SELECT a.id FROM attachments a WHERE a.job_id=? AND a.kind='return_photo'
+               AND NOT EXISTS(SELECT 1 FROM return_evidence e WHERE e.attachment_id=a.id)""",
             (job_id,))}
 
     @staticmethod
@@ -125,6 +130,7 @@ class Returns:
         return result
 
     def verifications(self, job_id):
+        self.s.require_job_access(job_id)
         rows = self.db.rows('SELECT * FROM return_verifications WHERE job_id=? ORDER BY id', (job_id,))
         if not rows:
             return []
@@ -140,6 +146,7 @@ class Returns:
         return rows
 
     def open_discrepancies(self, job_id):
+        self.s.require_job_access(job_id)
         return self.db.rows('''SELECT d.*,i.description FROM return_discrepancies d
             JOIN return_verifications v ON v.id=d.verification_id
             LEFT JOIN items i ON i.id=d.item_id

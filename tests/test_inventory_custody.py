@@ -208,9 +208,9 @@ def test_in_house_assignment_handover_and_return_are_separate(service,customer):
     life.execute(job,'test',dict(result='passed',notes='Pass'))
     assert life.snapshot(job)['primary']=='return_technician'
     with pytest.raises(RuleError,match='Return the device'):life.execute(job,'qc',dict(notes='Cannot QC before return'))
-    # An explicit shop storage place is still accepted and still names that place.
-    life.execute(job,'return_technician',dict(storage='shop:QC Area',condition='Intact',acknowledgment='QC received'))
-    assert life.snapshot(job)['current_custodian']=='QC Area' and life.snapshot(job)['primary']=='qc'
+    # The device comes back to the person recording the return, not to a storage place.
+    life.execute(job,'return_technician',dict(condition='Intact',acknowledgment='QC received'))
+    assert life.snapshot(job)['current_custodian']=='Owner' and life.snapshot(job)['primary']=='qc'
     assert [r['kind'] for r in JobCards(service).rows(job)]==['customer_receiving','in_house_assignment','in_house_handover','in_house_return']
 
 

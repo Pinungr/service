@@ -6,6 +6,7 @@ from datetime import date
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind
+from .permissions import allowed
 from .persistence import insert
 from .customer_records import dirty, customer_folder, device_record
 from .local_files import managed_path, digest
@@ -23,53 +24,80 @@ class Service:
         self.user = None
 
     def require(self, *roles):
+        """Confirm the session is still a live, active user. Roles are legacy; prefer
+        `require_permission`, which states the operation instead of who may do it."""
         if not self.user:
             raise RuleError("Please sign in.")
         live = self.db.one("SELECT * FROM users WHERE id=?", (self.user["id"],))
         if not live or not live["active"] or live["role"] not in (roles or ("owner", "counter", "technician")):
             raise RuleError("Your role cannot perform this action.")
         self.user = live
+        return live
 
-    # ---- technician job ownership ---------------------------------------
-    # A technician may only reach work assigned to them, whether the assignment names
-    # their login account directly or the directory technician record linked to it.
-    # Both the job read and the job write path check this, so hiding a button is never
-    # what keeps someone out of another technician's repair.
-    OWNED_ASSIGNMENT = """(a.technician_id=? OR (a.technician_master_id IS NOT NULL
-        AND a.technician_master_id IN (SELECT m.id FROM masters m
-            WHERE m.kind='technician' AND m.user_id IS NOT NULL AND m.user_id=?)))"""
+    def require_permission(self, *permissions):
+        """The authoritative check: may this signed-in user perform this operation?
+
+        Every permission is listed in `permissions.py`, so what a role can do is one
+        readable table rather than a role name repeated through the service layer.
+        """
+        live = self.require()
+        for permission in permissions:
+            if not allowed(live['role'], permission):
+                raise RuleError('Your role cannot perform this action: '
+                                + permission.replace('_', ' ') + '.')
+        return live
+
+    def may(self, permission):
+        return bool(self.user) and allowed(self.user['role'], permission)
+
+    # ---- job-level access -----------------------------------------------
+    # One definition of "this repair is mine", used by every job read and write. A user
+    # without `view_all_jobs` reaches a repair only when it is assigned to them (by login
+    # account or through the directory technician linked to it) or when they are actually
+    # holding the product. Knowing another job's id is never enough.
+    MINE = """(EXISTS(SELECT 1 FROM assignments a WHERE a.id={alias}.assignment_id
+            AND (a.technician_id=:uid OR (a.technician_master_id IS NOT NULL
+                AND a.technician_master_id IN (SELECT m.id FROM masters m
+                    WHERE m.kind='technician' AND m.user_id IS NOT NULL AND m.user_id=:uid))))
+        OR EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id
+            WHERE i.job_id={alias}.id AND h.quantity>0
+            AND (h.location='staff:' || :uid OR h.location='technician:' || :uid)))"""
 
     def scope_jobs(self, alias='j'):
         """SQL predicate and arguments limiting a job query to what this user may see."""
-        if not self.user or self.user['role'] != 'technician':
+        if self.may('view_all_jobs') or not self.user:
             return '1=1', []
-        return (f"EXISTS(SELECT 1 FROM assignments a WHERE a.id={alias}.assignment_id AND "
-                + self.OWNED_ASSIGNMENT + ')', [self.user['id'], self.user['id']])
+        sql = self.MINE.format(alias=alias)
+        # The driver uses positional parameters, so expand the repeated id by hand.
+        return sql.replace(':uid', '?'), [self.user['id']] * sql.count(':uid')
 
-    def owns_job(self, assignment_id, c=None):
-        if not assignment_id:
-            return False
-        sql = 'SELECT 1 FROM assignments a WHERE a.id=? AND ' + self.OWNED_ASSIGNMENT
-        args = (assignment_id, self.user['id'], self.user['id'])
+    def job_access(self, job_id, c=None):
+        if self.may('view_all_jobs'):
+            return True
+        sql = 'SELECT 1 FROM jobs j WHERE j.id=? AND ' + self.MINE.format(alias='j')
+        sql = sql.replace(':uid', '?')
+        args = (job_id, *([self.user['id']] * (sql.count('?') - 1)))
         return bool(c.execute(sql, args).fetchone() if c else self.db.one(sql, args))
 
-    def receiving_custody(self, location=None):
-        """Where an item goes when this user physically takes it.
+    def require_job_access(self, job_id, c=None):
+        """The one guard every job-specific read and write goes through."""
+        self.require()
+        if not self.job_access(job_id, c):
+            raise RuleError('This repair is not assigned to you.')
+        return job_id
 
-        Defaults to the signed-in user. An explicit staff identity is only accepted when
-        it is that same user, so nobody can record a colleague as having taken delivery;
-        an explicit `shop:` place is still accepted because older databases and callers
-        use storage places and that history stays valid.
+    def receiving_custody(self, location=None):
+        """Where an item goes when this user physically takes it: to this user.
+
+        The shop has no storage custodian, so there is nothing to choose. An explicit
+        value is only accepted when it is the signed-in user's own identity, which means
+        nobody can record a colleague as having taken delivery of anything.
         """
         mine = staff_custody(self.user['id'])
-        if not location:
-            return mine
-        location = str(location)
-        if location.startswith('staff:') and location != mine:
-            raise RuleError('The receiving person is taken from your sign-in and cannot be recorded as someone else.')
-        if not in_shop(location):
-            raise RuleError('Items can only be taken into the shop by a person or into a shop storage place.')
-        return location
+        if location and str(location) != mine:
+            raise RuleError('The receiving person is taken from your sign-in and cannot be '
+                            'recorded as someone else or as a storage place.')
+        return mine
 
     def custodian(self, location):
         """Readable identity for one custody location: who has it, and what they are."""
@@ -95,8 +123,7 @@ class Service:
         return dict(name=token or location, kind=kind, role=labels.get(kind, kind.title()))
 
     def guard_job_access(self, job, c=None):
-        if self.user and self.user['role'] == 'technician' and not self.owns_job(job['assignment_id'], c):
-            raise RuleError('Technicians can open only their own assigned work.')
+        self.require_job_access(job['id'], c)
         return job
 
     def audit(self, c, entity, ident, action, payload):
@@ -121,7 +148,7 @@ class Service:
             for key, value in defaults.items():
                 insert(c, "settings", key=key, value=json.dumps(value))
         self.login(username, password)
-        for kind, names in {"category": ["Laptop", "Desktop", "Printer", "Phone"], "service": ["Laptop repair", "Diagnosis", "Warranty assessment"], "storage": ["Front desk", "Service shelf"], "transport_method": ["Courier", "Bus", "Train", "Hand delivery"], "payment_method": ["Cash", "UPI", "Bank"], "accessory": ["Adapter", "Mouse", "Wi-Fi dongle", "Loose RAM", "Bag"]}.items():
+        for kind, names in {"category": ["Laptop", "Desktop", "Printer", "Phone"], "service": ["Laptop repair", "Diagnosis", "Warranty assessment"], "transport_method": ["Courier", "Bus", "Train", "Hand delivery"], "payment_method": ["Cash", "UPI", "Bank"], "accessory": ["Adapter", "Mouse", "Wi-Fi dongle", "Loose RAM", "Bag"]}.items():
             for value in names:
                 self.save_master(kind, value)
         laptop = self.db.one("SELECT id FROM masters WHERE kind='category' AND name='Laptop'")["id"]
@@ -207,7 +234,7 @@ class Service:
     PARTY_KINDS = ('vendor', 'centre', 'supplier')
 
     def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, user_id=None, **address_fields):
-        self.require("owner", "counter")
+        self.require_permission('directories')
         if kind not in MASTER_KINDS or not norm(name):
             raise RuleError("Choose a directory and enter a name.")
         if user_id is not None and kind != 'technician':
@@ -290,7 +317,7 @@ class Service:
         An omitted argument on an update means "leave this as it is": only what is passed
         changes, so correcting a name can never blank a phone number or a postal address.
         """
-        self.require("owner", "counter")
+        self.require_permission('customer_records')
         from . import addresses
         if not set(address_fields) <= set(addresses.FIELDS):
             raise RuleError("Unknown customer address field.")
@@ -336,7 +363,7 @@ class Service:
         return ident
 
     def save_sale(self, customer_id, device, **fields):
-        self.require("owner", "counter")
+        self.require_permission('customer_records')
         if not device.strip():
             raise RuleError("Device description is required.")
         allowed = {"category_id", "serial", "invoice_ref", "invoice_date", "sale_date", "amount", "cost", "provider", "warranty_start", "warranty_end", "warranty_terms"}
@@ -352,7 +379,7 @@ class Service:
         return ident
 
     def collect_sale(self, ident, collector, acknowledgment):
-        self.require("owner", "counter")
+        self.require_permission('customer_delivery')
         if not collector.strip() or not acknowledgment.strip():
             raise RuleError("Record collector and acknowledgment.")
         with self.db.transaction() as c:
@@ -420,7 +447,7 @@ class Service:
 
     def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None):
         """Optional customer copy of an issued document. Never part of an intake transaction."""
-        self.require('owner', 'counter')
+        self.require_permission('messaging')
         if not set(channels) <= {'whatsapp', 'email'}:
             raise RuleError('Choose WhatsApp and/or email.')
         with self.db.transaction() as c:
@@ -452,7 +479,7 @@ class Service:
             return results
 
     def intake(self, customer_id, device, complaint, accessories=(), storage=None, advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
-        self.require("owner", "counter")
+        self.require_permission('intake')
         # Whoever is signed in is the person the customer handed the product to, so they
         # become the receiver and the first custodian without being asked to say so.
         storage = self.receiving_custody(storage)
@@ -584,7 +611,7 @@ class Service:
 
     def intake_visit(self,products,operation_id,draft_id=None,notes=''):
         """Receive one visit atomically; each physical device keeps its own job."""
-        self.require('owner','counter')
+        self.require_permission('intake')
         if not operation_id or not products or len(products)>50:
             raise RuleError('A visit needs between 1 and 50 products and an operation reference.')
         with self.db.transaction() as c:
@@ -619,15 +646,14 @@ class Service:
             raise RuleError("Job not found.")
         if version is not None and j["version"] != version:
             raise RuleError("This job changed. Refresh and review before saving.")
-        if self.user["role"] == "technician" and not self.owns_job(j["assignment_id"], c):
-            raise RuleError("Technicians can update only their assigned work.")
+        self.require_job_access(ident, c)
         return j
 
     def _touch(self, c, job_id):
         c.execute("UPDATE jobs SET version=version+1 WHERE id=?", (job_id,))
 
     def move(self, item_id, quantity, source, destination, counterparty, operation_id, reference="", condition="", notes="", acknowledgment="", happened=None, reverses_id=None):
-        self.require("owner", "counter")
+        self.require_permission('handover')
         if not isinstance(quantity, int) or quantity <= 0 or source == destination or not counterparty.strip():
             raise RuleError("Choose a positive quantity, different destination, and counterparty.")
         if destination.split(":")[0] not in ("shop", "staff", "technician", "vendor", "centre", "transit", "customer", "exception"):
@@ -671,7 +697,7 @@ class Service:
         return ident
 
     def assign(self, job_id, route, contact_id=None, technician_id=None, technician_master_id=None, reference="", estimate=0):
-        self.require("owner", "counter")
+        self.require_permission('assign_job')
         if route not in ROUTES or (route != "in_house" and not contact_id):
             raise RuleError("Choose a route and its responsible repairer.")
         with self.db.transaction() as c:
@@ -735,7 +761,7 @@ class Service:
             raise RuleError('The required deposit has not been received.')
 
     def dates(self, job_id, repair_due, collection_due, return_due, reason, version=None, duration_days=None, reference_date=None):
-        self.require("owner", "counter")
+        self.require_permission('assign_job')
         if not reason.strip():
             raise RuleError("Record the reason for these estimated dates.")
         with self.db.transaction() as c:
@@ -784,14 +810,14 @@ class Service:
                 self.notify(c, job_id, stage, messages[stage])
 
     def hold(self, job_id, reason):
-        self.require("owner", "counter")
+        self.require_permission('assign_job')
         with self.db.transaction() as c:
             self._job(c, job_id)
             c.execute("UPDATE jobs SET hold_reason=?,version=version+1 WHERE id=?", (reason, job_id))
             self.audit(c, "job", job_id, "hold_changed", {"reason": reason})
 
     def record_warranty(self, job_id, decision, rma="", findings="", covered="", excluded="", terms=""):
-        self.require("owner", "counter")
+        self.require_permission('manage_warranty')
         if decision not in ("pending", "accepted", "rejected", "partial") or (decision in ("rejected", "partial") and not findings.strip()):
             raise RuleError("Record the centre decision and rejection/partial-coverage reason.")
         with self.db.transaction() as c:
@@ -809,7 +835,7 @@ class Service:
         return ident
 
     def replacement(self, item_id, description, serial, location, terms, evidence):
-        self.require("owner", "counter")
+        self.require_permission('handover')
         if not serial.strip() or not evidence.strip() or not terms.strip():
             raise RuleError("Record replacement serial, supplied warranty terms, and evidence.")
         with self.db.transaction() as c:
@@ -826,7 +852,7 @@ class Service:
         return ident
 
     def issue_quote(self, job_id, scope, lines, terms="", valid_until=None):
-        self.require("owner", "counter")
+        self.require_permission('create_quote')
         valid_until = day(valid_until)
         if valid_until and valid_until < date.today().isoformat():
             raise RuleError('Quotation expiry cannot be in the past. Choose today or a future date, or leave expiry off.')
@@ -875,13 +901,13 @@ class Service:
         return q, j
 
     def quote_decision_details(self, quote_id):
-        self.require('owner','counter')
+        self.require_permission('create_quote')
         with self.db.read() as c:
             q, _ = self._quote_for_decision(c, quote_id)
             return dict(q, expired=bool(q['valid_until'] and q['valid_until'] < date.today().isoformat()))
 
     def decide_quote(self, quote_id, decision, person, channel, evidence=""):
-        self.require("owner", "counter")
+        self.require_permission('approve_quote')
         if decision not in ("approved", "declined") or not person.strip() or channel not in ("call", "in_person", "whatsapp", "email"):
             raise RuleError("Record the decision, authorized person's name, and channel.")
         with self.db.transaction() as c:
@@ -924,7 +950,7 @@ class Service:
         return ident
 
     def post(self, account_type, account_id, kind, amount, operation_id, allocations=(), **fields):
-        self.require("owner", "counter")
+        self.require_permission('collect_payment')
         if self.user["role"] != "owner" and (account_type != "customer" or kind != "receipt"):
             raise RuleError("Only the owner can post bills, refunds, vendor entries, or corrections.")
         if kind in ("credit", "adjustment", "opening") and not fields.get("notes", "").strip():
@@ -951,7 +977,7 @@ class Service:
         # the customer's approval and take payment, so they also raise the bill that
         # follows from the approved quotation. Correcting a posted entry stays with the
         # owner, in `reverse`.
-        self.require("owner", "counter")
+        self.require_permission('billing')
         with self.db.transaction() as c:
             q = c.execute("SELECT * FROM quotes WHERE id=?", (quote_id,)).fetchone()
             if not q or q["state"] != "approved":
@@ -992,7 +1018,7 @@ class Service:
     def bill_decline(self, job_id, operation_id):
         # Reached from the counter-permitted billing review, on the agreed return charges
         # the customer already consented to at intake.
-        self.require("owner", "counter")
+        self.require_permission('billing')
         with self.db.transaction() as c:
             j = self._job(c, job_id)
             if j["stage"] not in ("return_unrepaired", "ready_unrepaired"):

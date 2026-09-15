@@ -20,10 +20,12 @@ class PartyQuotes:
 
     # ---- reads ----------------------------------------------------------
     def current(self, job_id):
+        self.s.require_job_access(job_id)
         row = self.db.one("SELECT * FROM party_quotes WHERE job_id=? AND state='current'", (job_id,))
         return self._with_lines(row) if row else None
 
     def history(self, job_id):
+        self.s.require_job_access(job_id)
         rows = self.db.rows('SELECT * FROM party_quotes WHERE job_id=? ORDER BY version', (job_id,))
         if not rows:
             return []

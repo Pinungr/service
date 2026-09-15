@@ -21,7 +21,8 @@ class JobCosts:
             self.s.audit(c,'job',job_id,'internal_cost_updated',{'previous':before,'changes':values,'reason':reason})
 
     def summary(self,job_id):
-        self.s.require('owner')
+        self.s.require_permission('view_internal_cost')
+        self.s.require_job_access(job_id)
         return self._summary(job_id)
 
     def _summary(self,job_id):

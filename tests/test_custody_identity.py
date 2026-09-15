@@ -77,12 +77,17 @@ def test_intake_never_asks_who_received_the_product(service):
                        operation_id=uuid.uuid4().hex)
 
 
-def test_a_shop_storage_place_is_still_accepted_for_compatibility(service):
+def test_a_shop_storage_place_can_no_longer_be_made_the_custodian(service):
+    """There is no office storage: a product is always held by a person."""
     customer = customer_of(service)
-    job = service.intake(customer, 'Dell Laptop', 'No power', storage='shop:Service shelf',
-                         operation_id=uuid.uuid4().hex)
-    assert where(service, job) == 'shop:Service shelf'
-    assert in_shop(where(service, job))
+    with pytest.raises(RuleError, match='storage place'):
+        service.intake(customer, 'Dell Laptop', 'No power', storage='shop:Service shelf',
+                       operation_id=uuid.uuid4().hex)
+    assert not service.db.rows('SELECT id FROM jobs')
+
+
+def test_no_storage_places_are_seeded_for_a_new_shop(service):
+    assert service.db.rows("SELECT id FROM masters WHERE kind='storage'") == []
 
 
 # ---- 5/6. assignment is not custody ------------------------------------------
@@ -253,8 +258,9 @@ def test_an_operator_cannot_record_a_colleague_as_the_receiver(service):
 
 
 def test_a_custody_destination_outside_the_shop_is_refused_for_a_receipt(service):
-    with pytest.raises(RuleError, match='taken into the shop'):
-        service.receiving_custody('vendor:Somebody')
+    for destination in ('vendor:Somebody', 'shop:Front desk', 'customer'):
+        with pytest.raises(RuleError, match='cannot be recorded as someone else'):
+            service.receiving_custody(destination)
 
 # ---- 15. dashboard and filters follow custody, not a storage bucket ----------
 

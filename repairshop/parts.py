@@ -28,7 +28,7 @@ class Parts:
         return Inventory(self.s).adjust(stock_id,quantity,reference,notes)
 
     def save(self, job_id, values, part_id=None):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_parts')
         defaults=dict(name='',part_type='',brand='',model='',part_number='',serial='',quantity=1,source='supplier',inventory_id=None,supplier_id=None,
             invoice='',purchase_date=None,purchase_cost=0,customer_price=0,warranty_duration=0,warranty_unit='months',warranty_provider='',warranty_terms='',notes='',requested_by='',request_notes='')
         if not set(values)<=set(defaults):
@@ -91,7 +91,7 @@ class Parts:
             return part_id
 
     def remove(self, part_id, reason):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_parts')
         if not reason.strip():
             raise RuleError('Record why this planned part is removed.')
         with self.db.transaction() as c:
@@ -127,7 +127,7 @@ class Parts:
         return [dict(part_id=p['id'],revision=p['revision'],description=f"{p['name']} · {p['brand']} {p['model']} · Qty {p['quantity']} · "+(f"Warranty {p['warranty_duration']} {p['warranty_unit']} ({p['warranty_provider']})" if p['warranty_duration'] else 'Warranty not recorded'),amount=p['quantity']*p['customer_price']) for p in self.rows(job_id) if p['status']!='removed']
 
     def procure(self,part_id,action,reference):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_parts')
         if not reference.strip():raise RuleError('Record the order or receipt reference.')
         with self.db.transaction() as c:
             p=self.db.one('SELECT * FROM repair_parts WHERE id=?',(part_id,))

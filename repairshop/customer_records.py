@@ -82,7 +82,7 @@ class CustomerRecords:
             return folder + '/Repairs/' + slug(row['number']) + '/Documents' if job_id else folder + '/Purchase-Documents'
 
     def update_device(self, device_id, name, brand='', model='', serial=''):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('customer_records')
         if not name.strip():
             raise RuleError('A product name is required.')
         with self.db.transaction() as c:
@@ -107,7 +107,7 @@ class CustomerRecords:
         return self.db.rows('SELECT d.*,c.name AS customer FROM intake_drafts d LEFT JOIN customers c ON c.id=d.customer_id WHERE actor=? ORDER BY updated DESC', (self.s.user['id'],))
 
     def save_photo(self, image, customer_id, person_role='owner', person_name='', device_id=None, job_id=None, captured=None):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('customer_records')
         if person_role not in ('owner', 'submitter', 'product', 'accessory') or (person_role == 'product') != bool(device_id):
             raise RuleError('Choose whose photo is being saved.')
         if not isinstance(image, QImage) or image.isNull():
@@ -151,7 +151,7 @@ class CustomerRecords:
         return ident
 
     def import_product_photo(self, source, customer_id, device_id, job_id=None):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('customer_records')
         source = Path(source)
         if not source.is_file() or source.stat().st_size > 50 * 1024**2:
             raise RuleError('Choose a local image smaller than 50 MB.')

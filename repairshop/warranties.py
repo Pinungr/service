@@ -95,7 +95,7 @@ class Warranties:
         return self.db.rows('SELECT c.*,j.number claim_job,o.number original_job,w.name part FROM warranty_claims c JOIN jobs j ON j.id=c.new_job_id JOIN jobs o ON o.id=c.original_job_id JOIN part_warranties w ON w.id=c.warranty_id WHERE c.device_id=? ORDER BY c.id DESC',(device_id,))
 
     def repair_warranty(self,job_id,name,start_date,duration,unit,provider,terms=''):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_warranty')
         if not name.strip() or not provider.strip() or duration<=0:
             raise RuleError('Enter repair warranty name, provider and positive duration.')
         expiry=warranty_expiry(start_date,duration,unit)
@@ -126,7 +126,7 @@ class Warranties:
             self.s.audit(c,'job',old['job_id'],'warranty_admin_override' if privileged_override else 'warranty_edited',{'warranty_id':warranty_id,'previous':old,'changes':values,'reason':reason,'active_claim':claim['id'] if claim else None})
 
     def claim(self,new_job_id,warranty_id,complaint,override_reason=''):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_warranty')
         if not complaint.strip():
             raise RuleError('Record the warranty complaint.')
         with self.db.transaction() as c:
@@ -173,7 +173,7 @@ class Warranties:
         return self.db.rows('SELECT m.*,u.name checked_by FROM manual_warranty_checks m JOIN users u ON u.id=m.actor WHERE job_id=? ORDER BY m.id DESC',(job_id,))
 
     def manual_check(self,job_id,result,evidence_type,reference,provider,coverage,notes,attachment_id=None):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_warranty')
         if result not in ('VALID','INVALID','UNVERIFIED') or coverage not in ('manufacturer','shop_part','shop_repair','supplier','vendor'):
             raise RuleError('Select a verification result and warranty coverage.')
         if evidence_type not in ('Shop invoice','Warranty slip','Supplier invoice','Manufacturer warranty','Vendor confirmation','Other'):

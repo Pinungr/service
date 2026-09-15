@@ -476,9 +476,9 @@ def test_receipt_is_blocked_until_short_units_are_explained(service, customer):
                    if service.db.one('SELECT description FROM items WHERE id=?', (i,))['description'] == 'Charger')
     short = dict(items); short[charger] = 0
     with pytest.raises(RuleError, match='not been verified'):
-        Returns(service).verify(job, short, 'op-short', storage='shop:Front desk')
+        Returns(service).verify(job, short, 'op-short')
     assert not service.db.rows('SELECT id FROM return_verifications')
-    ident = Returns(service).verify(job, short, 'op-short-2', storage='shop:Front desk',
+    ident = Returns(service).verify(job, short, 'op-short-2',
                                     discrepancies=[dict(item_id=charger, kind='missing', received=0,
                                                         notes='Third party could not find the charger')])
     rows = Returns(service).verifications(job)
@@ -491,10 +491,10 @@ def test_discrepancy_needs_a_reason_and_a_dispatched_item(service, customer):
     items = {r['item_id']: r['expected'] for r in Returns(service).expected(job)['items']}
     first = next(iter(items))
     with pytest.raises(RuleError, match='Explain'):
-        Returns(service).verify(job, items, 'op-a', storage='shop:Front desk',
+        Returns(service).verify(job, items, 'op-a',
                                 discrepancies=[dict(item_id=first, kind='damaged', notes='  ')])
     with pytest.raises(RuleError, match='supported discrepancy'):
-        Returns(service).verify(job, items, 'op-b', storage='shop:Front desk',
+        Returns(service).verify(job, items, 'op-b',
                                 discrepancies=[dict(item_id=first, kind='exploded', notes='x')])
 
 
@@ -503,7 +503,7 @@ def test_verification_alone_never_moves_custody(service, customer):
     before = service.db.rows('''SELECT h.* FROM holdings h JOIN items i ON i.id=h.item_id
         WHERE i.job_id=? ORDER BY h.item_id,h.location''', (job,))
     items = {r['item_id']: r['expected'] for r in Returns(service).expected(job)['items']}
-    Returns(service).verify(job, items, 'op-no-move', storage='shop:Front desk')
+    Returns(service).verify(job, items, 'op-no-move')
     after = service.db.rows('''SELECT h.* FROM holdings h JOIN items i ON i.id=h.item_id
         WHERE i.job_id=? ORDER BY h.item_id,h.location''', (job,))
     assert before == after
@@ -512,11 +512,13 @@ def test_verification_alone_never_moves_custody(service, customer):
 def test_confirmed_receive_verifies_and_then_moves_custody(service, customer):
     job, life = dispatched(service, customer)
     life.execute(job, 'receive', dict(counterparty='Counter staff', condition='Intact', acknowledgment='R1',
-                                      storage='shop:Front desk', repair_result='REPAIRED',
-                                      receiver_kind='storage', operation_id='op-receive'))
-    assert all(h['location'].startswith('shop:') for h in life.holdings(job))
+                                      repair_result='REPAIRED',
+                                      operation_id='op-receive'))
+    from repairshop.domain import staff_custody
+    assert all(h['location'] == staff_custody(service.user['id']) for h in life.holdings(job))
     rows = Returns(service).verifications(job)
-    assert len(rows) == 1 and rows[0]['complete'] and rows[0]['storage'] == 'shop:Front desk'
+    assert len(rows) == 1 and rows[0]['complete']
+    assert rows[0]['received_by_user_id'] == service.user['id']
     assert service.db.one("""SELECT 1 n FROM audit WHERE entity='job' AND entity_id=?
         AND action='return_verified'""", (job,))
 
@@ -605,8 +607,8 @@ def test_full_third_party_repair_from_intake_to_close(service, customer):
     life.execute(mobile, 'start_repair')
     life.execute(mobile, 'complete_repair', dict(notes='Port replaced', parts='Charging port'))
     life.execute(mobile, 'receive', dict(counterparty='Counter staff', condition='Intact', acknowledgment='R9',
-                                         storage='shop:Front desk', repair_result='REPAIRED',
-                                         receiver_kind='storage', operation_id='e2e-receive'))
+                                         repair_result='REPAIRED',
+                                         operation_id='e2e-receive'))
     assert Returns(service).verifications(mobile)[0]['complete']
     life.execute(mobile, 'qc', dict(result='passed', notes='Charging verified',
                                     checks={k: 'passed' for k in ('functional', 'power', 'charging',

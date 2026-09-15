@@ -12,6 +12,7 @@ from PyQt6.QtGui import QImage, QColor
 from repairshop.customer_records import CustomerRecords
 from repairshop.documents import Documents
 from repairshop.domain import RuleError
+from repairshop.lifecycle import Lifecycle
 
 ADDRESS = dict(address_line1='12 Station Road', address_line2='Near the clock tower',
                pincode='411001', district='Pune', state='Maharashtra')
@@ -295,40 +296,42 @@ def dispatched_job(service, customer):
 
 
 def receive_payload(life, job, **extra):
-    """The payload the receive dialog builds, including its shared custody fields."""
+    """The payload the receive dialog builds. It never names a receiver: the signed-in
+    user takes the product back, so there is nothing to choose."""
     held = {h['id']: h['quantity'] for h in life.holdings(job)}
-    return dict(dict(counterparty='Priya at the counter', condition='Intact', acknowledgment='R1',
-                     storage='shop:Front desk', notes='', repair_result='REPAIRED',
+    return dict(dict(counterparty='Vendor courier', condition='Intact', acknowledgment='R1',
+                     notes='', repair_result='REPAIRED',
                      items=list(held), quantities={str(k): v for k, v in held.items()},
-                     discrepancies=[], operation_id=uuid.uuid4().hex,
-                     received_by='Priya at the counter'), **extra)
+                     discrepancies=[], operation_id=uuid.uuid4().hex), **extra)
 
 
-def test_a_named_person_can_take_the_return_at_the_counter(service, customer):
-    """The receive dialog offers "A named person"; the name comes from the shared
-    "Person receiving the items" field, which custody already requires."""
+def test_a_third_party_return_is_received_by_the_signed_in_user(service, customer):
+    from repairshop.domain import staff_custody
     from repairshop.returns import Returns
     job, life = dispatched_job(service, customer)
-    life.execute(job, 'receive', receive_payload(life, job, receiver_kind='person',
-                                                 receiver_mobile='9990003333'))
+    service.save_staff('rahul', 'Rahul', 'counter', 'TestPassword123')
+    rahul = service.db.one("SELECT id FROM users WHERE username='rahul'")['id']
+    service.login('rahul', 'TestPassword123')
+    life = Lifecycle(service)
+    life.execute(job, 'receive', receive_payload(life, job))
     record = Returns(service).verifications(job)[0]
-    assert record['receiver_kind'] == 'person'
-    assert record['receiver_name'] == 'Priya at the counter'
-    assert record['receiver_mobile'] == '9990003333'
+    assert record['received_by_user_id'] == rahul
     assert record['complete']
+    held = service.db.one("""SELECT h.location FROM holdings h JOIN items i ON i.id=h.item_id
+        WHERE i.job_id=? AND i.type='device' AND h.quantity>0""", (job,))['location']
+    assert held == staff_custody(rahul), 'the receiver becomes the custodian'
 
 
-def test_shop_storage_remains_the_default_receiver(service, customer):
+def test_no_shop_destination_is_ever_created_by_a_return(service, customer):
+    job, life = dispatched_job(service, customer)
+    life.execute(job, 'receive', receive_payload(life, job))
+    assert not service.db.rows("SELECT 1 FROM movements WHERE to_location LIKE 'shop:%'")
+
+
+def test_a_return_cannot_name_somebody_else_as_the_receiver(service, customer):
+    """The API has no receiver argument, so forging one is a TypeError, not a silent write."""
     from repairshop.returns import Returns
     job, life = dispatched_job(service, customer)
-    life.execute(job, 'receive', receive_payload(life, job, receiver_kind='storage'))
-    record = Returns(service).verifications(job)[0]
-    assert record['receiver_kind'] == 'storage' and record['storage'] == 'shop:Front desk'
-
-
-def test_a_receipt_without_the_receiving_person_is_refused(service, customer):
-    job, life = dispatched_job(service, customer)
-    payload = receive_payload(life, job, receiver_kind='person')
-    payload['counterparty'] = payload['received_by'] = ''
-    with pytest.raises(RuleError, match='receiving person'):
-        life.execute(job, 'receive', payload)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    with pytest.raises(TypeError):
+        Returns(service).verify(job, held, uuid.uuid4().hex, receiver_name='Somebody Else')
