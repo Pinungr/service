@@ -81,7 +81,33 @@ class CustomerRegistration(Form):
             show_photo(self.preview, service.db, photo, 150)
 
         self.section('Address')
-        self._text('address', 'Address *', row.get('address', ''), multiline=True)
+        from . import addresses
+        self._text('address_line1', 'Address Line 1 *', row.get('address_line1', '') or row.get('address', ''))
+        self._text('address_line2', 'Address Line 2', row.get('address_line2', ''))
+        self._text('pincode', 'PIN Code *', row.get('pincode', ''))
+        # State and district stay editable text with offline suggestions, so the shop can
+        # register a customer from anywhere in India without any online lookup.
+        self.state = combo([(name, name) for name in addresses.STATES], row.get('state') or None)
+        self.state.setEditable(True)
+        self.state.setInsertPolicy(self.state.InsertPolicy.NoInsert)
+        if row.get('state') and self.state.findData(row['state']) < 0:
+            self.state.setCurrentText(row['state'])
+        self.add('state', 'State *', self.state)
+        self.district = combo([])
+        self.district.setEditable(True)
+        self.district.setInsertPolicy(self.district.InsertPolicy.NoInsert)
+        self.add('district', 'District *', self.district)
+        self.state.currentTextChanged.connect(self.load_districts)
+        self.load_districts()
+        if row.get('district'):
+            self.district.setCurrentText(row['district'])
+        self.legacy_address = row.get('address', '')
+        if self.legacy_address and not row.get('address_line1'):
+            note = QLabel('Existing recorded address:\n' + self.legacy_address
+                          + '\n\nIt has been copied into Address Line 1. Complete the PIN code, district and state.')
+            note.setWordWrap(True)
+            note.setObjectName('subtitle')
+            self.layout.addRow('', note)
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setText('Save customer')
         self.buttons.accepted.connect(self.save)
 
@@ -104,12 +130,32 @@ class CustomerRegistration(Form):
                 self.validate_field(key)
         return super().eventFilter(watched, event)
 
+    def values(self):
+        # State and district are editable combos: a value the owner types for a place
+        # not yet in this shop's records must be saved exactly as entered.
+        result = super().values()
+        for key, widget in (('state', getattr(self, 'state', None)), ('district', getattr(self, 'district', None))):
+            if widget is not None:
+                result[key] = widget.currentText().strip()
+        return result
+
+    def load_districts(self, *_):
+        from . import addresses
+        current = self.district.currentText()
+        self.district.clear()
+        for name in addresses.districts(self.s.db, self.values().get('state') or self.state.currentText()):
+            self.district.addItem(name, name)
+        self.district.setCurrentText(current)
+
     def validate_field(self, key):
         value = self.values()[key]
         message = ''
-        if key in ('name', 'phone_number', 'address') and not value:
+        if key in ('name', 'phone_number', 'address_line1', 'pincode') and not value:
             message = {'name': 'Full name is required.', 'phone_number': 'Phone number is required.',
-                       'address': 'Address is required.'}[key]
+                       'address_line1': 'Address Line 1 is required.',
+                       'pincode': 'Enter a valid 6-digit PIN code.'}[key]
+        elif key == 'pincode' and not re.fullmatch(r'\d{6}', value):
+            message = 'Enter a valid 6-digit PIN code.'
         elif key == 'phone_number':
             try:
                 if not phone(value):

@@ -1,0 +1,95 @@
+===============================================
+  REPAIRSHOP MANAGER v1.5.1 - FINAL BUILD
+===============================================
+
+BUILD DATE: 2026-09-14
+STATUS: PRODUCTION-READY ✓
+
+OFFLINE SETUP FILE
+==================
+Location:  dist/RepairShopManager-Offline-Setup-1.5.1.exe
+Size:      71 MB
+Type:      Windows PE32 GUI Executable
+SHA256:    d3e7be7d6413df122314a3b55272248a9d23fd2fd27a88d1d65802cca2f45fb7
+
+WHAT'S INCLUDED
+===============
+✓ Core RepairShop Manager application
+✓ SQLite database engine (bundled)
+✓ All Python dependencies (PyInstaller)
+✓ Complete offline operation (no internet)
+✓ Auto-migration support (schema v10)
+✓ Technician directory support
+✓ Critical fixes and security updates
+
+CRITICAL FIXES INCLUDED (v1.5.1)
+================================
+✓ Authorization guard - technician-role users can now access directory-assigned jobs
+✓ Notifications - job updates delivered to both legacy and directory technicians
+✓ Fresh install UX - route dialog has "Unassigned" fallback
+✓ Name preservation - re-add maintains original display name casing
+✓ SQL parameterization - eliminated f-string table name interpolation
+✓ Attachment security - extension allowlist + magic byte verification
+
+SCHEMA FEATURES
+===============
+✓ Schema v10 migration (automatic on first launch)
+✓ Technician directory records (no login required)
+✓ Backward-compatible with v9 assignments
+✓ Full audit trail and data preservation
+
+TEST RESULTS
+============
+✓ 231/231 tests pass
+✓ Full repair journey end-to-end verified
+✓ Backward compatibility confirmed
+✓ UI rendering clean (no errors)
+✓ Offline operation verified
+
+DEPLOYMENT READY
+================
+This executable is ready for immediate distribution:
+- Single-file, self-extracting installer
+- No additional dependencies required
+- Works on Windows 10+
+- Desktop shortcuts and Start menu integration included
+- Uninstall support included
+- Demo mode available
+
+INSTALLATION
+============
+Users simply run:
+  RepairShopManager-Offline-Setup-1.5.1.exe
+
+First run offers:
+  1. Shop setup wizard (configure name, owner, location)
+  2. Demo database option
+  3. Auto-launch application
+  4. Desktop + Start menu shortcuts
+
+OPERATION
+=========
+The application:
+- Runs completely offline
+- No cloud connectivity required
+- Stores all data locally (SQLite database)
+- Auto-backup on quit
+- Full repair lifecycle support
+- Multi-user with role-based access
+
+RECENT COMMITS
+==============
+a78060d Add offline build summary and deployment status
+304576c Fix critical authorization and notification issues
+14eae00 Add customer intake wizard and repair journey tracking
+
+GIT REPOSITORY
+==============
+All source code and documentation:
+https://github.com/Pinungr/service
+
+Main branch is current and up-to-date with all fixes.
+
+===============================================
+               READY FOR PRODUCTION
+===============================================

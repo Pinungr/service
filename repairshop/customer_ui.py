@@ -103,6 +103,9 @@ class IntakePhotos:
                 check.toggled.connect(self.changed)
                 check.quantity_control.valueChanged.connect(self.changed)
                 check.serial_control.textChanged.connect(self.changed)
+                if hasattr(check, 'condition_control'):
+                    check.condition_control.currentIndexChanged.connect(self.changed)
+                    check.notes_control.textChanged.connect(self.changed)
 
     def changed(self, *_):
         if self.ready:
@@ -118,7 +121,10 @@ class IntakePhotos:
         result = self.form.values()
         result.update(photo_id=self.photo_id, photo_role=self.role.currentData(), parent_id=self.parent,
             sale_id=self.sale['id'] if self.sale else None,
-            accessories=[dict(description=c.text(), quantity=c.quantity_control.value(), serial=c.serial_control.text(), checked=c.isChecked()) for c in self.checks])
+            accessories=[dict(description=c.text(), quantity=c.quantity_control.value(), serial=c.serial_control.text(),
+                condition=c.condition_control.currentData() if hasattr(c, 'condition_control') else '',
+                notes=c.notes_control.text() if hasattr(c, 'notes_control') else '',
+                photo_id=getattr(c, 'photo_id', None), checked=c.isChecked()) for c in self.checks])
         if hasattr(self.form,'visit_intake'):
             result['visit_products']=self.form.visit_intake.products
         return result
@@ -169,6 +175,14 @@ class IntakePhotos:
                     check.setChecked(saved['checked'])
                     check.quantity_control.setValue(saved['quantity'])
                     check.serial_control.setText(saved['serial'])
+                    if hasattr(check, 'condition_control'):
+                        index = check.condition_control.findData(saved.get('condition'))
+                        if index >= 0:
+                            check.condition_control.setCurrentIndex(index)
+                        check.notes_control.setText(saved.get('notes', ''))
+                        check.photo_id = saved.get('photo_id')
+                        if check.photo_id:
+                            check.photo_control.setText('Photo ✓')
         self.photo_id = payload.get('photo_id')
         self.role.setCurrentIndex(self.role.findData(payload.get('photo_role', 'owner')))
         self.update_photo()
@@ -324,12 +338,13 @@ class CustomerOverview(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         self.grids = {}
-        for key, title in [('outstanding', 'Outstanding work'), ('history', 'Historical work'), ('devices', 'All physical devices'), ('photos', 'Customer photo history'), ('sales', 'Products sold'), ('quotes', 'Quotations'), ('payments', 'Payments & refunds'), ('messages', 'Communications')]:
+        for key, title in [('visits', 'Visits'), ('outstanding', 'Outstanding work'), ('history', 'Historical work'), ('devices', 'All physical devices'), ('photos', 'Customer photo history'), ('sales', 'Products sold'), ('quotes', 'Quotations'), ('payments', 'Payments & refunds'), ('messages', 'Communications')]:
             grid = Grid()
             self.grids[key] = grid
             self.tabs.addTab(grid, title)
         for key in ('outstanding', 'history'):
             self.grids[key].cellDoubleClicked.connect(lambda *_, key=key: window.safe(lambda: (window.job_detail(window.selected(self.grids[key])['id']), self.reload())))
+        self.grids['visits'].cellDoubleClicked.connect(lambda *_: window.safe(lambda: (window.visit_summary([p['job_id'] for p in window.selected(self.grids['visits'])['product_list']]), self.reload())))
         self.grids['devices'].cellDoubleClicked.connect(lambda *_: window.safe(self.device_details))
         self.grids['photos'].cellDoubleClicked.connect(lambda *_: window.safe(lambda: window.open_attachment(window.selected(self.grids['photos'])['path'])))
         self.reload()
@@ -344,6 +359,9 @@ class CustomerOverview(QDialog):
         labels = dict(outstanding='Outstanding products', under_repair_in_shop='Under repair in shop', vendors='With third-party repairers', service_centres='With service centres', in_transit='In transit', ready='Ready for collection', collected='Already collected')
         self.counts.setText('  ·  '.join(f"{labels[k]}: {v}" for k, v in data['counts'].items()) + '\nLocation and repair progress overlap; do not add these counts. Balances are independent of collection.')
         self.readiness.setText('All outstanding items ready for collection' if data['all_ready'] else 'Some outstanding items still need repair, return, checks or accessory handover.' if data['outstanding'] else 'No outstanding repair items.')
+        self.grids['visits'].fill([dict(v, received=v['created'][:10], repairs='\n'.join(
+            f"{p['product']} — {p['number']} — {p['status']}" for p in v['product_list']) or 'No products recorded')
+            for v in data['visits']], ['number', 'received', 'status', 'products', 'repairs'])
         for key in ('outstanding', 'history'):
             grid = self.grids[key]
             grid.fill(data[key], ['photo', 'product', 'number', 'route_label', 'current_card', 'warranty_indicator', 'current_status', 'current_location', 'responsible', 'next_action', 'last_update', 'tentative_collection', 'balance', 'collection_status'])

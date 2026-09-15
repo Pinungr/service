@@ -108,12 +108,13 @@ class CustomerRecords:
 
     def save_photo(self, image, customer_id, person_role='owner', person_name='', device_id=None, job_id=None, captured=None):
         self.s.require('owner', 'counter')
-        if person_role not in ('owner', 'submitter', 'product') or (person_role == 'product') != bool(device_id):
+        if person_role not in ('owner', 'submitter', 'product', 'accessory') or (person_role == 'product') != bool(device_id):
             raise RuleError('Choose whose photo is being saved.')
         if not isinstance(image, QImage) or image.isNull():
             raise RuleError('Photo capture failed. Retake the photo and try again.')
-        if person_role == 'submitter' and not person_name.strip():
-            raise RuleError('Enter the submitting person’s name before capture.')
+        if person_role in ('submitter', 'accessory') and not person_name.strip():
+            raise RuleError('Enter the submitting person’s name before capture.' if person_role == 'submitter'
+                            else 'Name the accessory before capturing its photo.')
         image = image.scaled(1920, 1920, Qt.AspectRatioMode.KeepAspectRatio) if max(image.width(), image.height()) > 1920 else image
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -128,17 +129,21 @@ class CustomerRecords:
                 if not device:
                     raise RuleError('Device does not belong to this customer.')
                 folder = self._device_folder(c, device) + '/Product-Photos'
+            elif person_role == 'accessory':
+                # Accessories are photographed at the counter before the device record
+                # exists, so the evidence is filed under the customer's own folder.
+                folder += '/Accessory-Photos'
             else:
                 folder += '/Customer-Photos'
             if job_id and not c.execute('SELECT id FROM jobs WHERE id=? AND customer_id=? AND device_id=?', (job_id, customer_id, device_id)).fetchone():
                 raise RuleError('Photo job and device do not match.')
-            name = owner if person_role == 'owner' else person_name.strip() if person_role == 'submitter' else device['name']
+            name = owner if person_role == 'owner' else person_name.strip() if person_role in ('submitter', 'accessory') else device['name']
             relative = folder + '/' + uuid.uuid4().hex + '.jpg'
             target = managed_path(self.db.root, relative)
             publish(target, data)
             # An interrupted transaction can leave an unreferenced UUID file. Never overwrite/delete it.
             ident = insert(c, 'attachments', job_id=job_id, customer_id=customer_id, device_id=device_id,
-                kind='product_photo' if device_id else 'customer_photo', path=relative, title=f'{person_role.title()}: {name}',
+                kind='product_photo' if device_id else 'accessory_photo' if person_role == 'accessory' else 'customer_photo', path=relative, title=f'{person_role.title()}: {name}',
                 person_role=person_role, person_name=name, captured=captured or now(), sha256=digest(data), created=now(), actor=self.s.user['id'])
             if person_role == 'owner':
                 c.execute('UPDATE customers SET current_photo_id=? WHERE id=?', (ident, customer_id))
@@ -236,7 +241,17 @@ class CustomerRecords:
                     sets['collected'].add(device)
         sets['ready'] = {device for device, ready in device_ready.items() if ready}
         sets['collected'] -= sets['outstanding']
-        return dict(customer=customer, outstanding=outstanding, history=history, counts={k: len(v) for k, v in sets.items()},
+        from .visits import Visits
+        visits = Visits(self.s).for_customer(customer_id)
+        by_visit = {}
+        for job in jobs:
+            by_visit.setdefault(job['visit_id'], []).append(job)
+        for visit in visits:
+            visit['product_list'] = [dict(job_id=j['id'], number=j['number'], product=j['product'],
+                                      status=j['current_status'], location=j['current_location'])
+                                 for j in sorted(by_visit.get(visit['id'], []), key=lambda r: r['id'])]
+        return dict(customer=customer, outstanding=outstanding, history=history, visits=visits,
+                    counts={k: len(v) for k, v in sets.items()},
             all_ready=bool(outstanding) and all(j['ready'] for j in outstanding),
             devices=self.db.rows('SELECT * FROM devices WHERE customer_id=? ORDER BY id', (customer_id,)),
             photos=self.db.rows("SELECT * FROM attachments WHERE customer_id=? AND kind='customer_photo' ORDER BY id DESC", (customer_id,)))

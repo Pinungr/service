@@ -101,7 +101,12 @@ class JobCards:
                 'device_type': (self.db.one('SELECT name FROM masters WHERE id=?',(j['category_id'],)) or {}).get('name','Not specified'),
                 'requested_service': (self.db.one('SELECT name FROM masters WHERE id=?',(j['service_id'],)) or {}).get('name','Not specified'),
                 'complaint': j['complaint'], 'condition': p.get('condition',j['damage']),
-                'items': items if items is not None else self.db.rows('SELECT id,type,description,quantity,serial,condition FROM items WHERE job_id=?', (job_id,)),
+                'items': items if items is not None else self.db.rows('SELECT id,type,description,quantity,serial,condition,notes FROM items WHERE job_id=?', (job_id,)),
+                'visit': (self.db.one('SELECT number FROM visits WHERE id=?', (j['visit_id'],)) or {}).get('number', j['intake_ref']),
+                'initial_estimate': j['initial_estimate'], 'advance_at_intake': self.db.one("""SELECT -COALESCE(sum(amount),0) n
+                    FROM entries WHERE account_type='customer' AND job_id=? AND kind='receipt' AND notes='Intake advance'""", (job_id,))['n'],
+                'customer_requirement': j['customer_requirement'],
+                'intake_warranty': json.loads(j['lifecycle_data']).get('intake_warranty', {}),
                 'device_photo_references': [r['id'] for r in self.db.rows("SELECT id FROM attachments WHERE device_id=? AND kind='product_photo'", (j['device_id'],))],
                 'effective': stamp, 'completed': stamp, 'status': 'Completed', 'staff': self.s.user['name'],
                 'expected_return': j['return_due'], 'reference': p.get('reference',assignment.get('reference','')),
@@ -120,7 +125,7 @@ class JobCards:
             self.s.audit(c,'job',job_id,'job_card_created',{'card':f'CARD-{sequence:02d}','type':kind,'from':sender['name'],'to':receiver['name']})
             return ident
 
-    def print(self, card_id, internal=False):
+    def print(self, card_id, internal=False, paper=None):
         from .documents import Documents
         from .lifecycle import local_time
         self.s.require('owner','counter')
@@ -134,10 +139,27 @@ class JobCards:
             p=public_values(p)
         def party(v):
             return '\n'.join(str(x) for k,x in v.items() if k!='id' and x)
-        sections=[('From',party(p['from'])),('To',party(p['to'])),('Device',f"DEV-{p['device_id']:06d} · {p['device']}\nType: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\nBrand: {p['brand'] or 'Not recorded'} · Model: {p['model'] or 'Not recorded'}\nSerial / IMEI: {p['serial'] or 'Not recorded'}"),
+        from .domain import rupees
+        sections=[('Repair job',f"Job: {p['master_job']}\nVisit: {p.get('visit') or 'Not recorded'}\nCard: {p['card_number']}"),
+            ('From',party(p['from'])),('To',party(p['to'])),('Device',f"DEV-{p['device_id']:06d} · {p['device']}\nType: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\nBrand: {p['brand'] or 'Not recorded'} · Model: {p['model'] or 'Not recorded'}\nSerial / IMEI: {p['serial'] or 'Not recorded'}"),
             ('Complaint and condition',p['complaint']+'\n'+p['condition']),
             ('Items handed over',[{k:r.get(k,'') for k in ('description','quantity','serial','condition')} for r in p['items']]),
             ('Receipt details',f"Effective: {local_time(p['effective'])} IST\nReceived / recorded by: {p['staff']}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
+        if p.get('initial_estimate') is not None:
+            warranty=p.get('intake_warranty') or {}
+            sections.append(('Initial estimate given at collection',
+                'Initial estimate: ' + rupees(p['initial_estimate'])
+                + '\nAdvance received at intake: ' + rupees(p.get('advance_at_intake') or 0)
+                + '\nThis is the estimate given when the product was received. It is not the final '
+                'repair quotation; chargeable repair is quoted after diagnosis and started only '
+                'after recorded customer approval.'))
+            if p.get('customer_requirement'):
+                sections.append(('Additional customer requirement',p['customer_requirement']))
+            if warranty:
+                sections.append(('Warranty reported at collection',
+                    'Status: ' + str(warranty.get('status','Not recorded'))
+                    + '\nExpiry: ' + str(warranty.get('expiry') or 'Not recorded')
+                    + '\nProvider: ' + str(warranty.get('provider') or 'Not recorded')))
         if p.get('current_custodian'):
             sections.append(('Physical custody',f"Custodian: {p['current_custodian']}\n{p['custody_status']}\nFinal destination: {p.get('final_destination') or 'Direct handover'}"))
         if p.get('return_details'):
@@ -151,7 +173,7 @@ class JobCards:
             if internal:
                 from .domain import rupees
                 sections.append(('INTERNAL COPY · repair costs',[dict(component=k.replace('_',' ').title(),amount=rupees(v)) for k,v in r['costs'].items() if k in ('stock_parts','supplier_parts','other_parts','vendor_parts','vendor_labour','in_house_cost','transport_cost','other_cost','service_center_charge','total_internal')]))
-        path=Documents(self.s).snapshot(('INTERNAL COPY · ' if internal else '')+p['kind'].replace('_',' ').title()+' · '+p['master_job']+' / '+p['card_number'],sections,card['job_id'],shop_name=p.get('shop_name'))
+        path=Documents(self.s).snapshot(('INTERNAL COPY · ' if internal else '')+p['kind'].replace('_',' ').title()+' · '+p['master_job']+' / '+p['card_number'],sections,card['job_id'],shop_name=p.get('shop_name'),paper=paper)
         with self.db.transaction() as c:
             self.s.audit(c,'job',card['job_id'],'job_card_printed',{'card_id':card_id,'card':p['card_number']})
         return path

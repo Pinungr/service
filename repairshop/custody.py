@@ -50,6 +50,8 @@ class DeviceCustody:
             if carrier:destination='transit:'+carrier
             data['transit_direction']='outbound';data['transit_destination']=party
             data['dispatched']=now();stage='external_diagnosis'
+            from .dispatch import Dispatches
+            data['dispatch_id']=Dispatches(self.s).confirm(c,j,data['dispatched'])
         elif action=='arrive':
             if data.get('transit_direction')=='return':raise RuleError('This courier is returning to the shop. Record shop receipt.')
             rows=[h for h in v['holdings'] if h['location'].startswith('transit:')]
@@ -67,6 +69,17 @@ class DeviceCustody:
             if not rows or not c.execute("SELECT 1 FROM movements m JOIN items i ON i.id=m.item_id WHERE i.job_id=? AND m.from_location LIKE 'shop:%' AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')",(j['id'],)).fetchone():raise RuleError('Only a previously dispatched device can be received from a repairer.')
             destination=p.get('storage','shop:Front desk');final=self.db.setting('shop_name','Repair shop')
             if not destination.startswith('shop:') or not destination[5:].strip():raise RuleError('Choose a shop storage location for the return.')
+            # The returned items are checked against the outbound manifest before custody
+            # moves. A missing item must be reported, never silently ticked off.
+            if not p.get('skip_verification'):
+                from .returns import Returns
+                counts={h['id']:p.get('quantities',{}).get(str(h['id']),h['quantity']) for h in rows}
+                if 'items' in p:counts={k:v for k,v in counts.items() if k in set(p['items'])}
+                p['verification_id']=Returns(self.s).verify(j['id'],counts,
+                    p.get('operation_id') or 'receive:'+str(j['id'])+':'+now(),
+                    receiver_kind=p.get('receiver_kind','storage'),receiver_name=p.get('received_by',''),
+                    receiver_mobile=p.get('receiver_mobile',''),storage=destination,
+                    notes=p.get('notes',''),discrepancies=p.get('discrepancies',()))
             result=p.get('repair_result')
             if result and result not in ('REPAIRED','PARTIALLY REPAIRED','NOT REPAIRABLE','REPAIR DECLINED','RETURNED WITHOUT REPAIR','REPLACED'):raise RuleError('Select a supported repair return result.')
             if result in ('REPAIRED','REPLACED') and data.get('unrepaired'):raise RuleError('This job records a declined or unsuccessful repair. Resolve that outcome before reporting a repaired return.')
@@ -94,4 +107,7 @@ class DeviceCustody:
         if action=='receive':
             remaining=c.execute("SELECT 1 FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND h.location NOT LIKE 'shop:%' AND h.location NOT LIKE 'exception:%'",(j['id'],)).fetchone()
             if remaining:stage=j['stage'];data.pop('returned',None)
+            else:
+                from .dispatch import Dispatches
+                Dispatches(self.s).close(c,j,'RETURNED')
         return stage

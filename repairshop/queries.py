@@ -15,8 +15,9 @@ class Queries:
         self.s.require()
         where, args = ["1=1"], []
         if search:
-            where.append("(j.number LIKE ? OR j.serial LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ?)")
-            args.extend(["%" + search + "%"] * 5)
+            where.append("""(j.number LIKE ? OR j.serial LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ?
+                OR j.intake_ref LIKE ? OR EXISTS(SELECT 1 FROM visits v WHERE v.id=j.visit_id AND v.number LIKE ?))""")
+            args.extend(["%" + search + "%"] * 7)
         for key, value in (("j.stage", stage), ("j.route", route), ("j.customer_id", customer_id), ("j.category_id", category_id), ("a.contact_id", assignment)):
             if value:
                 where.append(key + "=?")

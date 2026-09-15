@@ -42,7 +42,7 @@ class IntakeWizard:
                       widget.toggled if isinstance(widget, QCheckBox) else
                       widget.dateChanged if key == 'warranty_expiry' else widget.textChanged)
             signal.connect(support.changed)
-        for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed'):
+        for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed', 'initial_estimate'):
             field = form.fields[key]
             validator = QDoubleValidator(0, 999999999, 2, field)
             validator.setNotation(QDoubleValidator.Notation.StandardNotation)
@@ -131,8 +131,8 @@ class IntakeWizard:
             ['customer_id', 'origin', 'submitter', 'relationship', 'update_contact_id'],
             ['device_id', 'category_id', 'device', 'brand', 'model', 'identity_unknown', 'serial',
              'warranty_status', 'warranty_expiry', 'warranty_provider', 'warranty_notes'],
-            ['complaint', 'damage', 'no_accessories', 'service_id', 'repair_due', 'storage_id'],
-            ['transport_agreed', 'advance', 'policy', 'assessment_agreed', 'assessment_consent',
+            ['complaint', 'damage', 'customer_requirement', 'no_accessories', 'service_id', 'repair_due', 'storage_id'],
+            ['initial_estimate', 'transport_agreed', 'advance', 'policy', 'assessment_agreed', 'assessment_consent',
              'deposit', 'collection_due', 'intake_ref']]
         by_widget = {widget: key for key, widget in form.fields.items()}
         leftovers = []
@@ -160,7 +160,8 @@ class IntakeWizard:
                 labels = {'customer_id': 'Device owner *', 'category_id': 'Product category *',
                           'device': 'Product description *', 'brand': 'Brand *', 'model': 'Model *',
                           'complaint': 'Reported issue *', 'damage': 'Visible condition / damage',
-                          'advance': 'Initial deposit received (INR)', 'transport_agreed': 'Transportation charge (INR)',
+                          'advance': 'Advance received now (INR)', 'initial_estimate': 'Initial estimated cost (INR) *',
+                          'customer_requirement': 'Additional customer requirement', 'transport_agreed': 'Transportation charge (INR)',
                           'origin': 'Where did this product come from?'}
                 if key in labels: label.setText(labels[key])
                 self.pages[index].addRow(label, wrapper)
@@ -251,7 +252,7 @@ class IntakeWizard:
             if not values['service_id']: self.fail('service_id', 'Choose a repair / service type.')
             if not values['storage_id']: self.fail('storage_id', 'Choose where the device will be stored.')
         if step == 3:
-            for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed'):
+            for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed', 'initial_estimate'):
                 try:
                     if values[key] and not self.form.fields[key].hasAcceptableInput(): raise RuleError('Invalid amount.')
                     if money(values[key] or '0') < 0: raise RuleError('Amount cannot be negative.')
@@ -462,8 +463,26 @@ class IntakeWizard:
                           self.warranty_text(warranty), f"Issue: {product.get('complaint', '')}",
                           f"Condition: {product.get('damage') or 'Not recorded'}", f"Accessories: {accessories or 'None received'}",
                           f"Service: {service.get('name', 'Not selected')} · Due: {product.get('repair_due') or 'Not set'}"])
-            for key, title in [('transport_agreed', 'Transport'), ('advance', 'Initial deposit received'), ('deposit', 'Required deposit'), ('assessment_agreed', 'Assessment charge')]:
+            if product.get('customer_requirement'):
+                lines.append('Additional customer requirement: ' + str(product['customer_requirement']))
+            for key, title in [('initial_estimate', 'Initial estimated cost'), ('transport_agreed', 'Transport'), ('advance', 'Advance received now'), ('deposit', 'Required deposit'), ('assessment_agreed', 'Assessment charge')]:
                 try: amount = rupees(money(product.get(key) or '0'))
                 except (RuleError, ValueError): amount = 'Correct this amount'
                 lines.append(f'{title}: {amount}')
+        # The visit total is always calculated from the product estimates; it is never typed.
+        totals = {}
+        for key in ('initial_estimate', 'advance'):
+            total = 0
+            for product in products:
+                try: total += money(product.get(key) or '0')
+                except (RuleError, ValueError): pass
+            totals[key] = total
+        lines += ['', '-' * 46,
+                  f"TOTAL INITIAL ESTIMATE  ·  {rupees(totals['initial_estimate'])}",
+                  f"ADVANCE RECEIVED        ·  {rupees(totals['advance'])}",
+                  f"ESTIMATED BALANCE       ·  {rupees(totals['initial_estimate'] - totals['advance'])}",
+                  '-' * 46,
+                  'The initial estimate is the figure given at collection. It is not the final repair',
+                  'quotation: chargeable repair is quoted after diagnosis and needs recorded approval.']
         self.summary.setText('\n'.join(lines))
+        self.estimated_total = totals['initial_estimate']

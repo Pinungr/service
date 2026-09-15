@@ -85,6 +85,9 @@ def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypa
     from repairshop.customer_records import CustomerRecords
     w=MainWindow(service);qtbot.addWidget(w)
     summaries=[];monkeypatch.setattr(w,'visit_summary',lambda ids:summaries.append(ids))
+    # The post-intake send/print dialog runs after the records are committed; the test
+    # records the jobs it was given instead of opening it.
+    monkeypatch.setattr(w,'post_intake',lambda jobs,documents,document_error='':summaries.append(jobs))
     def fill_product(form,name,category,amount):
         form.fields['category_id'].box.setCurrentIndex(form.fields['category_id'].box.findData(master(service,'category',category)))
         svc=form.fields['service_id'].box;svc.setCurrentIndex(svc.findData(master(service,'service',category+' repair')))
@@ -121,6 +124,7 @@ def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypa
             form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
         except BaseException:form.reject();raise
     QTimer.singleShot(30,resumed);w.intake(draft=draft)
+    qtbot.waitUntil(lambda:not w.tasks,timeout=15000)
     assert len(summaries)==1 and len(summaries[0])==2
     assert service.db.one("SELECT complaint FROM jobs WHERE device='Printer B'")['complaint']=='Revised printer fault'
     assert service.db.rows("SELECT j.device FROM items i JOIN jobs j ON j.id=i.job_id WHERE i.type='accessory'")==[{'device':'Laptop A'}]
@@ -130,7 +134,7 @@ def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypa
 
 def test_schema7_migration_preserves_existing_job_and_scopes_seed_service(service,customer,tmp_path):
     import shutil
-    from repairshop.persistence import Database
+    from repairshop.persistence import Database, SCHEMA_VERSION
     from repairshop.backup import Backups
     job=service.intake(**product(service,customer,'Legacy laptop'))
     target=tmp_path/'schema7';shutil.copytree(service.db.root,target,ignore=shutil.ignore_patterns('shop.db*'))
@@ -142,6 +146,6 @@ def test_schema7_migration_preserves_existing_job_and_scopes_seed_service(servic
         c.execute('DROP TABLE category_services');c.execute('PRAGMA user_version=7')
     upgraded=Database(target)
     assert upgraded.one('SELECT * FROM jobs WHERE id=?',(job,))==service.db.one('SELECT * FROM jobs WHERE id=?',(job,))
-    assert upgraded.one('PRAGMA user_version')['user_version']==10
+    assert upgraded.one('PRAGMA user_version')['user_version']==SCHEMA_VERSION
     archive=list((target/'backups').glob('*pre-upgrade-v7*.zip'))[0]
     assert Backups.validate(archive)['schema']==7

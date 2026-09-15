@@ -13,6 +13,10 @@ from .queries import Queries
 from .documents import Documents
 from .backup import Backups
 from .messaging import Outbox, secret
+
+# Shop-owner wording. Internal table values stay as they are, so no data migration risk.
+DIRECTORY_LABELS = {'vendor': 'Third Party', 'centre': 'Authorized Service Center', 'supplier': 'Parts Supplier',
+                    'technician': 'Internal Technician', 'service': 'Repair / Service'}
 from .customer_records import CustomerRecords
 from .customer_ui import CustomerOverview, IntakeForm, IntakePhotos, DevicePhotos
 from .local_files import managed_path
@@ -157,7 +161,7 @@ class MainWindow(QMainWindow):
                     timer.stop()
             event.accept()
 
-    def run(self, work, message="Working…", callback=None, refresh=True):
+    def run(self, work, message="Working…", callback=None, refresh=True, failure=None):
         if self.closing or sip.isdeleted(self):
             return
         task = Task(work)
@@ -186,6 +190,11 @@ class MainWindow(QMainWindow):
                 return
             self.busy.setVisible(bool(self.tasks))
             self.statusBar().showMessage("Could not complete: " + error)
+            if failure:
+                # The caller still needs to continue: the business records are committed
+                # even when an optional document or message step failed.
+                self.safe(lambda: failure(error))
+                return
             if self.isVisible():
                 notice=QMessageBox(QMessageBox.Icon.Warning,'Action needs attention',error,parent=self)
                 notice.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -591,7 +600,7 @@ class MainWindow(QMainWindow):
         self.run(lambda: Backups.validate(path), "Validating archive and preview…", callback=preview, refresh=False)
 
     def settings(self):
-        self.toolbar([("Edit shop & backup settings", self.shop_settings, True), ("Configure messaging", self.channel_settings, False), ("+ Staff login", self.staff_form, False), ("Edit selected staff", lambda: self.staff_form(self.selected(grid)), False)])
+        self.toolbar([("Edit shop & backup settings", self.shop_settings, True), ("Printing & documents", self.print_settings, False), ("Configure messaging", self.channel_settings, False), ("+ Staff login", self.staff_form, False), ("Edit selected staff", lambda: self.staff_form(self.selected(grid)), False)])
         self.layout.addWidget(QLabel(f"{self.db.setting('shop_name')}\nINR · {self.db.setting('timezone')}\nData location: {self.db.root}\nMessaging: {self.db.setting('messaging_mode','test')} mode · Sending paused: {self.db.setting('notifications_paused',False)}"))
         grid = self.table(self.db.rows("SELECT id,username,name,role,active FROM users ORDER BY name"))
 
@@ -606,6 +615,18 @@ class MainWindow(QMainWindow):
             v["backup_retention"] = int(v["backup_retention"])
             self.s.settings(v)
         if d.submit(save):
+            self.refresh()
+
+    def print_settings(self):
+        d = Form("Printing & documents", self,
+                 "These apply to every generated PDF. A4 is the shop standard; A5 re-lays the same "
+                 "content for a smaller sheet rather than shrinking it.")
+        d.select("paper_size", "Default paper size", [("A4", "A4"), ("A5", "A5")], self.db.setting("paper_size", "A4"))
+        d.select("include_photos", "Include photos in WhatsApp / email",
+                 [("No", False), ("Yes", True)], bool(self.db.setting("include_photos", False)))
+        d.layout.addRow(QLabel("Only customer-facing product and accessory photos are ever attached. "
+                               "Internal evidence and local file paths are never sent."))
+        if d.submit(lambda v: self.s.settings(v)):
             self.refresh()
 
     def staff_form(self, row=None):
@@ -719,6 +740,7 @@ class MainWindow(QMainWindow):
         d.select("origin", "Originally purchased", [("This shop", "shop"), ("Elsewhere", "elsewhere")], "shop" if sale else "elsewhere")
         d.text("complaint", "Reported fault", multiline=True)
         d.text("damage", "Visible condition / damage", multiline=True)
+        d.text("customer_requirement", "Additional customer requirement", multiline=True)
         accessory_box = QWidget()
         accessories_layout = QVBoxLayout(accessory_box)
         accessories_layout.setContentsMargins(0, 0, 0, 0)
@@ -754,11 +776,30 @@ class MainWindow(QMainWindow):
                 check.toggled.connect(serial.setEnabled)
                 check.toggled.connect(serial.setVisible)
                 check.serial_control=serial
+                # Intake condition per accessory. "Not tested" is a real answer at the
+                # counter, so it is offered alongside working/not working/damaged.
+                from .services import ITEM_CONDITIONS
+                condition=combo([(name,name) for name in ITEM_CONDITIONS],'Not Tested')
+                condition.setEnabled(False);condition.setVisible(False)
+                check.toggled.connect(condition.setEnabled);check.toggled.connect(condition.setVisible)
+                check.condition_control=condition
+                notes=QLineEdit();notes.setPlaceholderText('Accessory notes (optional)')
+                notes.setEnabled(False);notes.setVisible(False)
+                check.toggled.connect(notes.setEnabled);check.toggled.connect(notes.setVisible)
+                check.notes_control=notes
+                check.photo_id=None
+                photo=button('Photo',lambda checked=False,box=check:self.safe(lambda:self.accessory_photo(support,box)))
+                photo.setEnabled(False);photo.setVisible(False)
+                check.toggled.connect(photo.setEnabled);check.toggled.connect(photo.setVisible)
+                check.photo_control=photo
                 controls.addWidget(check,1)
                 quantity_label=QLabel('Qty');quantity_label.hide();check.toggled.connect(quantity_label.setVisible)
                 controls.addWidget(quantity_label)
                 controls.addWidget(quantity)
                 controls.addWidget(serial,1)
+                controls.addWidget(condition)
+                controls.addWidget(notes,1)
+                controls.addWidget(photo)
                 accessories_layout.addWidget(line)
                 checks.append(check)
             if hasattr(d, 'intake_support'):
@@ -793,6 +834,7 @@ class MainWindow(QMainWindow):
         d.text("transport_agreed", "Agreed transport charge (INR)", "0")
         d.text("assessment_agreed", "Explicit agreed assessment (INR)", "0")
         d.check("assessment_consent", "Assessment / transport consent recorded")
+        d.text("initial_estimate", "Initial estimated cost (INR)", "0")
         d.text("deposit", "Deposit required to start repair (INR)", "0")
         d.text("advance", "Advance received now (INR)", "0")
         d.text("intake_ref", "Visit reference (groups these products)")
@@ -805,25 +847,79 @@ class MainWindow(QMainWindow):
         def save(v):
             result.extend(visit.save())
         if d.submit(save):
+            # The business records are already committed. Document generation and any
+            # optional WhatsApp/email or printing happen afterwards and can fail without
+            # affecting the visit or its jobs.
             d.keep_draft = None
             self.refresh()
             def receipts():
-                for ident in result:self.docs.generate('intake_receipt',ident)
-                if len(result)>1:self.docs.visit_receipt(result)
-            self.run(receipts,'Creating receiving receipts…')
-            if len(result)==1:self.job_detail(result[0])
-            else:self.visit_summary(result)
+                documents=[]
+                for ident in result:
+                    documents.append(('Job Card '+self.s.job(ident)['number'],self.docs.generate('intake_receipt',ident),ident))
+                documents.append(('Visit intake receipt',self.docs.visit_receipt(result),result[0]))
+                return documents
+            self.run(receipts,'Creating receiving receipts…',refresh=False,
+                     callback=lambda documents:self.post_intake(result,documents),
+                     failure=lambda exc:self.post_intake(result,[],str(exc)))
+
+    def post_intake(self,jobs,documents,document_error=''):
+        """Confirmation, then optional delivery. Messaging never rolls back the intake."""
+        from .post_intake import PostIntakeDialog
+        PostIntakeDialog(self,jobs,documents,document_error).exec()
+        self.refresh()
+        if len(jobs)==1:self.job_detail(jobs[0])
+        else:self.visit_summary(jobs)
+
+    def accessory_photo(self, support, box):
+        """Camera or upload evidence for one received accessory, using the existing photo store."""
+        customer_id = support.form.fields['customer_id'].text()
+        if not customer_id:
+            raise RuleError('Select or register the device owner before photographing accessories.')
+        from .camera import CameraDialog
+        from .customer_records import CustomerRecords
+        choice = QMessageBox(self)
+        choice.setWindowTitle('Accessory photo')
+        choice.setText('Add a photo of ' + box.text() + '.')
+        camera = choice.addButton('Camera', QMessageBox.ButtonRole.AcceptRole)
+        upload = choice.addButton('Upload', QMessageBox.ButtonRole.AcceptRole)
+        choice.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        choice.exec()
+        records = CustomerRecords(self.s)
+        if choice.clickedButton() is camera:
+            dialog = CameraDialog(lambda image, captured: (image.copy(), captured), self)
+            if not dialog.exec() or not dialog.photo_id:
+                return
+            image, captured = dialog.photo_id
+            box.photo_id = records.save_photo(image, customer_id, 'accessory', box.text(), captured=captured)
+        elif choice.clickedButton() is upload:
+            path, _ = QFileDialog.getOpenFileName(self, 'Choose accessory photo', '', 'Photos (*.jpg *.jpeg *.png *.bmp *.webp)')
+            if not path:
+                return
+            from PyQt6.QtGui import QImageReader
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            box.photo_id = records.save_photo(reader.read(), customer_id, 'accessory', box.text())
+        else:
+            return
+        box.photo_control.setText('Photo ✓')
+        support.changed()
 
     def visit_summary(self,identifiers):
+        from .visits import Visits
         rows=[self.s.job(ident) for ident in identifiers]
-        d=QDialog(self);d.setWindowTitle('Products received · '+rows[0]['intake_ref']);d.resize(1000,600)
-        layout=QVBoxLayout(d);layout.addWidget(QLabel(f"{len(rows)} products received for {rows[0]['customer']} · Visit {rows[0]['intake_ref']}"))
+        visit=Visits(self.s).for_job(identifiers[0]) or {'number':rows[0]['intake_ref'],'status':'Open'}
+        d=QDialog(self);d.setWindowTitle('Products received · '+visit['number']);d.resize(1000,600)
+        layout=QVBoxLayout(d);layout.addWidget(QLabel(f"{len(rows)} products received for {rows[0]['customer']} · Visit {visit['number']} · {visit['status']}"))
         grid=Grid();grid.fill(rows,['number','device','serial','complaint','stage']);layout.addWidget(grid)
         layout.addWidget(button('Open selected repair',lambda:self.safe(lambda:self.job_detail(self.selected(grid)['id']))))
         layout.addWidget(button('Print visit receipt',lambda:self.run(lambda:self.docs.visit_receipt(identifiers),'Creating visit receipt…',callback=lambda p:QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))),refresh=False)))
         layout.addWidget(button('Close',d.accept));d.exec()
 
     def visit_jobs(self,ident):
+        from .visits import Visits
+        visit=Visits(self.s).for_job(ident)
+        if visit:
+            return self.visit_summary([r['id'] for r in visit['jobs']])
         job=self.s.job(ident)
         self.visit_summary([r['id'] for r in self.db.rows('SELECT id FROM jobs WHERE intake_ref=? AND customer_id=? ORDER BY id',(job['intake_ref'],job['customer_id']))])
 
@@ -999,8 +1095,27 @@ class MainWindow(QMainWindow):
         if d.submit(save):
             self.refresh()
 
+    def party_photo(self, dialog, state, preview):
+        from .camera import CameraDialog
+        from .documents import Documents
+        path, _ = QFileDialog.getOpenFileName(dialog, 'Choose a photo for this directory record', '',
+                                              'Photos (*.jpg *.jpeg *.png)')
+        if not path:
+            camera = CameraDialog(lambda image, captured: (image.copy(), captured), dialog)
+            if not camera.exec() or not camera.photo_id:
+                return
+            from PyQt6.QtCore import QBuffer, QIODevice
+            import tempfile, os
+            image = camera.photo_id[0]
+            handle, path = tempfile.mkstemp(suffix='.jpg')
+            os.close(handle)
+            image.save(path, 'JPEG', 90)
+        attachment = Documents(self.s).attach(path, 'Directory photo', kind='directory_photo')
+        state['id'] = self.db.one('SELECT id FROM attachments ORDER BY id DESC LIMIT 1')['id']
+        preview.setText('Photo saved: ' + attachment.name)
+
     def directories(self):
-        kind = combo(MASTER_KINDS)
+        kind = combo([(DIRECTORY_LABELS.get(k, k.replace('_', ' ').title()), k) for k in MASTER_KINDS])
         self.layout.addWidget(kind)
         self.toolbar([("+ Add option", lambda: self.master_form(kind.currentData()), True), ("Edit / deactivate", lambda: self.master_form(kind.currentData(), self.selected(grid)), False)])
         grid = self.table(self.db.rows("SELECT * FROM masters WHERE kind=? ORDER BY name", (kind.currentData(),)))
@@ -1008,17 +1123,37 @@ class MainWindow(QMainWindow):
 
     def master_form(self, kind, row=None):
         row = row or {}
-        d = Form(kind.title() + " directory", self)
-        d.text("name", "Name", row.get("name"))
-        d.text("contact", "Phone / contact", row.get("contact"))
-        if kind in ('vendor','supplier','centre'):
+        d = Form(DIRECTORY_LABELS.get(kind, kind.title()) + " directory", self)
+        party = kind in self.s.PARTY_KINDS
+        d.text("name", "Name *" if party else "Name", row.get("name"))
+        d.text("contact", "Mobile *" if party else "Phone / contact", row.get("contact"))
+        address_widgets = {}
+        if party:
             try:
                 profile=json.loads(row.get('details') or '{}')
                 if not isinstance(profile,dict):profile={'notes':row.get('details','')}
             except ValueError:
                 profile={'notes':row.get('details','')}
-            for key,title in [('company','Company / brand / OEM'),('address','Address'),('contact_person','Contact person'),('email','Email'),('specialization','Specialization'),('notes','Notes')]:
-                d.text(key,title,profile.get(key,''),multiline=key in ('address','notes'))
+            from . import addresses
+            d.text('address_line1', 'Address Line 1 *', row.get('address_line1') or profile.get('address',''))
+            d.text('address_line2', 'Address Line 2', row.get('address_line2',''))
+            d.text('pincode', 'PIN Code *', row.get('pincode',''))
+            state = combo([(name, name) for name in addresses.STATES], row.get('state') or None)
+            state.setEditable(True); state.setInsertPolicy(state.InsertPolicy.NoInsert)
+            if row.get('state'): state.setCurrentText(row['state'])
+            d.add('state', 'State *', state)
+            district = combo([(name, name) for name in addresses.districts(self.db, row.get('state'))])
+            district.setEditable(True); district.setInsertPolicy(district.InsertPolicy.NoInsert)
+            if row.get('district'): district.setCurrentText(row['district'])
+            d.add('district', 'District *', district)
+            address_widgets = {'state': state, 'district': district}
+            d.text('specialization', 'Specialization', row.get('specialization') or profile.get('specialization',''))
+            for key,title in [('company','Company / brand / OEM'),('contact_person','Contact person'),('email','Email'),('notes','Notes')]:
+                d.text(key,title,profile.get(key,''),multiline=key=='notes')
+            photo_state = {'id': row.get('photo_id')}
+            preview = QLabel('No photo' if not photo_state['id'] else 'Photo saved')
+            d.layout.addRow('Photo (optional)', preview)
+            d.layout.addRow('', button('Camera / Upload', lambda: self.safe(lambda: self.party_photo(d, photo_state, preview))))
         else:
             d.text("details", "Details", row.get("details"), multiline=True)
         d.check("active", "Available for new work", row.get("active", True))
@@ -1032,8 +1167,11 @@ class MainWindow(QMainWindow):
                 check=QCheckBox(category['name']);check.setChecked(category['id'] in selected)
                 d.layout.addRow('',check);service_categories.append((category['id'],check))
         def save(v):
-            if kind in ('vendor','supplier','centre'):
-                v['details']=json.dumps({k:v.pop(k) for k in ('company','address','contact_person','email','specialization','notes')},ensure_ascii=False)
+            if party:
+                for key, widget in address_widgets.items():
+                    v[key] = widget.currentText().strip()
+                v['photo_id'] = photo_state['id']
+                v['details']=json.dumps({k:v.pop(k) for k in ('company','contact_person','email','notes')},ensure_ascii=False)
             if kind=='service':v['category_ids']=[ident for ident,check in service_categories if check.isChecked()]
             self.s.save_master(kind, **v, ident=row.get('id'))
         if d.submit(save):
@@ -1095,6 +1233,36 @@ class MainWindow(QMainWindow):
         description=f"Quotation #{row['id']} · version {row['version']} · {rupees(row['total'])}\n{validity}\nSending or reading a message is not approval. Record the authorized person's explicit decision."
         if row['expired']:description+='\nYou can record a decline. For approval, issue a revised quotation with a valid expiry date or no expiry.'
         d = Form("Record customer decision", self, description)
+        d.resize(720, 760)
+        # Show exactly what the customer is being asked to approve, split the way they
+        # were quoted, and tie the decision to this quotation version.
+        from .billing import Billing, CATEGORIES
+        billing = Billing(self.s)
+        summary = billing.summary(row['job_id'])
+        grouped = billing.breakdown(billing.quote_lines(row))
+        block = [f"REPAIR QUOTATION · version {row['version']}"]
+        for key in CATEGORIES:
+            lines = grouped['lines'][key]
+            if not lines:
+                continue
+            block.append('')
+            block.append(key.upper())
+            block.append('-' * 40)
+            for line in lines:
+                block.append(f"{str(line.get('description',''))[:30]:<32}{rupees(line.get('amount',0)):>12}")
+            block.append(f"{key.title() + ' total':<32}{rupees(grouped['totals'][key]):>12}")
+        block += ['', '-' * 44,
+                  f"{'TOTAL APPROVAL VALUE':<32}{rupees(row['total']):>12}",
+                  '-' * 44,
+                  f"{'Advance already paid':<32}{rupees(summary['advance']):>12}",
+                  f"{'Other payments received':<32}{rupees(summary['other_payments']):>12}",
+                  f"{'Expected balance':<32}{rupees(row['total'] - summary['received']):>12}",
+                  '', 'Initial estimate given at intake: ' + rupees(summary['initial_estimate'])]
+        breakdown = QLabel('\n'.join(block))
+        breakdown.setTextFormat(Qt.TextFormat.PlainText)
+        breakdown.setWordWrap(True)
+        breakdown.setStyleSheet('font-family:Consolas,monospace;padding:12px;background:white;border:1px solid #dce5ee;border-radius:8px;')
+        d.layout.addRow(breakdown)
         decision=d.select("decision", "Decision", ["declined"] if row['expired'] else ["approved", "declined"])
         decision.setEditable(False)
         d.text("person", "Customer / authorized representative")

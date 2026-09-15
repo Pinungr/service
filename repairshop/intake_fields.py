@@ -1,14 +1,11 @@
 """Name-valued master choices for the existing device brand/model text columns."""
 from PyQt6.QtCore import Qt
-from pathlib import Path
 from PyQt6.QtWidgets import QWidget, QHBoxLayout
-from .ui_widgets import Form, button, combo
+from .ui_widgets import Form, button, combo, CHECKBOX_STYLE
 
-INTAKE_STYLE = '''
-QCheckBox::indicator {width:18px;height:18px;border:1px solid #8193a5;border-radius:4px;background:white;}
-QCheckBox::indicator:checked {border-color:#0f766e;background:#0f766e;image:url("__CHECK__");}
-QCheckBox::indicator:disabled {border-color:#cbd5e1;background:#edf2f7;}
-'''.replace('__CHECK__',(Path(__file__).parent/'assets'/'checkmark.svg').as_posix())
+# Intake dialogs set their own stylesheet, which would otherwise drop the
+# application-level checkbox rules. Reuse the shared definition, never a copy.
+INTAKE_STYLE = CHECKBOX_STYLE
 
 
 class MasterNameField(QWidget):

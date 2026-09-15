@@ -50,6 +50,27 @@ def local_time(value):
         return value
 
 
+def intake_warranty(data):
+    """Was this product under warranty when the shop collected it?
+
+    Answered only from the snapshot recorded at intake, so a warranty that expires while
+    the device is in the shop or at a service centre is still treated as valid cover.
+    """
+    snapshot = data.get('intake_warranty') or {}
+    status = (snapshot.get('status') or '').upper()
+    if not snapshot:
+        # Legacy jobs have no snapshot; keep the existing manual warranty check.
+        return dict(eligible=True, status='UNRECORDED', expiry=None,
+                    reason='No warranty status was recorded at intake; verify it manually.')
+    reasons = {'EXPIRED': 'Warranty had already expired when the product was collected.',
+               'NONE': 'The customer reported no warranty at collection.',
+               'NOT_STARTED': 'The recorded warranty had not started at collection.'}
+    return dict(eligible=status not in reasons, status=status or 'UNKNOWN',
+                expiry=snapshot.get('expiry') or snapshot.get('expiry_date'),
+                checked_on=snapshot.get('checked_on'),
+                reason=reasons.get(status, 'Warranty status at intake requires verification.'))
+
+
 def guard(j, operation):
     if j['lifecycle_version'] and not _command.get():
         raise RuleError('Use the guided job action to ' + operation + '. Open the job to see the next required step.')
@@ -235,7 +256,11 @@ class Lifecycle:
         if claims and stage=='collected':
             primary,next_action='claim','Resolve and close the warranty claim'
             actions.insert(0,'claim')
+        from .dispatch import Dispatches
+        dispatch=Dispatches(self.s).current(ident)
+        visit=self.db.one('SELECT number FROM visits WHERE id=?',(j['visit_id'],)) if j['visit_id'] else None
         return dict(j, data=data, route_label=route_label, current_status=status,
+            dispatch=dispatch, visit_number=(visit or {}).get('number',j['intake_ref']),
             current_card=f"CARD-{card['sequence']:02d} · {card['kind'].replace('_',' ')}" if card else 'LEGACY · no issued card',
             warranty_indicator=f"{active} active warranties · {sum(r['effective_status']=='CLAIM IN PROGRESS' for r in part_warranties)} claims in progress · {claims} unclosed claims",open_claims=claims,
             current_custodian=custodian,final_destination=destination,assigned_technician=(assignment.get('technician') or 'Not assigned') if j['route']=='in_house' else 'Not applicable',
@@ -298,13 +323,17 @@ class Lifecycle:
         return list(dict.fromkeys(actions))
 
     def tracker(self, j, data, events):
-        steps = [('received','Received'),('inspection','Initial inspection'),('warranty_check','Warranty check'),('route_selection','Route selected')]
+        steps = [('received','Received'),('inspection','Initial inspection')]
+        if not data.get('warranty_skipped'):
+            steps.append(('warranty_check','Warranty check'))
+        steps.append(('route_selection','Route selected'))
+        intake_steps=len(steps)
         if j['route'] != 'in_house':
             steps += [('ready_dispatch','Service center dispatch' if j['route']=='warranty_centre' else 'Third-party dispatch'),('external_diagnosis','Service center diagnosis' if j['route']=='warranty_centre' else 'Vendor diagnosis')]
         else:
             steps += [('diagnosis','In-house diagnosis')]
         if j['lifecycle_version'] and j['stage'] in ('received','inspection','warranty_check','route_selection'):
-            return [{'step':title,'state':'● CURRENT' if key==j['stage'] else '✓' if key in {'received','inspection','warranty_check'} and any(json.loads(e['payload']).get('before')==key and json.loads(e['payload']).get('before')!=json.loads(e['payload']).get('after') for e in events if e['action']=='lifecycle') else '○','key':key} for key,title in steps[:4]]
+            return [{'step':title,'state':'● CURRENT' if key==j['stage'] else '✓' if key in {'received','inspection','warranty_check'} and any(json.loads(e['payload']).get('before')==key and json.loads(e['payload']).get('before')!=json.loads(e['payload']).get('after') for e in events if e['action']=='lifecycle') else '○','key':key} for key,title in steps[:intake_steps]]
         if not data.get('unrepaired'):
             if not data.get('warranty_covered'):
                 steps += [('awaiting_estimate','Estimate'),('awaiting_approval','Customer approval')]
@@ -379,9 +408,9 @@ class Lifecycle:
         # Every supported filter is now expressed in SQL. Apply LIMIT/OFFSET before
         # building expensive per-job snapshots so a 50-row screen does not project
         # every matching job in the database first.
-        params=list(('%'+search+'%',)*6)+( [filter_key] )+condition_args
-        sql="""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id
-            WHERE (j.number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ? OR j.serial LIKE ? OR j.intake_ref LIKE ?)
+        params=list(('%'+search+'%',)*7)+( [filter_key] )+condition_args
+        sql="""SELECT j.id FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN visits vi ON vi.id=j.visit_id
+            WHERE (j.number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR j.device LIKE ? OR j.serial LIKE ? OR j.intake_ref LIKE ? OR vi.number LIKE ?)
             AND (? IN ('history','collected','warranty_claims') OR j.stage NOT IN ('closed','collected')) AND """+condition+" ORDER BY j.id DESC"
         if limit:
             sql += " LIMIT ? OFFSET ?"
@@ -390,7 +419,7 @@ class Lifecycle:
         result=[]
         for row in ids:
             v=self.snapshot(row['id'])
-            result.append(dict(id=v['id'], number=v['number'],visit=v['intake_ref'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
+            result.append(dict(id=v['id'], number=v['number'],visit=v['visit_number'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
                 route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
                 current_custodian=v['current_custodian'],final_destination=v['final_destination'],
                 pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
@@ -459,7 +488,17 @@ class Lifecycle:
                     self._notes(notes)
                     self.s.record_work(ident,'inspection',p)
                     data['inspection']=notes
-                    stage='warranty_check'
+                    # A warranty assessment stage is only meaningful when the product
+                    # actually had cover when it was collected. The decision uses the
+                    # snapshot captured at intake, never today's date.
+                    snapshot=intake_warranty(data)
+                    if snapshot['eligible']:
+                        stage='warranty_check'
+                    else:
+                        data['warranty_status']='out_of_warranty'
+                        data['warranty_skipped']=snapshot['reason']
+                        self.s.audit(c,'job',ident,'warranty_stage_skipped',snapshot)
+                        stage='route_selection'
                 elif action == 'verify_warranty':
                     status=p.get('warranty_status')
                     if status not in ('under_warranty','out_of_warranty','unknown'):
@@ -469,10 +508,14 @@ class Lifecycle:
                     self.s.record_work(ident,'warranty_verification',p)
                     stage='warranty_check' if status=='unknown' else 'route_selection'
                 elif action in ('select_route','change_route'):
-                    if not p.get('confirmed'):
-                        raise RuleError('Confirm the selected repair route before changing it.')
+                    # Choosing a route for the first time needs no extra confirmation:
+                    # saving the form is the decision. Replacing an existing assignment
+                    # still does, because it discards the current responsible party.
+                    if action=='change_route' and not p.get('confirmed'):
+                        raise RuleError('Confirm the replacement of the current repair assignment before changing the route.')
                     if not v['at_shop']:
-                        raise RuleError('Receive the physical device at the shop before changing its repair route.')
+                        raise RuleError('Receive the physical device at the shop before assigning this repair route.'
+                            if action=='select_route' else 'Receive the physical device at the shop before changing its repair route.')
                     route=p.get('route')
                     status=data.get('warranty_status')
                     if status not in ('under_warranty','out_of_warranty','shop_warranty'):
@@ -484,7 +527,8 @@ class Lifecycle:
                     if route!='in_house':
                         party=c.execute('SELECT * FROM masters WHERE id=? AND active=1',(p.get('contact_id'),)).fetchone()
                         if not party or party['kind']!=('centre' if route=='warranty_centre' else 'vendor'):
-                            raise RuleError('Select an active service center or vendor matching this repair route.')
+                            raise RuleError('Select an active authorized service center.' if route=='warranty_centre'
+                                else 'Select an active third-party repairer.')
                     technician_master=p.get('technician_master_id')
                     legacy_technician=p.get('technician_id')
                     if route=='in_house':
@@ -505,7 +549,11 @@ class Lifecycle:
                     if route=='in_house' and p.get('handed_over'):
                         from .custody import DeviceCustody
                         DeviceCustody(self.s).technician(c,dict(self.s._job(c,ident)),data,p)
-                    data.pop('dispatch',None)
+                    if data.pop('dispatch',None) is not None:
+                        # A not-yet-sent dispatch belongs to the replaced assignment.
+                        from .dispatch import Dispatches
+                        Dispatches(self.s).close(c,j,'CANCELLED')
+                    data.pop('dispatch_id',None)
                     data.pop('diagnosis',None)
                     data.pop('unrepaired',None)
                     data.pop('qc',None)
@@ -526,6 +574,14 @@ class Lifecycle:
                         raise RuleError('Select the physical device and only the accessories being sent.')
                     data['dispatch']=dict(p,items=sorted(selected))
                     c.execute('UPDATE jobs SET assessment_consent=1,return_due=? WHERE id=?',(day(p.get('expected_return')),ident))
+                    from .dispatch import Dispatches
+                    data['dispatch_id']=Dispatches(self.s).prepare(c,j,dict(
+                        contact_id=v['assignment']['contact_id'],reference=p.get('reference',''),
+                        transport_mode=p.get('transport_mode') or ('COURIER' if p.get('carrier','').strip() else 'BY_HAND'),
+                        transport=p.get('transport') or ({'courier_name':p['carrier'].strip()} if p.get('carrier','').strip() else {}),
+                        amount=p.get('amount',0),expected_return=day(p.get('expected_return')),
+                        condition=p.get('condition',''),notes=p.get('notes',''),
+                        manifest=sorted(selected),consent=True))
                 elif action in ('dispatch','arrive','receive','return_dispatch'):
                     stage=self._custody(c,j,data,v,action,p)
                 elif action in ('hand_technician','return_technician'):

@@ -11,8 +11,15 @@ def registration(qtbot, service, **kwargs):
     qtbot.addWidget(dialog)
     dialog.fields['name'].setText('New Customer')
     dialog.fields['phone_number'].setText('9990000008')
-    dialog.fields['address'].setPlainText('12 Test Street')
+    fill_address(dialog)
     return dialog
+
+
+def fill_address(dialog, line1='12 Test Street', pincode='411001', district='Pune', state='Maharashtra'):
+    dialog.fields['address_line1'].setText(line1)
+    dialog.fields['pincode'].setText(pincode)
+    dialog.state.setCurrentText(state)
+    dialog.district.setCurrentText(district)
 
 
 def test_registration_required_inline_errors_and_optional_contacts(qtbot, service):
@@ -21,10 +28,10 @@ def test_registration_required_inline_errors_and_optional_contacts(qtbot, servic
     dialog.save()
     assert dialog.saved_id is None
     assert dialog.field_errors['phone_number'].text() == 'Phone number is required.'
-    assert dialog.field_errors['address'].text() == 'Address is required.'
+    assert dialog.field_errors['address_line1'].text() == 'Address Line 1 is required.'
     dialog.fields['name'].setText('New Customer')
     dialog.fields['phone_number'].setText('abc')
-    dialog.fields['address'].setPlainText('12 Test Street')
+    fill_address(dialog)
     dialog.save()
     assert 'valid phone' in dialog.field_errors['phone_number'].text()
     dialog.fields['phone_number'].setText('9990000008')

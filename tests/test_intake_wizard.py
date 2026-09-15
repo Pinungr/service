@@ -132,7 +132,10 @@ def test_new_customer_external_inline_category_accessory_complete_flow(qtbot,ser
         dialog=QApplication.activeModalWidget()
         try:
             dialog.fields['phone_number'].setText('9995551234')
-            dialog.fields['address'].setPlainText('45 Test Lane')
+            dialog.fields['address_line1'].setText('45 Test Lane')
+            dialog.fields['pincode'].setText('411002')
+            dialog.state.setCurrentText('Maharashtra')
+            dialog.district.setCurrentText('Pune')
             image=QImage(40,40,QImage.Format.Format_RGB32);image.fill(QColor('#89aabb'))
             dialog.set_photo(image);dialog.save()
             assert dialog.saved_id

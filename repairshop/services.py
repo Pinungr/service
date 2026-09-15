@@ -10,6 +10,10 @@ from .persistence import insert
 from .customer_records import dirty, customer_folder, device_record
 from .local_files import managed_path, digest
 
+# Intake condition of a received device or accessory. "Not tested" matters because the
+# owner often cannot power up an accessory at the counter.
+ITEM_CONDITIONS = ("Working", "Not Working", "Not Tested", "Damaged")
+
 hashes = PasswordHasher()
 
 
@@ -87,7 +91,7 @@ class Service:
 
     def settings(self, values):
         self.require("owner")
-        allowed = {"shop_name", "address", "hours", "timezone", "decline_policy", "backup_destination", "external_backup", "backup_retention", "archive_days", "messaging_mode", "notifications_paused", "whatsapp", "smtp", "templates", "reminder_days", 'message_template', 'email_subject'}
+        allowed = {"shop_name", "address", "hours", "timezone", "decline_policy", "backup_destination", "external_backup", "backup_retention", "archive_days", "messaging_mode", "notifications_paused", "whatsapp", "smtp", "templates", "reminder_days", 'message_template', 'email_subject', 'paper_size', 'include_photos'}
         if not set(values) <= allowed:
             raise RuleError("Unsupported setting. Secrets belong in Windows Credential Manager.")
         if "archive_days" in values and int(values["archive_days"]) not in (60, 90):
@@ -105,6 +109,10 @@ class Service:
                         raise RuleError('Unsupported template variable or formatting. Use the listed simple variables.')
         if 'reminder_days' in values and (not isinstance(values['reminder_days'],int) or not 0 <= values['reminder_days'] <= 90):
             raise RuleError('Reminder interval must be 0 (off) to 90 days.')
+        if 'paper_size' in values and values['paper_size'] not in ('A4', 'A5'):
+            raise RuleError('Choose A4 or A5 as the default paper size.')
+        if 'include_photos' in values and not isinstance(values['include_photos'], bool):
+            raise RuleError('Choose Yes or No for including photos in customer messages.')
         with self.db.transaction() as c:
             for k, v in values.items():
                 c.execute("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, json.dumps(v)))
@@ -125,11 +133,29 @@ class Service:
         if service_id and service_id not in {r['id'] for r in self.services_for_category(category_id)}:
             raise RuleError('Choose a repair/service that applies to this product category.')
 
-    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None):
+    PARTY_KINDS = ('vendor', 'centre', 'supplier')
+
+    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, **address_fields):
         self.require("owner", "counter")
         if kind not in MASTER_KINDS or not norm(name):
             raise RuleError("Choose a directory and enter a name.")
+        from . import addresses
+        if not set(address_fields) <= set(addresses.FIELDS):
+            raise RuleError("Unknown directory address field.")
+        if address_fields and kind not in self.PARTY_KINDS:
+            raise RuleError("Postal address applies to third parties, service centres and suppliers.")
+        profile = dict(addresses.clean(address_fields, required=False)) if address_fields else {}
+        if kind in self.PARTY_KINDS and address_fields:
+            if not contact.strip():
+                raise RuleError("Enter a mobile number for this third party.")
+            profile = addresses.clean(address_fields, required=True)
+        if specialization is not None:
+            profile['specialization'] = specialization.strip()
+        if photo_id is not None:
+            profile['photo_id'] = photo_id
         with self.db.transaction() as c:
+            if photo_id and not c.execute("SELECT 1 FROM attachments WHERE id=?", (photo_id,)).fetchone():
+                raise RuleError("The selected directory photo is not available.")
             existing = c.execute("SELECT * FROM masters WHERE kind=? AND normalized=?", (kind, norm(name))).fetchone()
             new_record=not existing and not ident
             if existing and not ident:
@@ -156,14 +182,25 @@ class Service:
                         raise RuleError('Choose valid product categories for this service.')
                     c.execute('DELETE FROM category_services WHERE service_id=?',(ident,))
                     for category in set(categories):c.execute('INSERT INTO category_services VALUES (?,?)',(category,ident))
-            self.audit(c, "master", ident, "saved", {"kind": kind, "name": name, "active": active})
+            if profile:
+                c.execute("UPDATE masters SET " + ",".join(k + "=?" for k in profile) + " WHERE id=?", (*profile.values(), ident))
+            self.audit(c, "master", ident, "saved", dict({"kind": kind, "name": name, "active": active}, **profile))
         return ident
 
-    def save_customer(self, name, phone_number="", email="", address="", whatsapp_consent=False, email_consent=False, alternate="", ident=None):
+    def save_customer(self, name, phone_number="", email="", address="", whatsapp_consent=False, email_consent=False, alternate="", ident=None, **address_fields):
         self.require("owner", "counter")
         if not name.strip() or (email and ("@" not in email or "\n" in email or "\r" in email)):
             raise RuleError("A name and valid optional email are required.")
-        values = dict(name=name.strip(), phone=phone(phone_number), email=email.strip().lower(), address=address, whatsapp_consent=int(whatsapp_consent), email_consent=int(email_consent), alternate=alternate)
+        from . import addresses
+        if not set(address_fields) <= set(addresses.FIELDS):
+            raise RuleError("Unknown customer address field.")
+        # Structured fields are optional for quick counter registration; when any are
+        # supplied the whole postal address is validated and the legacy single-line
+        # `address` column is rewritten from them so existing documents stay readable.
+        structured = addresses.clean(address_fields, required=any(str(v or '').strip() for v in address_fields.values()))
+        if any(structured.values()):
+            address = addresses.readable(structured)
+        values = dict(name=name.strip(), phone=phone(phone_number), email=email.strip().lower(), address=address, whatsapp_consent=int(whatsapp_consent), email_consent=int(email_consent), alternate=alternate, **structured)
         with self.db.transaction() as c:
             before = None
             if ident:
@@ -254,15 +291,44 @@ class Service:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,recipient_id,attachment_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)',(operation_id,recipient_id,attachment_id,r['channel'],r['destination'],'statement',json.dumps(payload),'pending' if r['consent'] else 'blocked_consent',now(),now()))
             self.audit(c,'document',attachment_id,'queued_for_recipient',{'recipient_id':recipient_id,'subject':subject})
 
-    def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, **fields):
+    def queue_customer_document(self, attachment_id, customer_id, channels, event, message, operation_id, job_id=None):
+        """Optional customer copy of an issued document. Never part of an intake transaction."""
+        self.require('owner', 'counter')
+        if not set(channels) <= {'whatsapp', 'email'}:
+            raise RuleError('Choose WhatsApp and/or email.')
+        with self.db.transaction() as c:
+            contact = c.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone()
+            attachment = c.execute("SELECT * FROM attachments WHERE id=? AND kind='issued_document'", (attachment_id,)).fetchone()
+            if not contact or not attachment:
+                raise RuleError('Choose a customer and a saved issued document.')
+            queued = []
+            for channel in channels:
+                destination, consent = (contact['phone'], contact['whatsapp_consent']) if channel == 'whatsapp' else (contact['email'], contact['email_consent'])
+                if not destination:
+                    continue
+                payload = {'subject': event.replace('_', ' ').title(), 'body': message}
+                if self.db.setting('include_photos', False) and channel == 'email':
+                    payload['include_photos'] = True
+                c.execute('''INSERT OR IGNORE INTO outbox(event_key,job_id,contact_id,attachment_id,channel,destination,
+                    event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                    (f'{operation_id}:{channel}', job_id, customer_id, attachment_id, channel, destination,
+                     event, json.dumps(payload), 'pending' if consent else 'blocked_consent', now(), now()))
+                queued.append(channel)
+            self.audit(c, 'document', attachment_id, 'queued_for_customer',
+                       {'customer_id': customer_id, 'channels': queued, 'event': event})
+            return queued
+
+    def intake(self, customer_id, device, complaint, accessories=(), storage="shop:Front desk", advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
         self.require("owner", "counter")
         if not device.strip() or not complaint.strip() or not storage.startswith("shop:"):
             raise RuleError("Device, complaint and shop storage are required.")
-        allowed = {"submitter", "relationship", "update_contact_id", "sale_id", "parent_id", "category_id", "service_id", "serial", "origin", "damage", "route", "repair_due", "collection_due", "return_due", "policy", "transport_agreed", "assessment_agreed", "assessment_consent", "deposit", "intake_ref"}
+        allowed = {"submitter", "relationship", "update_contact_id", "sale_id", "parent_id", "category_id", "service_id", "serial", "origin", "damage", "route", "repair_due", "collection_due", "return_due", "policy", "transport_agreed", "assessment_agreed", "assessment_consent", "deposit", "intake_ref", "initial_estimate", "customer_requirement"}
         if not set(fields) <= allowed:
             raise RuleError("Unknown intake field.")
         fields.setdefault("policy", self.db.setting("decline_policy", "NO_CUSTOMER_CHARGE"))
-        fields.setdefault("intake_ref", "VIS-" + uuid.uuid4().hex[:10].upper())
+        if not isinstance(fields.get("initial_estimate", 0), int) or fields.get("initial_estimate", 0) < 0:
+            raise RuleError("Enter the initial estimate as a nonnegative whole-paise amount.")
+        fields.setdefault("intake_ref", "REF-" + uuid.uuid4().hex[:10].upper())
         if fields.get("route", "in_house") not in ROUTES:
             raise RuleError("Invalid repair route.")
         for k in ("repair_due", "collection_due", "return_due"):
@@ -307,7 +373,19 @@ class Service:
             active = c.execute("SELECT j.number FROM jobs j WHERE j.device_id=? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND h.quantity>0 AND h.location!='customer' AND h.location NOT LIKE 'exception:%')", (device_id,)).fetchone()
             if active:
                 raise RuleError('This physical device still has outstanding items on ' + active[0] + '. Complete that handover first, or select New physical device.')
-            ident = insert(c, "jobs", customer_id=customer_id, device=device, device_id=device_id, photo_id=photo_id, complaint=complaint, received=now(), actor=self.user["id"], lifecycle_version=int(guided), **fields)
+            from .visits import Visits
+            visits = Visits(self)
+            if visit_id:
+                owning = c.execute('SELECT customer_id FROM visits WHERE id=?', (visit_id,)).fetchone()
+                if not owning or owning[0] != customer_id:
+                    raise RuleError('This visit belongs to a different customer.')
+            else:
+                # A single product still becomes one visit with one job, so every job
+                # is reachable through the same customer -> visit -> jobs relationship.
+                visit_id = visits.create(c, customer_id, intake_ref=fields["intake_ref"],
+                                         estimated_total=fields.get("deposit", 0), advance_total=advance)['id']
+            ident = insert(c, "jobs", customer_id=customer_id, device=device, device_id=device_id, photo_id=photo_id, complaint=complaint, received=now(), actor=self.user["id"], lifecycle_version=int(guided), visit_id=visit_id, **fields)
+            visits.attach(c, visit_id, ident)
             if warranty_snapshot is not None:
                 data = json.loads(c.execute('SELECT lifecycle_data FROM jobs WHERE id=?', (ident,)).fetchone()[0])
                 data['intake_warranty'] = warranty_snapshot
@@ -323,7 +401,11 @@ class Service:
                     raise RuleError("Received quantities must be positive whole numbers.")
                 if item.get("serial") and item.get("quantity", 1) != 1:
                     raise RuleError("Record each serialized unit separately.")
-                item_id = insert(c, "items", job_id=ident, type=item.get("type", "accessory"), description=item["description"], quantity=item.get("quantity", 1), serial=item.get("serial", ""), condition=item.get("condition", ""))
+                if item.get("type", "accessory") == "accessory" and item.get("condition") and item["condition"] not in ITEM_CONDITIONS:
+                    raise RuleError("Record each accessory as Working, Not Working, Not Tested or Damaged.")
+                if item.get("photo_id") and not c.execute("SELECT 1 FROM attachments WHERE id=? AND customer_id=?", (item["photo_id"], customer_id)).fetchone():
+                    raise RuleError("An accessory photo must be a saved photo for this customer.")
+                item_id = insert(c, "items", job_id=ident, type=item.get("type", "accessory"), description=item["description"], quantity=item.get("quantity", 1), serial=item.get("serial", ""), condition=item.get("condition", ""), notes=item.get("notes", ""), photo_id=item.get("photo_id"))
                 insert(c, "holdings", item_id=item_id, location=storage, quantity=item.get("quantity", 1))
                 insert(c, "movements", operation_id=uuid.uuid4().hex, item_id=item_id, quantity=item.get("quantity", 1), from_location="customer", to_location=storage, happened=now(), recorded=now(), actor=self.user["id"], counterparty=fields.get("submitter", "") or "Device owner", notes="Initial receipt")
             if advance:
@@ -343,7 +425,7 @@ class Service:
             raise RuleError("Job not found.")
         return row
 
-    def intake_visit(self,products,operation_id,draft_id=None):
+    def intake_visit(self,products,operation_id,draft_id=None,notes=''):
         """Receive one visit atomically; each physical device keeps its own job."""
         self.require('owner','counter')
         if not operation_id or not products or len(products)>50:
@@ -356,16 +438,20 @@ class Service:
             customer=products[0].get('customer_id')
             if not customer or any(p.get('customer_id')!=customer for p in products):
                 raise RuleError('All products in one visit must belong to the same customer.')
-            reference=products[0].get('intake_ref') or 'VIS-'+uuid.uuid4().hex[:10].upper()
+            reference=products[0].get('intake_ref') or 'REF-'+uuid.uuid4().hex[:10].upper()
             if any(p.get('intake_ref') and p['intake_ref']!=reference for p in products):
                 raise RuleError('Use one visit reference for these products.')
+            from .visits import Visits
+            visit=Visits(self).create(c,customer,intake_ref=reference,notes=notes,
+                estimated_total=sum(int(p.get('deposit') or 0) for p in products),
+                advance_total=sum(int(p.get('advance') or 0) for p in products))
             jobs=[]
             for index,product in enumerate(products):
-                if set(product)&{'operation_id','draft_id'}:
+                if set(product)&{'operation_id','draft_id','visit_id'}:
                     raise RuleError('Product operation references are managed by the visit.')
                 fields=dict(product,intake_ref=reference)
-                jobs.append(self.intake(**fields,operation_id=f'{operation_id}:product:{index}'))
-            self.audit(c,'job',jobs[0],'visit_received',{'visit':reference,'jobs':jobs,'products':len(jobs)})
+                jobs.append(self.intake(**fields,visit_id=visit['id'],operation_id=f'{operation_id}:product:{index}'))
+            self.audit(c,'job',jobs[0],'visit_received',{'visit':reference,'visit_id':visit['id'],'visit_number':visit['number'],'jobs':jobs,'products':len(jobs)})
             insert(c,'commands',operation_id=operation_id,kind='intake_visit',result_id=jobs[0])
             if draft_id:c.execute('DELETE FROM intake_drafts WHERE id=? AND actor=?',(draft_id,self.user['id']))
             return jobs
@@ -720,6 +806,8 @@ class Service:
                 raise RuleError('A previous bill is still posted for this job. Reverse it with a reason before billing the full revised quotation.')
             if not q["total"]:
                 raise RuleError("Zero-charge warranty work needs a warranty summary, not a money posting.")
+            from .billing import Billing
+            Billing(self).guard_final_bill(c, j["id"], q["total"])
             return self._post(c, "customer", j["customer_id"], "invoice", q["total"], operation_id, job_id=j["id"], quote_id=quote_id, payload=dict(q), notes="Issued customer bill")
 
     def reverse(self, entry_id, reason, operation_id):

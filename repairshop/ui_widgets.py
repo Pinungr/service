@@ -9,6 +9,11 @@ from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QColor
 from .domain import rupees
 
+
+class Cancelled(Exception):
+    """Raised by a Form submit callback to abort the save without reporting an error."""
+
+
 STYLE = """
 QWidget {
     font-family: 'Segoe UI', 'Noto Sans', Arial;
@@ -183,8 +188,7 @@ QTabBar::tab {
 }
 QTabBar::tab:selected {background: white;color: #0f766e;}
 QScrollArea {border: 0;background: transparent;}
-QCheckBox {spacing: 8px;padding: 4px;background: transparent;}
-QCheckBox::indicator {width: 17px;height: 17px;}
+__CHECKBOX__
 QDialogButtonBox QPushButton {min-width: 92px;}
 QStatusBar {background: #e2e8f0;color: #475569;}
 """
@@ -202,7 +206,18 @@ STATUS_STATES = {
 }
 
 
-STYLE = STYLE.replace('__ARROW_DOWN__', (Path(__file__).parent / 'assets' / 'chevron-down.svg').as_posix()).replace('__ARROW_UP__', (Path(__file__).parent / 'assets' / 'chevron-up.svg').as_posix())
+# Qt stops painting a native indicator as soon as QCheckBox::indicator is styled,
+# so every state has to be drawn explicitly or the box renders blank.
+CHECKBOX_STYLE = """
+QCheckBox {spacing: 8px;padding: 4px;background: transparent;}
+QCheckBox::indicator {width: 18px;height: 18px;border: 1px solid #8193a5;border-radius: 4px;background: white;}
+QCheckBox::indicator:hover {border-color: #0f766e;}
+QCheckBox::indicator:checked {border-color: #0f766e;background: #0f766e;image: url("__CHECK__");}
+QCheckBox::indicator:disabled {border-color: #cbd5e1;background: #edf2f7;}
+QCheckBox::indicator:checked:disabled {border-color: #94a3b8;background: #94a3b8;image: url("__CHECK__");}
+""".replace('__CHECK__', (Path(__file__).parent / 'assets' / 'checkmark.svg').as_posix())
+
+STYLE = STYLE.replace('__ARROW_DOWN__', (Path(__file__).parent / 'assets' / 'chevron-down.svg').as_posix()).replace('__ARROW_UP__', (Path(__file__).parent / 'assets' / 'chevron-up.svg').as_posix()).replace('__CHECKBOX__', CHECKBOX_STYLE)
 
 
 class FlowLayout(QLayout):
@@ -418,10 +433,15 @@ class MasterSelector(QWidget):
     def text(self):
         return self.box.currentText() if self.value() else ""
 
+    LABELS = {'vendor': 'Third Party', 'centre': 'Authorized Service Center', 'supplier': 'Parts Supplier',
+              'technician': 'Internal Technician', 'service': 'Repair / Service', 'category': 'Product Category'}
+
     def add(self):
-        d = Form("Add " + self.kind, self)
+        # Shop-owner wording. A quick add stays quick; the full third-party postal address
+        # and photo are completed from Directories.
+        d = Form("Add " + self.LABELS.get(self.kind, self.kind.replace('_', ' ').title()), self)
         d.text("name", "Name")
-        d.text("contact", "Phone / contact")
+        d.text("contact", "Mobile" if self.kind in ('vendor', 'centre', 'supplier') else "Phone / contact")
         d.text("details", "Notes", multiline=True)
         def save(v):
             self.reload(self.s.save_master(self.kind, v["name"], v["contact"], v["details"], category_id=self.category))
@@ -548,6 +568,8 @@ class Form(QDialog):
             try:
                 callback(self.values())
                 self.accept()
+            except Cancelled:
+                pass
             except Exception as exc:
                 self.error.setText("Unable to save. " + str(exc))
                 self.error.show()

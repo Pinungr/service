@@ -217,7 +217,7 @@ def test_stale_action_and_invalid_master_do_not_write(service,customer):
     life.execute(ident,'inspection_done',{'notes':'Checked'})
     life.execute(ident,'verify_warranty',{'warranty_status':'out_of_warranty','notes':'Verified'})
     wrong=service.save_master('centre','Wrong type')
-    with pytest.raises(RuleError,match='matching'):life.execute(ident,'select_route',{'confirmed':True,'route':'third_party','contact_id':wrong})
+    with pytest.raises(RuleError,match='third-party repairer'):life.execute(ident,'select_route',{'route':'third_party','contact_id':wrong})
     assert not service.job(ident)['assignment_id']
 
 
@@ -293,7 +293,7 @@ def test_owner_credit_keeps_real_balance(service,customer):
 
 
 def test_migration5_to6_preserves_photos_finance_custody_and_verified_backup(service,customer,job,tmp_path):
-    from repairshop.persistence import Database
+    from repairshop.persistence import Database, SCHEMA_VERSION
     from repairshop.backup import Backups
     import shutil
     q=service.issue_quote(job,'Repair',[dict(description='Work',amount=100000)])
@@ -311,7 +311,7 @@ def test_migration5_to6_preserves_photos_finance_custody_and_verified_backup(ser
         c.execute('ALTER TABLE jobs DROP COLUMN lifecycle_data')
         c.execute('PRAGMA user_version=5')
     upgraded=Database(target)
-    assert upgraded.one('PRAGMA user_version')['user_version']==10
+    assert upgraded.one('PRAGMA user_version')['user_version']==SCHEMA_VERSION
     for table in ('customers','devices','items','holdings','movements','quotes','decisions','entries','attachments'):
         assert upgraded.rows(f'SELECT * FROM {table}')==service.db.rows(f'SELECT * FROM {table}')
     assert upgraded.rows("SELECT * FROM audit WHERE entity!='schema'")==service.db.rows("SELECT * FROM audit WHERE entity!='schema'")
@@ -345,3 +345,117 @@ def test_rows_projects_only_requested_page(service,customer):
     life.snapshot=counted
     rows=life.rows(limit=5)
     assert len(rows)==5 and len(calls)==5
+
+
+def ready_for_route(s,customer,warranty=False):
+    """Job advanced to route_selection with no route chosen yet."""
+    ident,life=fresh(s,customer)
+    life.execute(ident,'inspect')
+    life.execute(ident,'inspection_done',{'notes':'Power fault confirmed'})
+    life.execute(ident,'verify_warranty',{'warranty_status':'under_warranty' if warranty else 'out_of_warranty','notes':'Evidence reviewed'})
+    assert s.job(ident)['stage']=='route_selection' and not s.job(ident)['assignment_id']
+    return ident,life
+
+
+def test_initial_route_to_service_centre_needs_no_confirmation(service,customer):
+    ident,life=ready_for_route(service,customer,warranty=True)
+    centre=service.save_master('centre','Nokia')
+    life.execute(ident,'select_route',{'route':'warranty_centre','contact_id':centre,'reference':'bibhu'})
+    assignment=service.db.one('SELECT * FROM assignments WHERE job_id=?',(ident,))
+    assert assignment['route']=='warranty_centre' and assignment['contact_id']==centre
+    assert assignment['reference']=='bibhu'
+    assert service.job(ident)['stage']=='ready_dispatch'
+    assert life.snapshot(ident)['route_label']=='AUTHORIZED SERVICE CENTER'
+    assert service.db.one('SELECT count(*) n FROM assignments WHERE job_id=?',(ident,))['n']==1
+
+
+def test_initial_route_to_in_house_technician_needs_no_confirmation(service,customer):
+    ident,life=ready_for_route(service,customer)
+    tech=service.save_master('technician','Amit')
+    life.execute(ident,'select_route',{'route':'in_house','technician_master_id':tech})
+    assignment=service.db.one('SELECT * FROM assignments WHERE job_id=?',(ident,))
+    assert assignment['technician_master_id']==tech and assignment['route']=='in_house'
+    assert service.job(ident)['stage']=='diagnosis'
+
+
+def test_initial_route_to_third_party_needs_no_confirmation(service,customer):
+    ident,life=ready_for_route(service,customer)
+    vendor=service.save_master('vendor','Board specialist')
+    life.execute(ident,'select_route',{'route':'third_party','contact_id':vendor})
+    assignment=service.db.one('SELECT * FROM assignments WHERE job_id=?',(ident,))
+    assert assignment['route']=='third_party' and assignment['contact_id']==vendor
+    assert service.job(ident)['stage']=='ready_dispatch'
+
+
+def test_initial_route_does_not_move_the_physical_device(service,customer):
+    ident,life=ready_for_route(service,customer,warranty=True)
+    before=service.db.rows('SELECT h.location,h.quantity FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? ORDER BY i.id',(ident,))
+    moves=service.db.one('SELECT count(*) n FROM movements WHERE item_id IN (SELECT id FROM items WHERE job_id=?)',(ident,))['n']
+    centre=service.save_master('centre','Nokia')
+    life.execute(ident,'select_route',{'route':'warranty_centre','contact_id':centre,'reference':'bibhu'})
+    after=service.db.rows('SELECT h.location,h.quantity FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=? ORDER BY i.id',(ident,))
+    assert after==before, 'assigning responsibility must not relocate the device'
+    assert service.db.one('SELECT count(*) n FROM movements WHERE item_id IN (SELECT id FROM items WHERE job_id=?)',(ident,))['n']==moves
+    assert life.snapshot(ident)['responsible']=='Nokia'
+
+
+def test_changing_an_existing_route_still_requires_confirmation(service,customer):
+    ident,life=route(service,customer)          # already assigned in-house
+    life.execute(ident,'return_technician',dict(condition='Intact',acknowledgment='Returned for specialist'))
+    before=service.job(ident)['assignment_id']
+    vendor=service.save_master('vendor','Board specialist')
+    # Owner cancelled the confirmation dialog: the UI never sends confirmed.
+    with pytest.raises(RuleError,match='Confirm the replacement'):
+        life.execute(ident,'change_route',{'route':'third_party','contact_id':vendor})
+    assert service.job(ident)['assignment_id']==before
+    assert service.job(ident)['route']=='in_house'
+    # Owner chose Change Route.
+    life.execute(ident,'change_route',{'route':'third_party','contact_id':vendor,'confirmed':True})
+    assert service.job(ident)['route']=='third_party'
+    assert service.job(ident)['assignment_id']!=before
+
+
+def test_initial_route_still_enforces_existing_guards(service,customer):
+    ident,life=ready_for_route(service,customer)
+    with pytest.raises(RuleError,match='third-party repairer'):
+        life.execute(ident,'select_route',{'route':'third_party'})
+    with pytest.raises(RuleError,match='shop technician'):
+        life.execute(ident,'select_route',{'route':'in_house'})
+    with pytest.raises(RuleError,match='manufacturer warranty'):
+        life.execute(ident,'select_route',{'route':'warranty_centre','contact_id':service.save_master('centre','Nokia')})
+    assert not service.job(ident)['assignment_id']
+
+
+def test_initial_route_requires_device_at_shop_with_accurate_message(service,customer):
+    ident,life=ready_for_route(service,customer)
+    device=next(h for h in life.holdings(ident) if h['type']=='device')
+    life.execute(ident,'resolve_item',dict(item_id=device['id'],source=device['location'],
+        quantity=device['quantity'],counterparty='Owner',notes='Misplaced during audit'))
+    with pytest.raises(RuleError,match='before assigning this repair route'):
+        life.execute(ident,'select_route',{'route':'in_house','technician_master_id':service.save_master('technician','Amit')})
+
+
+def test_handover_to_technician_still_works_after_initial_route(service,customer):
+    ident,life=ready_for_route(service,customer)
+    tech=service.save_master('technician','Amit')
+    life.execute(ident,'select_route',{'route':'in_house','technician_master_id':tech})
+    assert life.snapshot(ident)['current_custodian']==service.db.setting('shop_name')
+    life.execute(ident,'hand_technician',dict(bench='Bench 2',condition='Intact',acknowledgment='Technician received'))
+    v=life.snapshot(ident)
+    assert v['current_custodian']=='Amit' and 'Bench 2' in v['current_location']
+
+
+def test_route_form_has_no_confirmation_checkbox_and_indicator_is_styled():
+    from repairshop.ui_widgets import STYLE, CHECKBOX_STYLE
+    from repairshop.intake_fields import INTAKE_STYLE
+    from pathlib import Path
+    import re, inspect
+    from repairshop.lifecycle_ui import JobWorkspace
+    source=inspect.getsource(JobWorkspace.route_choice)
+    assert "f.check('confirmed'" not in source and 'f.check("confirmed"' not in source
+    assert CHECKBOX_STYLE.strip() in STYLE and INTAKE_STYLE==CHECKBOX_STYLE
+    for state in ('::indicator {','::indicator:hover','::indicator:checked','::indicator:disabled'):
+        assert state in CHECKBOX_STYLE, state
+    assert '__CHECK__' not in STYLE and '__CHECKBOX__' not in STYLE
+    for url in re.findall(r'image: url\("([^"]+)"\)',STYLE):
+        assert Path(url).is_file(), url

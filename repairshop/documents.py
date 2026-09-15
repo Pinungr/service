@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import uuid
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4, A5, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.pdfbase import pdfmetrics
@@ -23,7 +23,10 @@ def safe_cell(value):
     return "'" + s if s.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else s
 
 
-def pdf(path, title, shop, sections, wide=False):
+PAPER = {'A4': A4, 'A5': A5}
+
+
+def pdf(path, title, shop, sections, wide=False, paper='A4'):
     from .lifecycle import local_time
     font_path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf"
     if font_path.exists() and "ShopSans" not in pdfmetrics.getRegisteredFontNames():
@@ -35,9 +38,21 @@ def pdf(path, title, shop, sections, wide=False):
     styles["Normal"].fontSize = 9
     styles["Normal"].leading = 13
     styles['Heading3'].keepWithNext = True
-    story = [Paragraph(html.escape(shop), styles["Title"]), Paragraph(html.escape(title), styles["Heading2"]), Paragraph("Issued " + local_time(now()) + ' IST', styles["Normal"]), Spacer(1, 16)]
-    page = landscape(A4) if wide else A4
-    width = page[0] - 72
+    size = PAPER.get(str(paper).upper(), A4)
+    page = landscape(size) if wide else size
+    # A5 is half the width of A4, so the body must be re-measured rather than scaled:
+    # narrower margins, smaller type and column widths derived from the real page.
+    compact = page[0] < A4[0]
+    margin = 24 if compact else 36
+    if compact:
+        styles["Normal"].fontSize = 8
+        styles["Normal"].leading = 11
+        styles["Title"].fontSize = 15
+        styles["Title"].leading = 18
+        styles["Heading2"].fontSize = 11
+        styles["Heading3"].fontSize = 9.5
+    width = page[0] - 2 * margin
+    story = [Paragraph(html.escape(shop), styles["Title"]), Paragraph(html.escape(title), styles["Heading2"]), Paragraph("Issued " + local_time(now()) + ' IST', styles["Normal"]), Spacer(1, 10 if compact else 16)]
     for heading, content in sections:
         story.append(Paragraph(html.escape(heading), styles["Heading3"]))
         if isinstance(content, list) and content:
@@ -50,28 +65,31 @@ def pdf(path, title, shop, sections, wide=False):
             story.append(table)
         else:
             story.append(Paragraph(html.escape(str(content or "None recorded")).replace("\n", "<br/>"), styles["Normal"]))
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 8 if compact else 12))
     def footer(canvas, doc):
         canvas.setFont(font, 8)
         canvas.setFillColor(colors.HexColor("#647875"))
-        canvas.drawString(36, 22, "RepairShop Manager · " + title[:65])
-        canvas.drawRightString(page[0] - 36, 22, str(doc.page))
-    SimpleDocTemplate(str(path), pagesize=page, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=40).build(story, onFirstPage=footer, onLaterPages=footer)
+        canvas.drawString(margin, 18, ("RepairShop Manager · " + title)[:52 if compact else 78])
+        canvas.drawRightString(page[0] - margin, 18, str(doc.page))
+    SimpleDocTemplate(str(path), pagesize=page, rightMargin=margin, leftMargin=margin,
+                      topMargin=margin, bottomMargin=margin + 8).build(story, onFirstPage=footer, onLaterPages=footer)
 
 
 class Documents:
     def __init__(self, service):
         self.s, self.db = service, service.db
 
-    def visit_receipt(self,job_ids):
+    def visit_receipt(self,job_ids,paper=None):
         """Combined receiving summary; individual issued cards remain available."""
         from .job_cards import JobCards
         from .lifecycle import local_time
         self.s.require('owner','counter')
         if not job_ids:raise RuleError('Select the jobs received during this visit.')
         jobs=[self.s.job(ident) for ident in job_ids]
-        if len({(j['customer_id'],j['intake_ref']) for j in jobs})!=1:
+        if len({(j['customer_id'],j['visit_id'] or j['intake_ref']) for j in jobs})!=1:
             raise RuleError('A visit receipt must contain one customer and one visit reference.')
+        visit=self.db.one('SELECT number FROM visits WHERE id=?',(jobs[0]['visit_id'],)) if jobs[0]['visit_id'] else None
+        reference=(visit or {}).get('number') or jobs[0]['intake_ref']
         sections=[]
         for j in jobs:
             card=next((r for r in JobCards(self.s).rows(j['id']) if r['kind']=='customer_receiving'),None)
@@ -79,10 +97,28 @@ class Documents:
             p=json.loads(card['snapshot'])
             if not sections:
                 owner=p['from'];sections.append(('Customer',owner['name']+'\n'+owner.get('phone','')+'\n'+owner.get('email','')))
-                sections.append(('Visit',j['intake_ref']+f" · {len(jobs)} products received"))
-            sections.append((j['number']+' / '+p['card_number'],f"{p['device']} · DEV-{p['device_id']:06d}\nCategory: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\nSerial: {p['serial'] or 'Not recorded'}\nComplaint: {p['complaint']}\nCondition: {p['condition']}\nReceived: {local_time(p['effective'])} IST · Staff: {p['staff']}"))
-            sections.append(('Items received',[{k:r.get(k,'') for k in ('description','quantity','serial','condition')} for r in p['items']]))
-        return self.snapshot('Customer visit receiving receipt · '+jobs[0]['intake_ref'],sections,job_id=jobs[0]['id'])
+                sections.append(('Visit',reference+f" · {len(jobs)} products received"))
+            summary = (f"{p['device']} · DEV-{p['device_id']:06d}\n"
+                f"Category: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\n"
+                f"Serial: {p['serial'] or 'Not recorded'}\nComplaint: {p['complaint']}\nCondition: {p['condition']}\n"
+                f"Received: {local_time(p['effective'])} IST · Staff: {p['staff']}\n"
+                f"Initial estimate: {rupees(j['initial_estimate'] or 0)}")
+            if j['customer_requirement']:
+                summary += f"\nAdditional customer requirement: {j['customer_requirement']}"
+            sections.append((j['number']+' / '+p['card_number'], summary))
+            sections.append(('Items received',[{k:r.get(k,'') for k in ('description','quantity','serial','condition','notes')} for r in p['items']]))
+        estimate=sum(j['initial_estimate'] or 0 for j in jobs)
+        advance=self.db.one("""SELECT -COALESCE(sum(amount),0) n FROM entries WHERE account_type='customer'
+            AND kind='receipt' AND notes='Intake advance' AND job_id IN ("""+','.join('?' for _ in jobs)+')',
+            tuple(j['id'] for j in jobs))['n']
+        sections.append(('Initial estimate',
+            'Total initial estimate: ' + rupees(estimate)
+            + '\nAdvance received: ' + rupees(advance)
+            + '\nEstimated balance against this initial estimate: ' + rupees(estimate - advance)))
+        sections.append(('Please note','The initial estimate above is the figure given when the products were '
+            'received. It is not the final repair quotation. Any chargeable repair is quoted after diagnosis '
+            'and started only after your recorded approval.'))
+        return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],paper=paper)
 
     def attach(self, source, title, job_id=None, sale_id=None, kind="evidence"):
         self.s.require("owner", "counter")
@@ -181,7 +217,12 @@ class Documents:
         branding = json.loads(q.get('snapshot', '{}')).get('shop', {}).get('shop_name') if kind == 'quotation' else None
         return self.snapshot(title, sections, job_id=job_id, shop_name=branding)
 
-    def snapshot(self, title, sections, job_id=None, shop_name=None):
+    def paper(self, override=None):
+        """A4 unless the owner chose A5, with an explicit print-time override allowed."""
+        choice = (override or self.db.setting('paper_size', 'A4') or 'A4').upper()
+        return choice if choice in PAPER else 'A4'
+
+    def snapshot(self, title, sections, job_id=None, shop_name=None, paper=None):
         self.s.require("owner", "counter")
         relative = CustomerRecords(self.s).document_folder(job_id) + '/' + uuid.uuid4().hex + '.pdf'
         with self.db.guard:
@@ -189,7 +230,7 @@ class Documents:
             path.parent.mkdir(parents=True, exist_ok=True)
             pending = path.with_suffix('.partial')
             try:
-                pdf(pending, title, shop_name or self.db.setting("shop_name", "RepairShop Manager"), sections)
+                pdf(pending, title, shop_name or self.db.setting("shop_name", "RepairShop Manager"), sections, paper=self.paper(paper))
                 with pending.open('r+b') as stream:
                     os.fsync(stream.fileno())
                 os.rename(pending, path)

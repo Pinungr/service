@@ -13,7 +13,7 @@ class VisitIntake:
         payload=json.loads(draft['payload']) if draft else {}
         self.products=payload.get('visit_products',[])
         form.visit_intake=self
-        if not form.fields['intake_ref'].text():form.fields['intake_ref'].setText('VIS-'+uuid.uuid4().hex[:10].upper())
+        if not form.fields['intake_ref'].text():form.fields['intake_ref'].setText('REF-'+uuid.uuid4().hex[:10].upper())
         box=QWidget();self.box=box;layout=QVBoxLayout(box);layout.setContentsMargins(0,0,0,0)
         box.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Maximum)
         self.info=QLabel();self.info.setWordWrap(True);layout.addWidget(self.info)
@@ -58,10 +58,12 @@ class VisitIntake:
         if not storage:raise RuleError('Choose shop storage for this product.')
         p['storage']='shop:'+storage['name']
         p.pop('photo_role',None);p.pop('visit_products',None)
-        for key in ('advance','deposit','transport_agreed','assessment_agreed'):
-            p[key]=money(p[key] or '0')
+        for key in ('advance','deposit','transport_agreed','assessment_agreed','initial_estimate'):
+            p[key]=money(p.get(key) or '0')
             if p[key]<0:raise RuleError('Intake amounts cannot be negative.')
-        p['accessories']=[dict(type='accessory',description=a['description'],quantity=a['quantity'],serial=a.get('serial','')) for a in p.get('accessories',[]) if a.get('checked')]
+        p['accessories']=[dict(type='accessory',description=a['description'],quantity=a['quantity'],serial=a.get('serial',''),
+            condition=a.get('condition') or 'Not Tested',notes=a.get('notes',''),photo_id=a.get('photo_id'))
+            for a in p.get('accessories',[]) if a.get('checked')]
         p['guided']=True
         return p
 
@@ -81,11 +83,11 @@ class VisitIntake:
         self.support.parent=None;self.support.sale=None
         self.form.fields['device_id'].setCurrentIndex(0)
         self.form.fields['category_id'].box.setCurrentIndex(0)
-        for key in ('device','brand','model','serial','complaint','damage'):
+        for key in ('device','brand','model','serial','complaint','damage','customer_requirement'):
             self.form.fields[key].clear()
         for key in ('repair_due','collection_due'):
             self.form.fields[key].setDate(QDate(1900,1,1))
-        for key in ('advance','deposit','transport_agreed','assessment_agreed'):
+        for key in ('advance','deposit','transport_agreed','assessment_agreed','initial_estimate'):
             self.form.fields[key].setText('0')
         self.form.fields['assessment_consent'].setChecked(False)
         self.form.fields['origin'].setCurrentIndex(self.form.fields['origin'].findData('elsewhere'))
@@ -110,7 +112,7 @@ class VisitIntake:
     def reload(self):
         count=len(self.products)
         self.info.setText(f'{count} product(s) in this visit. Add another device above, or Save visit to receive all listed products.' if count else 'Multiple products? Fill one device above, then Add this product to visit. Customer details and photo are shared; each device gets its own repair job.')
-        self.grid.fill([dict(index=n,product=r['device'],fault=r['complaint'],category=(self.w.db.one('SELECT name FROM masters WHERE id=?',(r.get('category_id'),)) or {}).get('name','Not selected'),advance=r.get('advance','0')) for n,r in enumerate(self.products)],['product','category','fault','advance'])
+        self.grid.fill([dict(index=n,product=r['device'],fault=r['complaint'],category=(self.w.db.one('SELECT name FROM masters WHERE id=?',(r.get('category_id'),)) or {}).get('name','Not selected'),advance=r.get('advance','0'),estimate=r.get('initial_estimate',0)) for n,r in enumerate(self.products)],['product','category','fault','estimate','advance'])
         self.grid.setVisible(bool(count));self.edit.setEnabled(bool(count));self.remove.setEnabled(bool(count))
         self.form.fields['customer_id'].setEnabled(not count)
         self.form.fields['intake_ref'].setReadOnly(bool(count))

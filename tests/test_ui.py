@@ -42,6 +42,7 @@ def test_real_intake_accessories_start_unchecked_and_persist(qtbot,service,custo
     window.timer.stop()
     qtbot.addWidget(window)
     monkeypatch.setattr(window,'job_detail',lambda _:None)
+    monkeypatch.setattr(window,'post_intake',lambda jobs,documents,document_error='':None)
     def fill_intake():
         form=QApplication.activeModalWidget()
         assert isinstance(form,Form)
@@ -74,12 +75,16 @@ def test_intake_registers_customer_inline_and_enables_photo(qtbot,service,monkey
     from repairshop.customer_records import CustomerRecords
     window=MainWindow(service);qtbot.addWidget(window)
     monkeypatch.setattr(window,'job_detail',lambda _:None)
+    monkeypatch.setattr(window,'post_intake',lambda jobs,documents,document_error='':None)
     def register():
         form=QApplication.activeModalWidget()
         try:
             assert form.fields['name'].text()=='Bibhu Test'
             form.fields['phone_number'].setText('9990007788')
-            form.fields['address'].setPlainText('123 Test Street')
+            form.fields['address_line1'].setText('123 Test Street')
+            form.fields['pincode'].setText('411003')
+            form.state.setCurrentText('Maharashtra')
+            form.district.setCurrentText('Pune')
             form.buttons.button(QDialogButtonBox.StandardButton.Save).click()
         except BaseException:
             form.reject();raise
