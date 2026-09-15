@@ -270,3 +270,65 @@ def test_return_evidence_must_belong_to_the_repair_being_verified(service, custo
             [dict(item_id=None, kind='damaged', notes='Scratched lid', photo_id=stale)], {}, set())
     assert returns._clean_discrepancies(
         [dict(item_id=None, kind='damaged', notes='Scratched lid', photo_id=stale)], {}, {stale})[0]['photo_id'] == stale
+
+def dispatched_job(service, customer):
+    """A third-party repair that has come back and is ready to be received."""
+    from repairshop.lifecycle import Lifecycle
+    job = service.intake(customer, 'Dell Laptop', 'No power', guided=True,
+                         accessories=[dict(type='accessory', description='Charger', quantity=1)])
+    life = Lifecycle(service)
+    life.execute(job, 'inspect')
+    life.execute(job, 'inspection_done', {'notes': 'Fault confirmed'})
+    life.execute(job, 'verify_warranty', {'warranty_status': 'out_of_warranty', 'notes': 'No cover'})
+    vendor = service.save_master('vendor', 'ABC Repair', contact='9998887771', **ADDRESS)
+    life.execute(job, 'select_route', {'route': 'third_party', 'confirmed': True, 'contact_id': vendor})
+    life.execute(job, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(job)], consent=True,
+                                               condition='Intact', expected_return='2099-01-01'))
+    life.execute(job, 'dispatch', dict(counterparty='Courier', condition='Intact', acknowledgment='D1'))
+    life.execute(job, 'diagnose', dict(notes='Board fault', repairable=True))
+    quote = service.issue_quote(job, 'Board repair',
+                                [{'description': 'Board', 'amount': 500000, 'kind': 'part'}])
+    service.decide_quote(quote, 'approved', 'Device owner', 'in_person')
+    life.execute(job, 'start_repair')
+    life.execute(job, 'complete_repair', dict(notes='Repaired', parts='Board'))
+    return job, life
+
+
+def receive_payload(life, job, **extra):
+    """The payload the receive dialog builds, including its shared custody fields."""
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    return dict(dict(counterparty='Priya at the counter', condition='Intact', acknowledgment='R1',
+                     storage='shop:Front desk', notes='', repair_result='REPAIRED',
+                     items=list(held), quantities={str(k): v for k, v in held.items()},
+                     discrepancies=[], operation_id=uuid.uuid4().hex,
+                     received_by='Priya at the counter'), **extra)
+
+
+def test_a_named_person_can_take_the_return_at_the_counter(service, customer):
+    """The receive dialog offers "A named person"; the name comes from the shared
+    "Person receiving the items" field, which custody already requires."""
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    life.execute(job, 'receive', receive_payload(life, job, receiver_kind='person',
+                                                 receiver_mobile='9990003333'))
+    record = Returns(service).verifications(job)[0]
+    assert record['receiver_kind'] == 'person'
+    assert record['receiver_name'] == 'Priya at the counter'
+    assert record['receiver_mobile'] == '9990003333'
+    assert record['complete']
+
+
+def test_shop_storage_remains_the_default_receiver(service, customer):
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    life.execute(job, 'receive', receive_payload(life, job, receiver_kind='storage'))
+    record = Returns(service).verifications(job)[0]
+    assert record['receiver_kind'] == 'storage' and record['storage'] == 'shop:Front desk'
+
+
+def test_a_receipt_without_the_receiving_person_is_refused(service, customer):
+    job, life = dispatched_job(service, customer)
+    payload = receive_payload(life, job, receiver_kind='person')
+    payload['counterparty'] = payload['received_by'] = ''
+    with pytest.raises(RuleError, match='receiving person'):
+        life.execute(job, 'receive', payload)
