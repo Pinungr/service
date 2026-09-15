@@ -211,6 +211,27 @@ def test_draft_dispatch_is_edited_in_place(service, customer):
     assert current['transport']['docket_number'] == 'BD99999'
     assert len(Dispatches(service).history(ident)) == 1
 
+def test_transport_payer_is_saved_edited_and_versioned(service, customer):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    record = prepared(service, life, ident, paid_by='customer')
+    assert record['paid_by'] == 'customer'
+    Dispatches(service).edit(ident, dict(paid_by='shop'))
+    assert Dispatches(service).current(ident)['paid_by'] == 'shop'
+    send(service, life, ident)
+    current = Dispatches(service).current(ident)
+    Dispatches(service).amend(ident, dict(paid_by='third_party'), 'Payer corrected', operation_id=uuid.uuid4().hex)
+    amended = Dispatches(service).current(ident)
+    assert amended['paid_by'] == 'third_party'
+    assert amended['version'] == current['version'] + 1
+
+
+def test_transport_payer_rejects_unknown_values(service, customer):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    with pytest.raises(RuleError, match='who pays'):
+        prepared(service, life, ident, paid_by='somebody_else')
+
 
 def test_sent_dispatch_cannot_be_edited_or_overwritten(service, customer):
     ident = three(service, customer)[0]

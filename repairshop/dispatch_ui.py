@@ -8,10 +8,11 @@ import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QCheckBox
 from .ui_widgets import Form, Grid, button, FlowLayout
-from .dispatch import Dispatches, TRANSPORT_MODES
+from .dispatch import Dispatches, TRANSPORT_MODES, TRANSPORT_PAYERS
 from .domain import rupees, money, RuleError, in_shop
 
 MODE_LABELS = [('By hand', 'BY_HAND'), ('Bus', 'BUS'), ('Courier', 'COURIER'), ('Other', 'OTHER')]
+PAYER_LABELS = [(label, key) for key, label in TRANSPORT_PAYERS.items()]
 FIELD_LABELS = {
     'person_name': 'Person name', 'mobile': 'Mobile / contact', 'handover_date': 'Handover date',
     'bus_name': 'Bus name', 'bus_number': 'Bus number', 'dispatch_date': 'Dispatch date',
@@ -29,6 +30,7 @@ def describe(d):
         'Transport: ' + d['transport_mode'].replace('_', ' ').title(),
         d['transport_summary'],
         'Transport amount: ' + rupees(d['amount']),
+        'Transport paid by: ' + TRANSPORT_PAYERS.get(d.get('paid_by'), str(d.get('paid_by') or 'shop').replace('_', ' ').title()),
         'Reference: ' + (d['reference'] or 'Not recorded'),
         'Expected return: ' + (d['expected_return'] or 'Not set'),
         'Sent: ' + (d['actual_dispatch_at'] or 'Not yet physically dispatched'),
@@ -79,9 +81,10 @@ class DispatchPanel(QWidget):
         for row in history:
             row['transport_details'] = row['transport_summary']
             row['transport_amount'] = rupees(row['amount'])
+            row['transport_payer'] = TRANSPORT_PAYERS.get(row.get('paid_by'), str(row.get('paid_by') or 'shop').replace('_', ' ').title())
             row['state'] = 'Current' if row['current'] else 'Superseded'
         self.grid.fill(history, ['version', 'status', 'state', 'contact_name', 'reference',
-                                 'transport_mode', 'transport_details', 'transport_amount',
+                                 'transport_mode', 'transport_details', 'transport_amount', 'transport_payer',
                                  'actual_dispatch_at', 'amendment_reason', 'created'])
         held = {r['id']: r for r in self.window.db.rows(
             '''SELECT i.id,i.description,i.type,i.serial,h.location,h.quantity FROM items i
@@ -117,6 +120,7 @@ class DispatchPanel(QWidget):
         selector.currentIndexChanged.connect(show)
         show()
         form.text('amount', 'Transport amount (INR)', str(current['amount'] / 100))
+        form.select('paid_by', 'Transport paid by', PAYER_LABELS, current.get('paid_by') or 'shop')
         form.text('reference', 'Service centre job / vendor ticket number', current['reference'])
         form.date('expected_return', 'Expected return date', current['expected_return'])
         form.text('notes', 'Dispatch notes', current['notes'], multiline=True)
@@ -129,7 +133,7 @@ class DispatchPanel(QWidget):
                     if other == mode and str(value).strip():
                         transport[key] = str(value).strip()
             return dict(transport_mode=mode, transport=transport, amount=money(p.pop('amount') or '0'),
-                        reference=p.pop('reference', ''), expected_return=p.pop('expected_return', None),
+                        paid_by=p.pop('paid_by', 'shop'), reference=p.pop('reference', ''), expected_return=p.pop('expected_return', None),
                         notes=p.pop('notes', ''))
         return collect
 

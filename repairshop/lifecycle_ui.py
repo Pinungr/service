@@ -201,9 +201,10 @@ class JobWorkspace(QDialog):
             d.date('expected_return','Expected return date',v['return_due'])
             d.text('reference','External reference (service centre case / third-party ticket)')
             d.text('carrier','Courier / transport information')
-            from .dispatch_ui import MODE_LABELS
+            from .dispatch_ui import MODE_LABELS, PAYER_LABELS
             d.select('transport_mode','Transport mode',MODE_LABELS,'BY_HAND')
             d.text('transport_amount','Transport amount (INR)','0')
+            d.select('paid_by','Transport paid by',PAYER_LABELS,'shop')
             d.layout.addRow(label('Bus, courier and by-hand details are recorded on the Third-party dispatch tab, where they can be corrected before sending and amended with a reason afterwards.'))
             checks=[]
             for h in v['holdings']:

@@ -18,7 +18,14 @@ TRANSPORT_MODES = {
     'COURIER': ('courier_name', 'docket_number', 'docket_date', 'dispatch_date'),
     'OTHER': ('details',),
 }
-EDITABLE = ('reference', 'transport_mode', 'transport', 'amount', 'expected_return',
+TRANSPORT_PAYERS = {
+    'shop': 'Shop',
+    'customer': 'Customer',
+    'third_party': 'Third party',
+    'service_center': 'Service center',
+    'other': 'Other',
+}
+EDITABLE = ('reference', 'transport_mode', 'transport', 'amount', 'paid_by', 'expected_return',
             'condition', 'notes', 'manifest', 'consent', 'contact_id')
 SENT = ('DISPATCHED', 'RETURNED')
 
@@ -78,6 +85,9 @@ class Dispatches:
             amount = money(amount or '0')
         if not isinstance(amount, int) or amount < 0:
             raise RuleError('Enter the transport amount as a nonnegative whole-paise value.')
+        paid_by = str(p.get('paid_by') or 'shop').strip().lower()
+        if paid_by not in TRANSPORT_PAYERS:
+            raise RuleError('Choose who pays the transport charge.')
         manifest = sorted({int(i) for i in (p.get('manifest') or [])})
         if verify_manifest:
             # Only a not-yet-sent manifest is checked against live holdings: after the
@@ -91,7 +101,7 @@ class Dispatches:
             raise RuleError('Select the active external repairer assigned to this job.')
         return dict(contact_id=contact_id, contact_name=party['name'], route=job['route'],
                     reference=str(p.get('reference', '')).strip(), transport_mode=mode,
-                    transport=json.dumps(transport), amount=amount,
+                    transport=json.dumps(transport), amount=amount, paid_by=paid_by,
                     expected_return=p.get('expected_return') or None,
                     condition=str(p.get('condition', '')).strip(), notes=str(p.get('notes', '')).strip(),
                     manifest=json.dumps(manifest), consent=int(bool(p.get('consent'))))
