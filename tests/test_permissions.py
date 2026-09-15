@@ -50,7 +50,7 @@ def test_the_owner_can_do_everything_and_a_technician_cannot(service):
     assert ROLES['owner'] == set(PERMISSIONS)
     for denied in ('billing', 'collect_payment', 'view_internal_cost', 'settings',
                    'user_management', 'backup_restore', 'view_all_jobs', 'reports',
-                   'vendor_accounts', 'register_sale', 'financial_reports'):
+                   'vendor_accounts', 'register_sale', 'financial_reports', 'customer_export'):
         assert not allowed('technician', denied), f'technician must not have {denied}'
     # A technician is operational staff: they receive products and decide who repairs them.
     for granted in ('intake', 'handover', 'repair', 'customer_records', 'assign_job'):
