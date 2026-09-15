@@ -93,7 +93,7 @@ class CustomerRecords:
             self.s.audit(c, 'customer', row['customer_id'], 'device_details_updated', {'device_id': device_id, 'name': name, 'brand': brand, 'model': model, 'serial': serial})
 
     def save_draft(self, ident, payload):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('intake')
         with self.db.transaction() as c:
             old = c.execute('SELECT actor FROM intake_drafts WHERE id=?', (ident,)).fetchone()
             if old and old[0] != self.s.user['id']:
@@ -103,18 +103,21 @@ class CustomerRecords:
         return ident
 
     def drafts(self):
-        self.s.require('owner', 'counter')
+        self.s.require_permission('intake')
         return self.db.rows('SELECT d.*,c.name AS customer FROM intake_drafts d LEFT JOIN customers c ON c.id=d.customer_id WHERE actor=? ORDER BY updated DESC', (self.s.user['id'],))
 
     def save_photo(self, image, customer_id, person_role='owner', person_name='', device_id=None, job_id=None, captured=None):
         self.s.require_permission('customer_records')
-        if person_role not in ('owner', 'submitter', 'product', 'accessory') or (person_role == 'product') != bool(device_id):
+        if person_role not in ('owner', 'submitter', 'product', 'accessory', 'return') or (person_role == 'product') != bool(device_id):
             raise RuleError('Choose whose photo is being saved.')
+        if person_role == 'return' and not job_id:
+            raise RuleError('Return evidence must be captured against the repair it documents.')
         if not isinstance(image, QImage) or image.isNull():
             raise RuleError('Photo capture failed. Retake the photo and try again.')
-        if person_role in ('submitter', 'accessory') and not person_name.strip():
+        if person_role in ('submitter', 'accessory', 'return') and not person_name.strip():
             raise RuleError('Enter the submitting person’s name before capture.' if person_role == 'submitter'
-                            else 'Name the accessory before capturing its photo.')
+                            else 'Describe the accessory before capturing its photo.' if person_role == 'accessory'
+                            else 'Describe what the return photo shows.')
         image = image.scaled(1920, 1920, Qt.AspectRatioMode.KeepAspectRatio) if max(image.width(), image.height()) > 1920 else image
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -129,21 +132,27 @@ class CustomerRecords:
                 if not device:
                     raise RuleError('Device does not belong to this customer.')
                 folder = self._device_folder(c, device) + '/Product-Photos'
+            elif person_role == 'return':
+                # Evidence of what came back from a repairer, filed with the repair.
+                folder += '/Return-Photos'
             elif person_role == 'accessory':
                 # Accessories are photographed at the counter before the device record
                 # exists, so the evidence is filed under the customer's own folder.
                 folder += '/Accessory-Photos'
             else:
                 folder += '/Customer-Photos'
-            if job_id and not c.execute('SELECT id FROM jobs WHERE id=? AND customer_id=? AND device_id=?', (job_id, customer_id, device_id)).fetchone():
+            if job_id and person_role == 'return':
+                if not c.execute('SELECT id FROM jobs WHERE id=? AND customer_id=?', (job_id, customer_id)).fetchone():
+                    raise RuleError('Photo job and customer do not match.')
+            elif job_id and not c.execute('SELECT id FROM jobs WHERE id=? AND customer_id=? AND device_id=?', (job_id, customer_id, device_id)).fetchone():
                 raise RuleError('Photo job and device do not match.')
-            name = owner if person_role == 'owner' else person_name.strip() if person_role in ('submitter', 'accessory') else device['name']
+            name = owner if person_role == 'owner' else person_name.strip() if person_role in ('submitter', 'accessory', 'return') else device['name']
             relative = folder + '/' + uuid.uuid4().hex + '.jpg'
             target = managed_path(self.db.root, relative)
             publish(target, data)
             # An interrupted transaction can leave an unreferenced UUID file. Never overwrite/delete it.
             ident = insert(c, 'attachments', job_id=job_id, customer_id=customer_id, device_id=device_id,
-                kind='product_photo' if device_id else 'accessory_photo' if person_role == 'accessory' else 'customer_photo', path=relative, title=f'{person_role.title()}: {name}',
+                kind='product_photo' if device_id else 'return_photo' if person_role == 'return' else 'accessory_photo' if person_role == 'accessory' else 'customer_photo', path=relative, title=f'{person_role.title()}: {name}',
                 person_role=person_role, person_name=name, captured=captured or now(), sha256=digest(data), created=now(), actor=self.s.user['id'])
             if person_role == 'owner':
                 c.execute('UPDATE customers SET current_photo_id=? WHERE id=?', (ident, customer_id))
@@ -164,7 +173,7 @@ class CustomerRecords:
 
     def recover_photo(self, attachment_id, source):
         """Restore the identical lost file without rewriting evidence or its history."""
-        self.s.require('owner', 'counter')
+        self.s.require_permission('customer_records')
         row = self.db.one('SELECT * FROM attachments WHERE id=? AND sha256 IS NOT NULL', (attachment_id,))
         if not row:
             raise RuleError('Select a photo with a recorded checksum.')

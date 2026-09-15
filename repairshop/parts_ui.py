@@ -5,7 +5,7 @@ from PyQt6.QtCore import QUrl,Qt
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QDialog
 from .ui_widgets import Grid,Form,button,panel,FlowLayout
-from .domain import money,rupees,RuleError
+from .domain import money,rupees,RuleError, today
 from .parts import Parts
 from .job_cards import JobCards
 from .warranties import Warranties
@@ -129,7 +129,7 @@ class RepairRecords(QWidget):
         d.submit(lambda p:self.parts.remove(row['id'],p['reason']))
 
     def install(self):
-        row=self.selected();d=Form('Record part installed',self,row['name']);d.text('installed_by','Installed by',self.ws.view['responsible']);d.date('installed_date','Installation date',date.today().isoformat())
+        row=self.selected();d=Form('Record part installed',self,row['name']);d.text('installed_by','Installed by',self.ws.view['responsible']);d.date('installed_date','Installation date',today())
         d.submit(lambda p:self.parts.install(row['id'],**p))
 
     def stock(self):
@@ -162,12 +162,12 @@ class RepairRecords(QWidget):
     def repair_warranty(self):
         d=Form('Register repair warranty',self,'Installed parts receive their own warranty automatically. Use this for repair workmanship.')
         d.text('name','Warranty description','Repair workmanship');d.text('duration','Duration','3');d.select('unit','Unit',['days','months','years'],'months')
-        d.date('start_date','Starts',date.today().isoformat());d.text('provider','Provider',self.w.db.setting('shop_name','Repair shop'));d.text('terms','Coverage / exclusions',multiline=True)
+        d.date('start_date','Starts',today());d.text('provider','Provider',self.w.db.setting('shop_name','Repair shop'));d.text('terms','Coverage / exclusions',multiline=True)
         def save(p):p['duration']=int(p['duration']);self.warranties.repair_warranty(self.ident,**p)
         d.submit(save)
 
     def edit_warranty(self,privileged=False):
-        self.s.require('owner');r=self.selected();d=Form('Edit warranty with audit',self)
+        self.s.require_permission('correct_warranty');r=self.selected();d=Form('Edit warranty with audit',self)
         d.text('duration','Duration',r['duration']);d.select('unit','Unit',['days','months','years'],r['unit']);d.date('start_date','Starts',r['start_date'])
         if r.get('claim_id') and not privileged:raise RuleError('Warranty status is managed by its active claim.')
         if privileged:d.check('confirmed','I understand this overrides warranty data during an active claim; the claim remains authoritative in the display')

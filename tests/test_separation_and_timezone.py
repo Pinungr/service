@@ -146,14 +146,15 @@ def test_a_technician_cannot_open_a_screen_their_role_hides(qtbot, service, cust
     service.save_staff('amit', 'Amit', 'technician', 'TestPassword123')
     service.login('amit', 'TestPassword123')
     window = window_for(qtbot, service)
-    assert window.may_open('Active Repairs') and window.may_open('Dashboard')
-    for screen in ('New Repair Intake', 'Customers', 'Settings & staff', 'Backups', 'Reports'):
+    # A technician takes products in, so intake and customers are open to them.
+    for screen in ('Active Repairs', 'Dashboard', 'New Repair Intake', 'Customers'):
+        assert window.may_open(screen)
+    # Money, configuration and other people's repairs are not.
+    for screen in ('Settings & staff', 'Backups', 'Reports', 'Vendor accounts',
+                   'Customer accounts', 'Repair History', 'Quotations'):
         assert not window.may_open(screen)
         with pytest.raises(RuleError, match='cannot open'):
             window.navigate(screen)
-    # The service layer refuses the work itself, not just the screen.
-    with pytest.raises(RuleError, match='role'):
-        window.intake()
     window.pool.waitForDone(10000)
 
 

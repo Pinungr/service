@@ -1,16 +1,16 @@
 """Calendar warranties and separate future repair claims on stable devices."""
 import calendar
 from datetime import date,timedelta
-from .domain import RuleError,now,day
+from .domain import RuleError,now,day, today
 from .persistence import insert
 
 
 def sale_warranty(sale, on=None):
     """Describe recorded sale dates, without granting repair coverage."""
     sale = dict(sale)
-    today = on or date.today()
-    if isinstance(today, str):
-        today = date.fromisoformat(today)
+    # Whether cover has lapsed is a business-day question, so it is asked in the shop's
+    # own timezone rather than the machine's.
+    asked_on = on if isinstance(on, date) else date.fromisoformat(on) if on else date.fromisoformat(today())
     start, expiry = sale.get('warranty_start'), sale.get('warranty_end')
     status = 'UNKNOWN'
     duration = None
@@ -19,9 +19,9 @@ def sale_warranty(sale, on=None):
         begin = date.fromisoformat(start) if start else None
         if begin and begin > end:
             status = 'UNKNOWN'
-        elif end < today:
+        elif end < asked_on:
             status = 'EXPIRED'
-        elif begin and begin > today:
+        elif begin and begin > asked_on:
             status = 'NOT_STARTED'
         else:
             status = 'VALID'
@@ -30,7 +30,7 @@ def sale_warranty(sale, on=None):
     return dict(source='shop', status=status, sale_id=sale['id'],
                 sale_date=sale.get('sale_date'), start_date=start, expiry=expiry,
                 provider=sale.get('provider', ''), terms=sale.get('warranty_terms', ''),
-                duration_days=duration, checked_on=today.isoformat(),
+                duration_days=duration, checked_on=asked_on.isoformat(),
                 verification='sale_dates_only')
 
 
@@ -42,7 +42,7 @@ def reported_intake_warranty(values):
     if values.get('source') != 'external' or values.get('status') not in ('VALID', 'EXPIRED', 'NONE', 'UNKNOWN'):
         raise RuleError('Choose the reported external warranty status.')
     result = dict(source='external', status=values['status'], expiry=None, provider='', notes='',
-                  checked_on=date.today().isoformat(), verification='customer_reported')
+                  checked_on=today(), verification='customer_reported')
     # Hidden valid-warranty fields must not leak into another status.
     if result['status'] == 'VALID':
         for key in ('provider', 'notes'):
@@ -84,7 +84,7 @@ class Warranties:
             claim=self.active_claim(r['id'])
             r['claim_id']=claim['id'] if claim else None
             r['claim_state']=claim['status'] if claim else ''
-            r['effective_status']='CLAIM IN PROGRESS' if claim else 'EXPIRED' if r['status']=='ACTIVE' and r['expiry']<date.today().isoformat() else r['status']
+            r['effective_status']='CLAIM IN PROGRESS' if claim else 'EXPIRED' if r['status']=='ACTIVE' and r['expiry']<today() else r['status']
         return rows
 
     def active_claim(self,warranty_id):
@@ -108,7 +108,7 @@ class Warranties:
             return ident
 
     def edit(self,warranty_id,reason,privileged_override=False,**values):
-        self.s.require('owner')
+        self.s.require_permission('correct_warranty')
         if not reason.strip() or not values or not set(values)<={'duration','unit','start_date','provider','terms','status','notes'}:
             raise RuleError('Record an edit reason and supported warranty details.')
         with self.db.transaction() as c:
@@ -136,8 +136,9 @@ class Warranties:
                 raise RuleError('A warranty claim requires a new active job for the same physical device.')
             if w['status']!='ACTIVE' or self.active_claim(warranty_id):
                 raise RuleError('Only an active, unclaimed warranty can start a claim.')
-            if w['expiry']<date.today().isoformat():
-                self.s.require('owner')
+            if w['expiry']<today():
+                # Claiming against expired cover is an explicit owner override.
+                self.s.require_permission('correct_warranty')
                 if not override_reason.strip():
                     raise RuleError('This warranty expired. The owner must record an explicit override reason.')
             if c.execute('SELECT 1 FROM warranty_claims WHERE new_job_id=? AND warranty_id=?',(new_job_id,warranty_id)).fetchone():
@@ -148,7 +149,7 @@ class Warranties:
             return ident
 
     def update_claim(self,claim_id,status,resolution, replacement_part_id=None):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_warranty')
         transitions={'OPEN':{'ACCEPTED','REJECTED'},'ACCEPTED':{'IN_REPAIR','REJECTED'},'IN_REPAIR':{'REPLACED','COMPLETED'},'REPLACED':{'COMPLETED'},'COMPLETED':{'CLOSED'},'REJECTED':{'CLOSED'},'CLOSED':set()}
         with self.db.transaction() as c:
             old=self.db.one('SELECT * FROM warranty_claims WHERE id=?',(claim_id,))

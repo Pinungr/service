@@ -173,13 +173,13 @@ class Backups:
             return manifest
 
     def open_view(self, archive_path):
-        self.s.require("owner")
+        self.s.require_permission('backup_restore')
         root = self.db.root / "archive-views" / uuid.uuid4().hex
         self.validate(archive_path, root)
         return Database(root, readonly=True)
 
     def restore(self, archive_path, confirmation):
-        self.s.require("owner")
+        self.s.require_permission('backup_restore')
         if confirmation != "RESTORE":
             raise RuleError("Type RESTORE after reviewing the archive preview.")
         with self.db.guard:
@@ -233,7 +233,7 @@ class Backups:
             return recovery
 
     def retry_external(self):
-        self.s.require('owner')
+        self.s.require_permission('backup_restore')
         external = Path(self.db.setting('external_backup') or '')
         if not self.db.setting('external_backup') or not external.is_dir():
             raise RuleError('The configured external backup folder is still unavailable.')

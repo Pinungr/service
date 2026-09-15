@@ -17,12 +17,20 @@ PERMISSIONS = (
     'repair',               # diagnosis, repair progress, technician testing
     'manage_parts',         # plan, procure and install repair parts
     'manage_warranty',      # manufacturer warranty checks, claims and repair warranties
+    'correct_warranty',     # override or amend a warranty record already on file
     'quality_check',        # final QC before a product is released
     'create_quote',         # issue or revise a customer quotation
     'approve_quote',        # record the customer's decision
     'billing',              # raise the customer bill
     'collect_payment',      # record money received or refunded
     'correct_finance',      # reverse a posted entry
+    'release_with_balance', # hand a product over while money is still outstanding
+    'financial_reports',    # dues, payments, margins and transport reporting
+    'manage_inventory',     # receive, adjust and issue shop stock
+    'messaging_admin',      # configure recipients and send account statements
+    'cancel_records',       # cancel a visit or a prepared dispatch
+    'resolve_exception',    # write an item off or otherwise resolve lost custody
+    'record_replacement',   # accept a replacement unit in place of the original
     'customer_delivery',    # hand the product back to its owner
     'view_all_jobs',        # see repairs that are not your own responsibility
     'view_internal_cost',   # purchase cost, vendor cost, margin
@@ -37,10 +45,10 @@ PERMISSIONS = (
 )
 
 _COUNTER = {
-    'intake', 'customer_records', 'assign_job', 'handover', 'quality_check',
+    'intake', 'customer_records', 'assign_job', 'handover', 'quality_check', 'repair',
     'manage_parts', 'manage_warranty',
     'create_quote', 'approve_quote', 'billing', 'collect_payment', 'customer_delivery',
-    'view_all_jobs', 'reports', 'inventory', 'directories', 'messaging',
+    'view_all_jobs', 'reports', 'directories', 'messaging',
 }
 
 #: A technician takes products in and works on them. Nothing here exposes money,

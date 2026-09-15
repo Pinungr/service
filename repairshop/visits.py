@@ -53,7 +53,7 @@ class Visits:
 
     def cancel(self, visit_id, reason):
         """Record an intake cancellation. Child jobs keep their own lifecycle and history."""
-        self.s.require('owner')
+        self.s.require_permission('cancel_records')
         if not reason.strip():
             raise RuleError('Record why this visit is being cancelled.')
         with self.db.transaction() as c:

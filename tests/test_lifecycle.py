@@ -227,7 +227,9 @@ def test_guided_workspace_and_route_specific_tracker(qtbot,service,customer):
     ident,life=route(service,customer,'third_party');dispatch(service,ident,life)
     window=MainWindow(service);window.timer.stop();qtbot.addWidget(window)
     d=JobWorkspace(window,ident);qtbot.addWidget(d);d.show()
-    assert 'THIRD-PARTY' in d.values['current_location'].text()
+    # Physical location now reads under "Currently with", beside who is responsible.
+    assert 'THIRD-PARTY' in d.values['currently_with'].text()
+    assert set(d.values) >= {'received_by_name', 'assigned_technician', 'currently_with'}
     assert 'Service center dispatch' not in d.tracker.text()
     assert 'Third-party dispatch' in d.tracker.text()
     assert d.primary.isEnabled()

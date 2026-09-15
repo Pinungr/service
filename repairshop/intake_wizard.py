@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QScrollArea, QStackedWidget, QLabel, QDialogButtonBox, QCheckBox,
     QRadioButton, QButtonGroup, QComboBox, QLineEdit)
 
-from .domain import RuleError, money, rupees
+from .domain import RuleError, money, rupees, today
 from .ui_widgets import button, combo, FlowLayout
 from .warranties import sale_warranty
 from .intake_fields import INTAKE_STYLE
@@ -245,7 +245,7 @@ class IntakeWizard:
             if not values['identity_unknown']:
                 for key in ('brand', 'model'):
                     if not values[key]: self.fail(key, f'Enter the {key}, or mark brand / model unavailable.')
-            if values['origin'] != 'shop' and values['warranty_status'] == 'VALID' and values['warranty_expiry'] and values['warranty_expiry'] < date.today().isoformat():
+            if values['origin'] != 'shop' and values['warranty_status'] == 'VALID' and values['warranty_expiry'] and values['warranty_expiry'] < today():
                 self.fail('warranty_expiry', 'This expiry date has passed. Select Expired warranty or correct the date.')
         if step == 2:
             if not values['complaint']: self.fail('complaint', 'Describe the problem reported by the customer.')

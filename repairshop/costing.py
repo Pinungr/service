@@ -9,7 +9,7 @@ class JobCosts:
     def __init__(self,service):self.s,self.db=service,service.db
 
     def save(self,job_id,values,reason):
-        self.s.require('owner')
+        self.s.require_permission('view_internal_cost')
         if not reason.strip() or not set(values)<=set(self.FIELDS)|{'vendor_invoice'}:raise RuleError('Record a costing reference and supported cost fields.')
         if any(type(v)!=int or v<0 for k,v in values.items() if k in self.FIELDS):raise RuleError('Internal costs must be nonnegative whole paise.')
         with self.db.transaction() as c:

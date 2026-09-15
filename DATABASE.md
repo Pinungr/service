@@ -142,3 +142,35 @@ Assignment and custody stay independent: assigning a repair never moves the prod
 assignment. The identities behind the audit trail already existed and are unchanged —
 `jobs.actor` (received by), `assignments.actor` / `technician_id` (assigned by / to),
 `movements.actor` (who recorded a handover), `quotes.actor`, `entries.actor`.
+
+## Schema version 14 — return events own their evidence
+
+`migration14.py` is additive apart from removing columns that describe a choice the
+application no longer offers.
+
+* `return_verifications` gains `received_by_user_id`, backfilled from `actor`, and loses
+  `receiver_kind`, `receiver_name`, `receiver_mobile` and `storage`. A return is received
+  by the signed-in user; there is no storage custodian and no receiver to choose, so
+  `Returns.verify(job_id, received, operation_id, notes, discrepancies)` takes no receiver
+  argument and cannot be told to record somebody else.
+* New `return_evidence(verification_id, discrepancy_id, attachment_id)` replaces
+  `return_discrepancies.photo_id`; existing photos were migrated into it. It is
+  append-only and `attachment_id` is unique, so one photo documents one return event.
+  A photo only qualifies as return evidence when it was captured as one
+  (`attachments.kind='return_photo'`), belongs to that repair, and has not already been
+  used for an earlier return. An intake photo of the same product is therefore never
+  silently reusable as proof of transit damage.
+
+## Authorization
+
+`permissions.py` is the authority for what each role may do. Services call
+`require_permission('intake')` rather than naming roles, and `Service.require_job_access`
+is the single job-level guard used by every job-specific read and write. A user without
+`view_all_jobs` reaches a repair only when it is assigned to them — by login account or
+through the directory technician linked to it — or when they are physically holding it.
+A shared visit never widens that: visit listings, child jobs and product counts are all
+filtered per job.
+
+Custody values are `staff:<user id>`, `technician:<user id>`, `vendor:`, `centre:`,
+`transit:`, `customer` and `exception:`. `shop:<place>` is only ever read, never written:
+storage places are no longer seeded, are not a directory, and cannot be made a custodian.

@@ -5,7 +5,7 @@ import uuid
 from datetime import date
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
-from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind
+from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind, today
 from .permissions import allowed
 from .persistence import insert
 from .customer_records import dirty, customer_folder, device_record
@@ -169,7 +169,7 @@ class Service:
         return {k: v for k, v in row.items() if k != "password"}
 
     def save_staff(self, username, name, role, password="", ident=None, active=True):
-        self.require("owner")
+        self.require_permission('user_management')
         if role not in ("owner", "counter", "technician") or not name.strip():
             raise RuleError("Choose a role and enter a name.")
         if (not ident or password) and len(password) < 10:
@@ -186,7 +186,7 @@ class Service:
         return ident
 
     def settings(self, values):
-        self.require("owner")
+        self.require_permission('settings')
         allowed = {"shop_name", "address", "hours", "timezone", "decline_policy", "backup_destination", "external_backup", "backup_retention", "archive_days", "messaging_mode", "notifications_paused", "whatsapp", "smtp", "templates", "reminder_days", 'message_template', 'email_subject', 'paper_size', 'include_photos'}
         if not set(values) <= allowed:
             raise RuleError("Unsupported setting. Secrets belong in Windows Credential Manager.")
@@ -416,7 +416,7 @@ class Service:
             c.execute('INSERT OR IGNORE INTO outbox(event_key,job_id,quote_id,recipient_id,channel,destination,event,payload,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',(key,job_id,quote_id,recipient['id'],recipient['channel'],recipient['destination'],event,json.dumps(payload),'pending' if recipient['consent'] else 'blocked_consent',now(),now()))
 
     def save_recipient(self, kind, entity_id, channel, destination, consent=False, active=True):
-        self.require('owner')
+        self.require_permission('messaging_admin')
         if kind not in ('staff','vendor') or channel not in ('email','whatsapp'):
             raise RuleError('Choose a staff/vendor recipient and channel.')
         destination = phone(destination) if channel == 'whatsapp' else destination.strip().lower()
@@ -433,7 +433,7 @@ class Service:
             self.audit(c,'recipient',entity_id,'configured',{'kind':kind,'channel':channel,'destination':destination,'consent':consent,'active':active})
 
     def queue_document(self, attachment_id, recipient_id, subject, body, operation_id):
-        self.require('owner')
+        self.require_permission('messaging_admin')
         with self.db.transaction() as c:
             r=c.execute('SELECT * FROM recipients WHERE id=? AND active=1',(recipient_id,)).fetchone()
             a=c.execute("SELECT * FROM attachments WHERE id=? AND kind='issued_document'",(attachment_id,)).fetchone()
@@ -556,7 +556,7 @@ class Service:
                 self.audit(c, 'job', ident, 'intake_warranty_recorded', warranty_snapshot)
             if draft_id:
                 c.execute('DELETE FROM intake_drafts WHERE id=? AND actor=?', (draft_id, self.user['id']))
-            number = f"REP-{date.today().year}-{ident:06d}"
+            number = f"REP-{today()[:4]}-{ident:06d}"
             c.execute("UPDATE jobs SET number=? WHERE id=?", (number, ident))
             received = [{"type": "device", "description": device, "quantity": 1, "serial": fields.get("serial", ""), "condition": fields.get("damage", "")}, *accessories]
             for item in received:
@@ -659,13 +659,13 @@ class Service:
         if destination.split(":")[0] not in ("shop", "staff", "technician", "vendor", "centre", "transit", "customer", "exception"):
             raise RuleError("Invalid custody destination.")
         if destination.startswith("exception"):
-            self.require("owner")
+            self.require_permission('resolve_exception')
             if not notes.strip():
                 raise RuleError("Owner resolution requires a reason.")
         if destination == "customer" and not acknowledgment.strip():
             raise RuleError("Customer collection requires an acknowledgment.")
         if reverses_id:
-            self.require("owner")
+            self.require_permission('resolve_exception')
             if not notes.strip():
                 raise RuleError("Movement correction requires a reason.")
         with self.db.transaction() as c:
@@ -754,7 +754,7 @@ class Service:
         warranty = c.execute('SELECT * FROM warranty WHERE job_id=? ORDER BY id DESC LIMIT 1', (j['id'],)).fetchone()
         if not q and not (warranty and warranty['decision'] == 'accepted'):
             raise RuleError('Paid repair needs an approved current quotation.')
-        if q and (q['state'] != 'approved' or (q['valid_until'] and q['valid_until'] < date.today().isoformat())):
+        if q and (q['state'] != 'approved' or (q['valid_until'] and q['valid_until'] < today())):
             raise RuleError('Approval must apply to the current unexpired quotation.')
         retained = -c.execute("SELECT COALESCE(sum(CASE WHEN e.kind IN ('receipt','refund') OR (e.kind='reversal' AND original.kind IN ('receipt','refund')) THEN e.amount ELSE 0 END),0) FROM entries e LEFT JOIN entries original ON original.id=e.reverses_id WHERE e.account_type='customer' AND e.job_id=?", (j['id'],)).fetchone()[0]
         if retained < j['deposit']:
@@ -791,7 +791,7 @@ class Service:
             if stage == "under_repair":
                 self._authorize_repair(c, j)
             if stage in ("ready_repaired", "ready_unrepaired"):
-                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND NOT ((h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
+                away = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND NOT (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%') AND h.location NOT LIKE 'exception:%'", (job_id,)).fetchone()[0] or 0
                 at_shop = c.execute("SELECT sum(h.quantity) FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND (h.location LIKE 'shop:%' OR h.location LIKE 'staff:%' OR h.location LIKE 'technician:%')", (job_id,)).fetchone()[0] or 0
                 if away or not at_shop:
                     raise RuleError("The device must be physically received at the shop.")
@@ -854,7 +854,7 @@ class Service:
     def issue_quote(self, job_id, scope, lines, terms="", valid_until=None):
         self.require_permission('create_quote')
         valid_until = day(valid_until)
-        if valid_until and valid_until < date.today().isoformat():
+        if valid_until and valid_until < today():
             raise RuleError('Quotation expiry cannot be in the past. Choose today or a future date, or leave expiry off.')
         if not scope.strip() or not lines or any(not line.get("description", "").strip() or not isinstance(line.get("amount"), int) for line in lines):
             raise RuleError("Quotation needs scope and itemized amounts in paise.")
@@ -904,7 +904,7 @@ class Service:
         self.require_permission('create_quote')
         with self.db.read() as c:
             q, _ = self._quote_for_decision(c, quote_id)
-            return dict(q, expired=bool(q['valid_until'] and q['valid_until'] < date.today().isoformat()))
+            return dict(q, expired=bool(q['valid_until'] and q['valid_until'] < today()))
 
     def decide_quote(self, quote_id, decision, person, channel, evidence=""):
         self.require_permission('approve_quote')
@@ -912,7 +912,7 @@ class Service:
             raise RuleError("Record the decision, authorized person's name, and channel.")
         with self.db.transaction() as c:
             q, j = self._quote_for_decision(c, quote_id)
-            if decision == 'approved' and q['valid_until'] and q['valid_until'] < date.today().isoformat():
+            if decision == 'approved' and q['valid_until'] and q['valid_until'] < today():
                 raise RuleError(f"This quotation expired on {q['valid_until']}. Issue a revised quotation before recording approval. A customer decline can still be recorded.")
             insert(c, "decisions", quote_id=quote_id, decision=decision, person=person, channel=channel, amount=q["total"], evidence=evidence, created=now(), actor=self.user["id"])
             c.execute("UPDATE quotes SET state=? WHERE id=?", (decision, quote_id))
@@ -945,7 +945,7 @@ class Service:
             if (existing["account_type"], existing["account_id"], existing["kind"], existing["amount"]) != (account_type, account_id, kind, signed):
                 raise RuleError("Operation ID was already used for a different financial entry.")
             return existing["id"]
-        ident = insert(c, "entries", operation_id=operation_id, account_type=account_type, account_id=account_id, job_id=job_id, quote_id=quote_id, kind=kind, amount=signed, posted=day(posted or date.today().isoformat()), created=now(), method=method, reference=reference, notes=notes, payload=json.dumps(payload or {}), reverses_id=reverses_id, actor=self.user["id"])
+        ident = insert(c, "entries", operation_id=operation_id, account_type=account_type, account_id=account_id, job_id=job_id, quote_id=quote_id, kind=kind, amount=signed, posted=day(posted or today()), created=now(), method=method, reference=reference, notes=notes, payload=json.dumps(payload or {}), reverses_id=reverses_id, actor=self.user["id"])
         self.audit(c, "job" if job_id else "account", job_id or account_id, "finance_posted", {"entry": ident, "account_type": account_type, "kind": kind, "amount": signed, "notes": notes})
         return ident
 
@@ -996,7 +996,7 @@ class Service:
             return self._post(c, "customer", j["customer_id"], "invoice", q["total"], operation_id, job_id=j["id"], quote_id=quote_id, payload=dict(q), notes="Issued customer bill")
 
     def reverse(self, entry_id, reason, operation_id):
-        self.require("owner")
+        self.require_permission('correct_finance')
         if not reason.strip():
             raise RuleError("A correction reason is required.")
         with self.db.transaction() as c:
@@ -1034,7 +1034,7 @@ class Service:
             return self._post(c, "customer", j["customer_id"], "invoice", amount, operation_id, job_id=job_id, payload={"policy": j["policy"], "transport": j["transport_agreed"], "assessment": j["assessment_agreed"]}, notes="Agreed decline/return charges")
 
     def expense(self, amount, allocations, kind, payer, reference, payload, operation_id, included_entry_id=None):
-        self.require("owner")
+        self.require_permission('view_internal_cost')
         if not isinstance(amount, int) or amount < 0 or sum(allocations.values()) != amount or any(not isinstance(v, int) or v < 0 for v in allocations.values()):
             raise RuleError("Job allocations must exactly equal the shared expense.")
         if kind=='additional_vendor_charge' and (not payload.get('reason') or not reference or payload.get('acceptance') not in ('pending','accepted','declined')):

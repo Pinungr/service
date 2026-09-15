@@ -11,11 +11,10 @@ from test_lifecycle import route, diagnosis
 def estimate(service, customer, monkeypatch=None):
     job, life=route(service,customer);diagnosis(life,job)
     if monkeypatch:
-        class HistoricalDate(date):
-            @classmethod
-            def today(cls):return date(1900,2,1)
+        # The shop's own date is the single source of truth for business days, so that
+        # is what a historical quotation has to be issued against.
         with monkeypatch.context() as patch:
-            patch.setattr(services,'date',HistoricalDate)
+            patch.setattr(services,'today',lambda:'1900-02-01')
             q=service.issue_quote(job,'Repair board',[dict(description='Labour',amount=50000)],valid_until='1900-02-09')
     else:q=service.issue_quote(job,'Repair board',[dict(description='Labour',amount=50000)])
     return job,q,life

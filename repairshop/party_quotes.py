@@ -68,7 +68,7 @@ class PartyQuotes:
 
     def issue(self, job_id, lines, labour=0, transport=0, other=0, reference='', notes='', reason=''):
         """Issue version 1, or supersede the current version with a new one."""
-        self.s.require('owner')
+        self.s.require_permission('view_internal_cost')
         for value in (labour, transport, other):
             if not isinstance(value, int) or value < 0:
                 raise RuleError('Third-party labour, transport and other costs must be nonnegative whole paise.')
@@ -103,7 +103,7 @@ class PartyQuotes:
             return ident
 
     def cancel(self, job_id, reason):
-        self.s.require('owner')
+        self.s.require_permission('view_internal_cost')
         if not reason.strip():
             raise RuleError('Record why the third-party quotation is being cancelled.')
         with self.db.transaction() as c:

@@ -41,7 +41,7 @@ class JobWorkspace(QDialog):
         self.metrics.setHorizontalSpacing(18)
         self.metrics.setVerticalSpacing(6)
         self.values={}
-        for n,(key,title) in enumerate([('route_label','REPAIR ROUTE'),('current_status','REPAIR STATUS'),('current_location','PHYSICAL LOCATION'),('currently_with','CURRENTLY WITH'),('final_destination','FINAL DESTINATION'),('assigned_technician','ASSIGNED TECHNICIAN')]):
+        for n,(key,title) in enumerate([('route_label','REPAIR ROUTE'),('current_status','REPAIR STATUS'),('received_by_name','RECEIVED BY'),('assigned_technician','ASSIGNED TO'),('currently_with','CURRENTLY WITH'),('final_destination','FINAL DESTINATION')]):
             title_label=label(title.title());title_label.setObjectName('muted')
             self.values[key]=label('')
             self.metrics.addWidget(title_label,n//2,(n%2)*2)
@@ -118,10 +118,13 @@ class JobWorkspace(QDialog):
         self.view=self.life.snapshot(self.ident);v=self.view
         self.setWindowTitle(v['number']+' · Repair lifecycle')
         self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}  ·  DEV-{v['device_id']:06d}  ·  Serial: {v['serial'] or 'Not recorded'}" if v['device_id'] else f"{v['number']} · {v['device']} · {v['customer']}")
-        # "Currently with" names the responsible person, their role and since when.
-        v=dict(v,currently_with=(v['current_custodian'] or 'Not recorded')
+        # Who took the product in, who is responsible for the repair and who is holding it
+        # are three different answers and are shown as three different fields.
+        v=dict(v,received_by_name=(v.get('received_by') or {}).get('name') or 'Not recorded',
+            currently_with=(v['current_custodian'] or 'Not recorded')
             +(' · '+v['custodian_role'] if v.get('custodian_role') else '')
-            +('\nSince '+local_time(v['custodian_since']) if v.get('custodian_since') else ''))
+            +('\nSince '+local_time(v['custodian_since']) if v.get('custodian_since') else '')
+            +('\n'+v['current_location'] if v.get('current_location') else ''))
         for key,w in self.values.items():
             w.setText(str(v[key] or '—').replace('_',' '))
         self.journey.set_snapshot(v,readonly=self.window.db.readonly)

@@ -9,7 +9,7 @@ import ssl
 import uuid
 import httpx
 import keyring
-from .domain import now, RuleError
+from .domain import now, RuleError, today
 
 
 #: What each stored outbox state means to the person reading the screen. A message that
@@ -196,7 +196,7 @@ class Outbox:
             return "cancelled", "Contact destination changed; create a new reviewed notification."
         if row["quote_id"]:
             q = c.execute("SELECT * FROM quotes WHERE id=?", (row["quote_id"],)).fetchone()
-            if not q or q["state"] == "superseded" or (q["valid_until"] and q["valid_until"] < datetime.now().date().isoformat()):
+            if not q or q["state"] == "superseded" or (q["valid_until"] and q["valid_until"] < today()):
                 return "cancelled", "Quotation obsolete or expired."
             if row['event'] == 'quote_issued' and q['state'] != 'issued':
                 return 'cancelled', 'The customer decision has already been recorded.'
@@ -276,7 +276,7 @@ class Outbox:
                 self.s.notify(c,j['id'],'collection_reminder',f"Your device remains ready for collection {qualifier}. Please contact the shop to arrange pickup.",event_key=f"reminder-{j['id']}-{today}")
 
     def action(self, ident, action):
-        self.s.require("owner", "counter")
+        self.s.require_permission('messaging')
         with self.db.transaction() as c:
             row = c.execute("SELECT * FROM outbox WHERE id=?", (ident,)).fetchone()
             if not row:

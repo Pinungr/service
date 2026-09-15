@@ -25,6 +25,10 @@ def safe_cell(value):
 
 PAPER = {'A4': A4, 'A5': A5}
 
+#: Every document is generated for one audience or the other, stated by the caller.
+#: Nothing decides this from a filename or a document type name.
+VISIBILITY = ('customer', 'internal')
+
 
 def pdf(path, title, shop, sections, wide=False, paper='A4'):
     from .lifecycle import local_time
@@ -83,7 +87,7 @@ class Documents:
         """Combined receiving summary; individual issued cards remain available."""
         from .job_cards import JobCards
         from .lifecycle import local_time
-        self.s.require('owner','counter')
+        self.s.require_permission('handover')
         if not job_ids:raise RuleError('Select the jobs received during this visit.')
         jobs=[self.s.job(ident) for ident in job_ids]
         if len({(j['customer_id'],j['visit_id'] or j['intake_ref']) for j in jobs})!=1:
@@ -121,7 +125,7 @@ class Documents:
         return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],paper=paper)
 
     def attach(self, source, title, job_id=None, sale_id=None, kind="evidence"):
-        self.s.require("owner", "counter")
+        self.s.require_permission('customer_records')
         source = Path(source)
         allowed = {'.pdf', '.jpg', '.jpeg', '.png'}
         suffix = source.suffix.lower()
@@ -151,19 +155,21 @@ class Documents:
                 target.unlink(missing_ok=True)
                 raise
 
-    def generate(self, kind, job_id, source_id=None, paper=None):
-        self.s.require("owner", "counter")
+    def generate(self, kind, job_id, source_id=None, paper=None, visibility='customer'):
+        self.s.require_permission('handover')
+        if visibility not in VISIBILITY:
+            raise RuleError('A document is generated either for the customer or for the shop.')
         from .job_cards import JobCards
         card_kind={'intake_receipt':'customer_receiving','collection_receipt':'customer_delivery'}
         if kind in card_kind:
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind']==card_kind[kind]]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'], paper=paper)
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper, internal=visibility=='internal')
         if kind in ('dispatch_manifest','return_manifest'):
             ending='dispatch' if kind=='dispatch_manifest' else 'return'
             cards=[r for r in JobCards(self.s).rows(job_id) if r['kind'].endswith(ending)]
             if cards:
-                return JobCards(self.s).print(cards[-1]['id'], paper=paper)
+                return JobCards(self.s).print(cards[-1]['id'], paper=paper, internal=visibility=='internal')
             raise RuleError('This legacy job has no external card. Review its history and record a new actual dispatch/return before printing a card.')
         j = self.s.job(job_id)
         sections = [("Customer & device", f"{j['customer']} · {j['phone']}\n{j['device']} · Serial: {j['serial'] or 'Unknown'}\nSubmitted by: {j['submitter'] or j['customer']} ({j['relationship'] or 'owner'})" )]
@@ -215,7 +221,8 @@ class Documents:
                     raise RuleError('Complete QC and final billing before generating the final invoice.')
                 sections.append(('Final account',f"Invoiced: {rupees(bill['invoiced'])}\nBalance: {rupees(bill['balance'])}"))
         branding = json.loads(q.get('snapshot', '{}')).get('shop', {}).get('shop_name') if kind == 'quotation' else None
-        return self.snapshot(title, sections, job_id=job_id, shop_name=branding, paper=paper)
+        return self.snapshot(title, sections, job_id=job_id, shop_name=branding, paper=paper,
+                             internal=visibility=='internal')
 
     def paper(self, override=None):
         """A4 unless the owner chose A5, with an explicit print-time override allowed."""
@@ -230,9 +237,9 @@ class Documents:
         or margin is filed under the shop's own internal area instead. The record itself is
         kept either way; only where it lives, and the attachment kind, differ.
         """
-        self.s.require("owner", "counter")
+        self.s.require_permission('handover')
         if internal:
-            self.s.require("owner")
+            self.s.require_permission('view_internal_cost')
         folder = ('Internal/Repairs/' + str(job_id or 'general')) if internal \
             else CustomerRecords(self.s).document_folder(job_id)
         relative = folder + '/' + uuid.uuid4().hex + '.pdf'
@@ -255,7 +262,7 @@ class Documents:
         return path
 
     def export(self, path, title, rows):
-        self.s.require("owner", "counter")
+        self.s.require_permission('reports')
         path = Path(path)
         if not rows:
             raise RuleError("No rows match this report.")

@@ -68,7 +68,7 @@ class VisitIntake:
         return p
 
     def add_current(self):
-        self.w.s.require('owner','counter')
+        self.w.s.require_permission('intake')
         if hasattr(self.form,'wizard'):self.form.wizard.validate_all()
         if len(self.products)>=50:raise RuleError('Receive up to 50 products in one visit.')
         p=self.current();self.prepare(p)

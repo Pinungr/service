@@ -335,3 +335,82 @@ def test_a_return_cannot_name_somebody_else_as_the_receiver(service, customer):
     held = {h['id']: h['quantity'] for h in life.holdings(job)}
     with pytest.raises(TypeError):
         Returns(service).verify(job, held, uuid.uuid4().hex, receiver_name='Somebody Else')
+
+# ---- 14/15. return evidence belongs to its return event ---------------------
+
+def return_photo(service, customer, job, what='Cracked screen'):
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(QColor('#aa3333'))
+    return CustomerRecords(service).save_photo(image, customer, 'return', what, job_id=job)
+
+
+def test_an_intake_photo_cannot_stand_in_as_return_evidence(service, customer):
+    """JOB-100's own intake photo is not proof of what came back from the repairer."""
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    stale = accessory_photo(service, customer)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    item = next(iter(held))
+    with pytest.raises(RuleError, match='return evidence'):
+        Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                                discrepancies=[dict(item_id=item, kind='missing',
+                                                    notes='Not returned', photo_id=stale)])
+
+
+def test_a_photo_taken_as_return_evidence_is_accepted_and_linked(service, customer):
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    evidence = return_photo(service, customer, job)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    item = next(iter(held))
+    verification = Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                                           discrepancies=[dict(item_id=item, kind='missing',
+                                                               notes='Not returned', photo_id=evidence)])
+    row = service.db.one('SELECT * FROM return_evidence WHERE attachment_id=?', (evidence,))
+    assert row['verification_id'] == verification
+    assert row['discrepancy_id'] == service.db.one(
+        'SELECT id FROM return_discrepancies WHERE verification_id=?', (verification,))['id']
+
+
+def test_evidence_cannot_be_reused_for_a_second_return_event(service, customer):
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    evidence = return_photo(service, customer, job)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    item = next(iter(held))
+    Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                            discrepancies=[dict(item_id=item, kind='missing',
+                                                notes='Not returned', photo_id=evidence)])
+    with pytest.raises(RuleError, match='return evidence'):
+        Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                                discrepancies=[dict(item_id=item, kind='damaged',
+                                                    notes='Reusing the same photo', photo_id=evidence)])
+
+
+def test_another_repairs_return_photo_is_not_evidence_here(service, customer):
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    other = service.intake(customer, 'Other Laptop', 'Fault', operation_id=uuid.uuid4().hex)
+    theirs = return_photo(service, customer, other)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    item = next(iter(held))
+    with pytest.raises(RuleError, match='return evidence'):
+        Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                                discrepancies=[dict(item_id=item, kind='missing',
+                                                    notes='Wrong repair', photo_id=theirs)])
+
+
+def test_return_evidence_is_append_only(service, customer):
+    import sqlite3
+    from repairshop.returns import Returns
+    job, life = dispatched_job(service, customer)
+    evidence = return_photo(service, customer, job)
+    held = {h['id']: h['quantity'] for h in life.holdings(job)}
+    item = next(iter(held))
+    Returns(service).verify(job, {**held, item: 0}, uuid.uuid4().hex,
+                            discrepancies=[dict(item_id=item, kind='missing',
+                                                notes='Not returned', photo_id=evidence)])
+    for statement in ('UPDATE return_evidence SET attachment_id=1', 'DELETE FROM return_evidence'):
+        with pytest.raises(sqlite3.IntegrityError):
+            with service.db.transaction() as c:
+                c.execute(statement)

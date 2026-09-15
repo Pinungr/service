@@ -134,7 +134,7 @@ class JobCards:
         from .documents import Documents
         from .lifecycle import local_time
         self.s.require_permission('handover')
-        if internal:self.s.require('owner')
+        if internal:self.s.require_permission('handover')
         card = self.db.one('SELECT * FROM job_cards WHERE id=?',(card_id,))
         if not card:
             raise RuleError('Select a job card.')

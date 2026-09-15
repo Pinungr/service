@@ -57,9 +57,9 @@ class Queries:
         return dict(locations=locations, stages=stages, balances=balances, messages=messages, overdue=overdue, sales=self.db.one("SELECT count(*) AS n FROM sales WHERE collected=0")["n"], backup=self.db.one("SELECT * FROM backups WHERE state='verified' ORDER BY id DESC LIMIT 1"))
 
     def ledger(self, account_type, account_id, start, end):
-        self.s.require("owner", "counter")
+        self.s.require_permission('collect_payment')
         if account_type == "vendor":
-            self.s.require("owner")
+            self.s.require_permission('vendor_accounts')
         opening = self.db.one("SELECT COALESCE(sum(amount),0) AS n FROM entries WHERE account_type=? AND account_id=? AND posted<?", (account_type, account_id, start))["n"]
         rows = self.db.rows("""SELECT e.id,e.posted,e.kind,e.amount,e.method,e.reference,e.notes,e.job_id,j.number,j.device,j.received AS job_received,
             (SELECT group_concat(json_extract(w.payload,'$.notes'),'; ') FROM work w WHERE w.job_id=j.id AND w.kind='repair') AS work,
@@ -74,7 +74,7 @@ class Queries:
         return dict(opening=opening, closing=balance, rows=rows)
 
     def account_balances(self, account_type):
-        self.s.require("owner")
+        self.s.require_permission('vendor_accounts')
         table = "customers" if account_type == "customer" else "masters"
         return self.db.rows(f"SELECT e.account_id,p.name,sum(e.amount) AS balance FROM entries e JOIN {table} p ON p.id=e.account_id WHERE e.account_type=? GROUP BY e.account_id,p.name ORDER BY p.name", (account_type,))
 
@@ -98,9 +98,9 @@ class Queries:
         return result
 
     def report(self, kind, start, end, route="", customer_id=None, category_id=None, assignment=None):
-        self.s.require("owner", "counter")
+        self.s.require_permission('reports')
         if kind in ("customer_dues", "vendor_dues", "payments", "margins", "transport"):
-            self.s.require("owner")
+            self.s.require_permission('financial_reports')
         if kind in ("customer_dues", "vendor_dues"):
             return self.account_balances(kind.split("_")[0])
         filters, args = ["j.received>=?", "j.received<=?"], [start, end + "T99"]
@@ -110,7 +110,7 @@ class Queries:
                 args.append(val)
         base = " FROM jobs j JOIN customers c ON c.id=j.customer_id LEFT JOIN assignments a ON a.id=j.assignment_id WHERE " + " AND ".join(filters)
         if kind == 'repair_parts':
-            self.s.require('owner')
+            self.s.require_permission('view_internal_cost')
             return self.db.rows("SELECT j.number,p.name,p.brand,p.model,p.part_number,p.serial,p.quantity,p.source,p.supplier_snapshot,p.purchase_cost,p.customer_price,(p.customer_price-p.purchase_cost)*p.quantity AS margin,p.installed_by,p.installed_at,p.status"+base.replace(' FROM jobs j',' FROM repair_parts p JOIN jobs j ON j.id=p.job_id')+' ORDER BY j.id,p.id',args)
         if kind == 'part_warranties':
             return self.db.rows("SELECT j.number,w.name,w.start_date,w.duration,w.unit,w.expiry,w.provider,w.terms,CASE WHEN EXISTS(SELECT 1 FROM warranty_claims wc WHERE wc.warranty_id=w.id AND wc.status!='CLOSED') THEN 'CLAIM IN PROGRESS' WHEN w.status='ACTIVE' AND w.expiry<? THEN 'EXPIRED' ELSE w.status END AS status"+base.replace(' FROM jobs j',' FROM part_warranties w JOIN jobs j ON j.id=w.job_id')+' ORDER BY w.expiry',[today()]+list(args))
@@ -135,5 +135,6 @@ class Queries:
                 row["margin_before_overheads"] = row["revenue"] - row["costs"]
             return rows
         if kind == "overdue":
-            base += " AND j.stage NOT IN ('collected','closed') AND (j.repair_due<date('now') OR j.collection_due<date('now') OR j.return_due<date('now'))"
+            base += " AND j.stage NOT IN ('collected','closed') AND (j.repair_due<? OR j.collection_due<? OR j.return_due<?)"
+            args.extend([today()] * 3)
         return self.db.rows("SELECT j.number,c.name AS customer,j.device,j.serial,j.stage,j.route,j.received,j.repair_due,j.collection_due,j.actual_completion,j.actual_collection" + base + " ORDER BY j.id DESC", args)

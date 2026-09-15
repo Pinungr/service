@@ -66,6 +66,28 @@ def intake_warranty(data):
                 reason=reasons.get(status, 'Warranty status at intake requires verification.'))
 
 
+#: The permission each guided lifecycle step needs. Steps with no entry are open to any
+#: signed-in user who can already reach the job.
+ACTION_PERMISSIONS = {
+    'inspect': 'repair', 'inspection_done': 'repair', 'diagnose': 'repair',
+    'start_repair': 'repair', 'complete_repair': 'repair', 'repair_failed': 'repair',
+    'test': 'repair', 'wait_parts': 'repair', 'parts_received': 'repair',
+    'qc': 'quality_check',
+    'verify_warranty': 'manage_warranty', 'warranty_result': 'manage_warranty',
+    'manual_warranty': 'manage_warranty', 'claim': 'manage_warranty',
+    'select_route': 'assign_job', 'change_route': 'assign_job', 'adopt': 'assign_job',
+    'hand_technician': 'handover', 'return_technician': 'handover', 'hand_over': 'handover',
+    'prepare_dispatch': 'handover', 'dispatch': 'handover', 'arrive': 'handover',
+    'receive': 'handover', 'return_dispatch': 'handover',
+    'quote': 'create_quote', 'decision': 'approve_quote',
+    'bill': 'billing', 'payment': 'collect_payment',
+    'handover': 'customer_delivery', 'close': 'customer_delivery',
+    'notify': 'messaging', 'parts': 'manage_parts', 'costing': 'view_internal_cost',
+    'resolve_item': 'resolve_exception', 'replacement': 'record_replacement',
+    'decline': 'assign_job', 'rework': 'repair',
+}
+
+
 def guard(j, operation):
     if j['lifecycle_version'] and not _command.get():
         raise RuleError('Use the guided job action to ' + operation + '. Open the job to see the next required step.')
@@ -223,8 +245,8 @@ class Lifecycle:
         if j['hold_reason'] and stage not in ('closed','collected'):
             next_action, primary = 'Resolve hold: ' + j['hold_reason'], ''
         attention = []
-        today = date.today().isoformat()
-        if stage == 'awaiting_approval' and quotes.get('valid_until') and quotes['valid_until'] < today:
+        today_local = today()
+        if stage == 'awaiting_approval' and quotes.get('valid_until') and quotes['valid_until'] < today_local:
             attention.append('Quotation expired on '+quotes['valid_until']+'; approval needs a revised estimate')
             if primary == 'decision':next_action='Record a decline or issue a revised estimate'
         if transit:
@@ -238,7 +260,7 @@ class Lifecycle:
             primary='parts';next_action='Reserve / issue shop parts or receive external parts'
         if stage not in ('closed','collected'):
             for field, label, relevant in [('return_due','External return overdue',away),('repair_due','Repair overdue',stage not in ('ready_repaired','ready_unrepaired')),('collection_due','Collection overdue',True)]:
-                if relevant and j[field] and j[field] < today:
+                if relevant and j[field] and j[field] < today_local:
                     attention.append(label)
             try:
                 age = (datetime.now(timezone.utc) - datetime.fromisoformat(pending)).days
@@ -461,9 +483,9 @@ class Lifecycle:
             result[key]=self.db.one("SELECT count(DISTINCT j.id) n FROM jobs j JOIN items i ON i.job_id=j.id JOIN holdings h ON h.item_id=i.id WHERE j.stage NOT IN ('collected','closed') AND i.type='device' AND h.quantity>0 AND h.location LIKE ?",(prefix,))['n']
         result['warranty_claims']=self.db.one("SELECT count(DISTINCT new_job_id) n FROM warranty_claims WHERE status!='CLOSED'")['n']
         result['in_house']=self.db.one("SELECT count(*) n FROM jobs WHERE route='in_house' AND stage NOT IN ('received','inspection','warranty_check','route_selection','collected','closed')")['n']
-        today=date.today().isoformat()
+        today_local=today()
         result['overdue']=self.db.one("""SELECT count(*) n FROM jobs j WHERE stage NOT IN ('collected','closed') AND
-            (collection_due<? OR (repair_due<? AND stage NOT IN ('ready_repaired','ready_unrepaired')) OR (return_due<? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))))""",(today,today,today))['n']
+            (collection_due<? OR (repair_due<? AND stage NOT IN ('ready_repaired','ready_unrepaired')) OR (return_due<? AND EXISTS(SELECT 1 FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0 AND (h.location LIKE 'vendor:%' OR h.location LIKE 'centre:%' OR h.location LIKE 'transit:%'))))""",(today_local,today_local,today_local))['n']
         return result
 
     def _set(self, c, j, data, stage, action, evidence):
@@ -482,14 +504,16 @@ class Lifecycle:
                 data['in_transit']=v['data'].get('in_transit',False)
                 if action not in v['actions']:
                     raise RuleError('That action is not available now. Refresh the job and follow the next required step.')
-                if self.s.user['role']=='technician' and action not in ('diagnose','wait_parts','parts_received','start_repair','complete_repair','repair_failed','test','qc','details'):
-                    raise RuleError('Counter staff handles warranty, dispatch, approval and handover.')
+                # What each lifecycle step needs is stated once, in ACTION_PERMISSIONS,
+                # rather than as a role name listed here.
+                needed=ACTION_PERMISSIONS.get(action)
+                if needed:self.s.require_permission(needed)
                 if j['hold_reason'] and action not in ('details','decline','resolve_item'):
                     raise RuleError('Resolve the recorded job hold before continuing.')
                 stage = j['stage']
                 notes = str(p.get('notes','')).strip()
                 if action == 'adopt':
-                    self.s.require('owner','counter')
+                    self.s.require_permission('assign_job')
                     if not p.get('confirmed') or not notes:
                         raise RuleError('Review the existing history and record why this legacy status is appropriate.')
                     if stage not in LABELS:
@@ -666,7 +690,7 @@ class Lifecycle:
                     data['repair_completed']=now()
                     data.pop('unrepaired',None)
                     if action=='replacement':
-                        self.s.require('owner')
+                        self.s.require_permission('record_replacement')
                         original=next((h for h in v['holdings'] if h['type']=='device' and h['location'].startswith(('centre:','vendor:'))),None)
                         if not original:
                             raise RuleError('The original device must be recorded with the external repairer.')
@@ -743,7 +767,7 @@ class Lifecycle:
                     self.s.notify(c,ident,'ready_unrepaired' if data.get('unrepaired') else 'ready_repaired', 'Your device is ready for collection '+('without repair. ' if data.get('unrepaired') else 'after final shop QC. ')+ 'Please contact the shop to arrange collection.')
                     data['notified']=now()
                 elif action == 'details':
-                    if set(p)&{'vendor_parts','vendor_labour','transport_cost','other_cost','service_center_charge','in_house_cost','estimated_parts','estimated_labour'}:self.s.require('owner')
+                    if set(p)&{'vendor_parts','vendor_labour','transport_cost','other_cost','service_center_charge','in_house_cost','estimated_parts','estimated_labour'}:self.s.require_permission('view_internal_cost')
                     if any(not isinstance(p[k],int) or p[k]<0 for k in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price') if k in p):
                         raise RuleError('Enter nonnegative estimates in whole paise.')
                     data.setdefault('route_details',{}).update(p)
@@ -753,7 +777,7 @@ class Lifecycle:
                         c.execute('UPDATE jobs SET return_due=? WHERE id=?',(day(p['expected_return']),ident))
                     self.s.record_work(ident,'route_update',p)
                 elif action == 'resolve_item':
-                    self.s.require('owner')
+                    self.s.require_permission('resolve_exception')
                     self._notes(notes)
                     h=next((h for h in v['holdings'] if h['id']==p.get('item_id') and h['location']==p.get('source')),None)
                     if not h or h['location']=='customer' or h['location'].startswith('exception:'):
@@ -775,7 +799,7 @@ class Lifecycle:
         return DeviceCustody(self.s).external(c,j,data,v,action,p)
 
     def _billing(self,c,j,data,p):
-        self.s.require('owner','counter')
+        self.s.require_permission('billing')
         if not p.get('confirmed'):
             raise RuleError('Review charges, advances and the balance before marking ready.')
         invoice=c.execute("SELECT * FROM entries e WHERE job_id=? AND kind='invoice' AND NOT EXISTS(SELECT 1 FROM entries r WHERE r.reverses_id=e.id)",(j['id'],)).fetchone()
@@ -802,7 +826,7 @@ class Lifecycle:
                 raise RuleError('Record an approved estimate, including a zero-cost estimate, or an accepted warranty decision.')
 
     def _handover(self,c,j,data,v,p):
-        self.s.require('owner','counter')
+        self.s.require_permission('customer_delivery')
         if not all(p.get(k) for k in ('demonstrated','accepted','accessories_returned','payment_checked')):
             raise RuleError('Confirm demonstration, customer acceptance, accessories and payment review.')
         if not p.get('received_by') or not p.get('acknowledgment'):
@@ -810,7 +834,8 @@ class Lifecycle:
         if not data.get('qc') or data['qc']['result']=='failed' or not data.get('billing_checked'):
             raise RuleError('Complete final QC and billing review before handover.')
         if v['balance']>0:
-            self.s.require('owner')
+            # Releasing a product with money still owed is an owner decision.
+            self.s.require_permission('release_with_balance')
             if not p.get('credit_reason'):
                 raise RuleError('Record remaining payment, or have the owner explicitly approve credit with a reason.')
         if v['balance']<0:

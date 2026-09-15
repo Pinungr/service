@@ -8,7 +8,7 @@ from PyQt6 import sip
 from PyQt6.QtGui import QDesktopServices, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox, QProgressBar)
 from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel, MetricCard, CardGrid, FlowLayout
-from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS
+from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS, today
 from .queries import Queries
 from .documents import Documents
 from .backup import Backups
@@ -226,12 +226,23 @@ class MainWindow(QMainWindow):
 
     # Screens a role may not use at all. Hiding a button is only tidiness: `navigate`
     # refuses the screen and every service call behind it enforces the rule again.
-    HIDDEN = {'technician': lambda name: name not in ('Dashboard', 'Active Repairs'),
-              'counter': lambda name: name in ('Vendor accounts', 'Backups', 'Settings & staff')}
+    #: The permission each screen needs. A screen with no entry is open to any signed-in
+    #: user. This is the same table the services check, so a hidden button and a refused
+    #: service call can never disagree.
+    SCREENS = {
+        'New Repair Intake': 'intake', 'Customers': 'customer_records',
+        'Products sold': 'customer_records', 'Dispatch & receive': 'handover',
+        'Inventory': 'inventory', 'Directories': 'directories',
+        'Quotations': 'create_quote', 'Customer accounts': 'collect_payment',
+        'Vendor accounts': 'vendor_accounts', 'Reports': 'reports',
+        'Notifications': 'messaging', 'Backups': 'backup_restore',
+        'Settings & staff': 'settings', 'Repair History': 'view_all_jobs',
+        'Ready for Delivery': 'customer_delivery', 'Jobs': 'view_all_jobs',
+    }
 
     def may_open(self, name):
-        rule = self.HIDDEN.get(self.s.user['role'] if self.s.user else '')
-        return not (rule and rule(name))
+        permission = self.SCREENS.get(name)
+        return permission is None or self.s.may(permission)
 
     def navigate(self, name):
         if not self.may_open(name):
@@ -498,7 +509,7 @@ class MainWindow(QMainWindow):
         for key, label in (("device", "Brand / model"), ("serial", "Serial number (optional)"), ("invoice_ref", "Invoice reference"), ("provider", "Warranty provider"), ("warranty_terms", "Warranty terms")):
             d.text(key, label, multiline=key == "warranty_terms")
         for key, label in (("sale_date", "Sale date"), ("invoice_date", "Invoice date"), ("warranty_start", "Warranty starts"), ("warranty_end", "Warranty ends")):
-            d.date(key, label, date.today().isoformat() if key in ("sale_date", "invoice_date") else None)
+            d.date(key, label, today() if key in ("sale_date", "invoice_date") else None)
         d.text("amount", "Sale amount (INR)", "0")
         d.text("cost", "Shop cost (INR)", "0")
         def save(v):
@@ -515,8 +526,8 @@ class MainWindow(QMainWindow):
     def reports(self):
         controls = FlowLayout()
         kind = combo(["jobs", "custody", "overdue", "warranty", "job_cards", "repair_parts", "part_warranties", "warranty_claims", "customer_dues", "vendor_dues", "payments", "transport", "margins"])
-        start = QLineEdit(date.today().replace(day=1).isoformat())
-        end = QLineEdit(date.today().isoformat())
+        start = QLineEdit(today()[:8] + "01")
+        end = QLineEdit(today())
         route = combo([("All routes", "")] + [(x.replace("_", " "), x) for x in ROUTES])
         controls.addWidget(kind)
         controls.addWidget(QLabel("From"))
@@ -654,7 +665,7 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def channel_settings(self):
-        self.s.require("owner")
+        self.s.require_permission('messaging_admin')
         d = Form("Messaging channels & credentials", self, "Test mode captures locally. Live mode sends queued, consented updates while the app is open. Credentials are stored in Windows Credential Manager.")
         d.resize(700, 850)
         d.select("mode", "Sending mode", [("Local test capture (no internet)", "test"), ("Live providers", "live")], self.db.setting("messaging_mode", "test"))
@@ -722,7 +733,7 @@ class MainWindow(QMainWindow):
     def intake(self, sale=None, parent=None, draft=None, customer_id=None, device_id=None):
         if self.db.readonly:
             raise RuleError("Archive viewing is read-only.")
-        self.s.require('owner', 'counter')
+        self.s.require_permission('intake')
         if draft:
             saved = json.loads(draft['payload'])
             parent = saved.get('parent_id')
@@ -1226,7 +1237,7 @@ class MainWindow(QMainWindow):
         update_preview()
         d.text("terms", "Terms / explicitly configured taxes", source.get('terms',"Paid work starts after this version is approved and the required deposit is received."), multiline=True)
         has_expiry=d.check('has_expiry','Set a quotation expiry date',bool(source.get('valid_until')))
-        expiry=d.date("valid_until", "Valid through (end of day)",(date.today()+timedelta(days=7)).isoformat())
+        expiry=d.date("valid_until", "Valid through (end of day)",(date.fromisoformat(today())+timedelta(days=7)).isoformat())
         expiry.setMinimumDate(QDate.currentDate());expiry.setSpecialValueText('')
         expiry.setEnabled(has_expiry.isChecked());has_expiry.toggled.connect(expiry.setEnabled)
         expiry.setToolTip('Expiry is optional. Enable it to choose today or a future date.')
@@ -1312,7 +1323,7 @@ class MainWindow(QMainWindow):
         d.select("kind", "Entry type", kinds)
         d.text("amount", "Amount (INR)")
         d.text("job_id", "Job ID (optional)")
-        d.date("posted", "Posting date", date.today().isoformat())
+        d.date("posted", "Posting date", today())
         method = MasterSelector(self.s, "payment_method")
         d.add("method_id", "Payment method", method)
         d.text("reference", "Receipt / bank / UPI / bill reference")
@@ -1345,8 +1356,8 @@ class MainWindow(QMainWindow):
             d.add("account_id", "Customer", CustomerSelector(self.s))
         else:
             d.select("account_id", "Vendor / centre", [(r["name"], r["id"]) for r in self.db.rows("SELECT * FROM masters WHERE kind IN ('vendor','centre') ORDER BY name")])
-        d.date("start", "From posting date", date.today().replace(day=1).isoformat())
-        d.date("end", "Through posting date", date.today().isoformat())
+        d.date("start", "From posting date", today()[:8] + "01")
+        d.date("end", "Through posting date", today())
         chosen = []
         if not d.submit(lambda v: chosen.append(v)):
             return

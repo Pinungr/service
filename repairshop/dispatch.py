@@ -207,7 +207,7 @@ class Dispatches:
             return ident
 
     def cancel(self, job_id, reason):
-        self.s.require('owner')
+        self.s.require_permission('cancel_records')
         if not reason.strip():
             raise RuleError('Record why this dispatch is cancelled.')
         with self.db.transaction() as c:

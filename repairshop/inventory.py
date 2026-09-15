@@ -52,7 +52,7 @@ class Inventory:
         return dict(stock=r[0],reserved=r[1],issued=r[2],available=r[0]-r[1]-r[2])
 
     def save(self,values,ident=None):
-        self.s.require('owner')
+        self.s.require_permission('manage_inventory')
         defaults=dict(name='',sku='',category_id=None,brand='',model='',compatibility='',part_number='',serialized=False,serial='',batch='',
             purchase_cost=0,customer_price=0,supplier_id=None,invoice='',purchase_date=None,storage='Stock shelf',minimum_stock=0,
             warranty_duration=0,warranty_unit='months',warranty_provider='',warranty_terms='',markup_basis_points=None,notes='',active=True)
@@ -109,7 +109,7 @@ class Inventory:
         return ident
 
     def adjust(self,stock_id,quantity,reference,notes='',kind=None,operation_id=None):
-        self.s.require('owner')
+        self.s.require_permission('manage_inventory')
         if type(quantity)!=int or not quantity or not reference.strip():raise RuleError('Enter a nonzero whole quantity and purchase/correction reference.')
         if kind is None:kind='STOCK_RECEIVED' if quantity>0 else 'STOCK_ADJUSTMENT'
         if kind not in ('STOCK_RECEIVED','STOCK_ADJUSTMENT','DAMAGED','SCRAPPED','WARRANTY_REPLACEMENT','CUSTOMER_RETURN'):raise RuleError('Select a supported stock movement.')
@@ -129,7 +129,7 @@ class Inventory:
                 destination='stock:'+stock['storage'] if quantity>0 else kind,reference=reference,reason=reference,notes=notes,operation_id=operation_id)
 
     def transfer(self,part_id,action,reference,notes=''):
-        self.s.require('owner','counter')
+        self.s.require_permission('manage_inventory')
         if not reference.strip():raise RuleError('Record the handover acknowledgment or reservation reference.')
         with self.db.transaction() as c:
             p=self.db.one('SELECT * FROM repair_parts WHERE id=?',(part_id,))
@@ -163,7 +163,7 @@ class Inventory:
                 kind='RETURNED_UNUSED' if action=='return' else 'RESERVATION_RELEASED';newstate='returned'
                 kwargs['reserved' if state=='reserved' else 'issued']=-qty
             elif action in ('damaged','scrapped'):
-                self.s.require('owner')
+                self.s.require_permission('manage_inventory')
                 if state not in ('reserved','issued'):raise RuleError('Select the reserved or issued stock being written off.')
                 kind=action.upper();newstate='returned';kwargs.update(delta=-qty)
                 kwargs['reserved' if state=='reserved' else 'issued']=-qty;destination=kind
