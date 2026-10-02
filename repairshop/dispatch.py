@@ -9,14 +9,30 @@ correction creates a new version that supersedes the previous one, with a
 mandatory reason, and both versions remain readable.
 """
 import json
-from .domain import RuleError, now, money, in_shop
+from .domain import RuleError, now, money, in_shop, phone, day
 from .persistence import insert
 
+# Three ways a product physically leaves the shop, each asking only for what that way
+# actually needs. The money is the dispatch's own validated `amount`, not a transport
+# detail, so it is recorded once instead of once per mode.
 TRANSPORT_MODES = {
-    'BY_HAND': ('person_name', 'mobile', 'handover_date'),
-    'BUS': ('bus_name', 'bus_number', 'mobile', 'dispatch_date'),
-    'COURIER': ('courier_name', 'docket_number', 'docket_date', 'dispatch_date'),
-    'OTHER': ('details',),
+    'COURIER': ('docket_number', 'courier_name', 'docket_date'),
+    'BUS': ('bus_number', 'contact_name', 'contact_mobile'),
+    'IN_HAND': ('person_name', 'mobile'),
+}
+# Without these a dispatch record cannot be used to trace the product, which is the
+# only reason it exists. The docket date is the one genuinely optional detail.
+TRANSPORT_REQUIRED = {
+    'COURIER': ('docket_number', 'courier_name'),
+    'BUS': ('bus_number', 'contact_name', 'contact_mobile'),
+    'IN_HAND': ('person_name', 'mobile'),
+}
+TRANSPORT_PHONES = ('contact_mobile', 'mobile')
+TRANSPORT_DATES = ('docket_date',)
+TRANSPORT_LABELS = {
+    'docket_number': 'Docket number', 'courier_name': 'Transport / courier name', 'docket_date': 'Docket date',
+    'bus_number': 'Bus number', 'contact_name': 'Contact person name', 'contact_mobile': 'Contact person number',
+    'person_name': 'Person name', 'mobile': 'Contact number',
 }
 TRANSPORT_PAYERS = {
     'shop': 'Shop',
@@ -70,7 +86,7 @@ class Dispatches:
         for key in EDITABLE:
             if key in values:
                 p[key] = values[key]
-        mode = (p.get('transport_mode') or 'BY_HAND').upper()
+        mode = (p.get('transport_mode') or 'IN_HAND').upper()
         if mode not in TRANSPORT_MODES:
             raise RuleError('Choose a supported transport mode.')
         transport = p.get('transport') or {}
@@ -80,6 +96,24 @@ class Dispatches:
         unknown = set(transport) - set(TRANSPORT_MODES[mode])
         if unknown:
             raise RuleError('Unsupported transport detail for ' + mode.replace('_', ' ').title() + ': ' + ', '.join(sorted(unknown)))
+        # Both entry screens validate here rather than each on its own, so a dispatch
+        # saved from the workspace and one corrected on the dispatch tab are held to the
+        # same standard.
+        missing = [TRANSPORT_LABELS[k] for k in TRANSPORT_REQUIRED[mode] if not transport.get(k)]
+        if missing:
+            raise RuleError('Enter ' + ', '.join(missing) + ' for a ' + mode.replace('_', ' ').lower() + ' dispatch.')
+        for key in TRANSPORT_PHONES:
+            if transport.get(key):
+                try:
+                    transport[key] = phone(transport[key])
+                except RuleError:
+                    raise RuleError('Enter a valid ' + TRANSPORT_LABELS[key].lower() + ', including the country code when needed.') from None
+        for key in TRANSPORT_DATES:
+            if transport.get(key):
+                try:
+                    transport[key] = day(transport[key][:10])
+                except ValueError:
+                    raise RuleError('Enter ' + TRANSPORT_LABELS[key].lower() + ' as a real calendar date.') from None
         amount = p.get('amount', 0)
         if isinstance(amount, str):
             amount = money(amount or '0')

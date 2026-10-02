@@ -36,6 +36,8 @@ class CustomerRegistration(Form):
         self._text('phone_number', 'Phone / WhatsApp number *', row.get('phone', ''))
         self._text('alternate', 'Alternate phone number', row.get('alternate', ''))
         self._text('email', 'Email address', row.get('email', ''))
+        # Nothing else in the application can grant these, and delivery is refused without
+        # them, so removing them here would silently mute every customer message.
         self.check('whatsapp_consent', 'Agreed to WhatsApp updates', row.get('whatsapp_consent'))
         self.check('email_consent', 'Agreed to email updates', row.get('email_consent'))
 
@@ -71,7 +73,7 @@ class CustomerRegistration(Form):
         controls.addWidget(button('Capture using camera', self.capture))
         controls.addWidget(button('Upload photo', self.upload))
         photo_layout.addLayout(controls)
-        hint = QLabel('Optional here. A saved customer or submitting-person photo is required to create a repair job.')
+        hint = QLabel('Optional here. The saved customer photo is reused automatically during repair intake.')
         hint.setWordWrap(True)
         hint.setObjectName('subtitle')
         photo_layout.addWidget(hint)

@@ -89,7 +89,6 @@ def migrate(c):
             if name not in present:
                 c.execute(statement)
         _backfill_visits(c)
-        _backfill_dispatches(c)
         c.execute("""INSERT INTO audit(created,entity,entity_id,action,payload)
             VALUES(strftime('%Y-%m-%dT%H:%M:%SZ','now'),'schema',11,'migration',?)""",
             (json.dumps({'change': 'Customer visits now group repair jobs, and third-party dispatch '
@@ -113,35 +112,3 @@ def _backfill_visits(c):
             group['received'] or '', actor, group['estimated'] or 0, 'migrated')).lastrowid
         c.execute('UPDATE jobs SET visit_id=? WHERE customer_id=? AND intake_ref=? AND visit_id IS NULL',
                   (visit, group['customer_id'], group['intake_ref']))
-
-
-def _backfill_dispatches(c):
-    """Rebuild an administrative dispatch record from saved guided-workflow evidence."""
-    rows = c.execute("""SELECT j.id,j.route,j.stage,j.return_due,j.lifecycle_data,j.received,j.actor,j.assignment_id
-        FROM jobs j WHERE j.route!='in_house' AND j.lifecycle_data LIKE '%"dispatch"%'""").fetchall()
-    for row in rows:
-        if c.execute('SELECT 1 FROM dispatches WHERE job_id=?', (row['id'],)).fetchone():
-            continue
-        try:
-            manifest = json.loads(row['lifecycle_data']).get('dispatch') or {}
-        except ValueError:
-            continue
-        if not isinstance(manifest, dict):
-            continue
-        assignment = c.execute('''SELECT a.contact_id,m.name FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id
-            WHERE a.id=?''', (row['assignment_id'],)).fetchone()
-        sent = c.execute("""SELECT min(m.happened) FROM movements m JOIN items i ON i.id=m.item_id
-            WHERE i.job_id=? AND (m.from_location LIKE 'shop:%' OR m.from_location LIKE 'staff:%' OR m.from_location LIKE 'technician:%')
-            AND (m.to_location LIKE 'vendor:%' OR m.to_location LIKE 'centre:%' OR m.to_location LIKE 'transit:%')""",
-            (row['id'],)).fetchone()[0]
-        carrier = (manifest.get('carrier') or '').strip()
-        c.execute('''INSERT INTO dispatches(job_id,cycle,version,current,status,route,contact_id,contact_name,
-            reference,transport_mode,transport,amount,expected_return,condition,notes,manifest,consent,
-            actual_dispatch_at,created,actor) VALUES (?,1,1,1,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)''',
-            (row['id'], 'DISPATCHED' if sent else 'READY', row['route'],
-             assignment['contact_id'] if assignment else None, (assignment['name'] if assignment else '') or '',
-             manifest.get('reference', ''), 'COURIER' if carrier else 'BY_HAND',
-             json.dumps({'carrier': carrier} if carrier else {}), row['return_due'],
-             manifest.get('condition', ''), manifest.get('notes', ''),
-             json.dumps(manifest.get('items', [])), int(bool(manifest.get('consent'))),
-             sent, sent or row['received'], row['actor']))

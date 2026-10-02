@@ -528,13 +528,15 @@ class Form(QDialog):
     def select(self, key, label, options, selected=None):
         return self.add(key, label, combo(options, selected, editable=True))
 
-    def date(self, key, label, value=None):
+    def date(self, key, label, value=None, default_today=False):
         w = QDateEdit()
         w.setCalendarPopup(True)
         w.setDisplayFormat("dd MMM yyyy")
         w.setMinimumDate(QDate(1900, 1, 1))
         w.setSpecialValueText("Not set")
-        w.setDate(QDate.fromString(value[:10], "yyyy-MM-dd") if value else QDate(1900, 1, 1))
+        # "Not set" is the honest default: a date nobody typed must not be recorded as
+        # today. Fields where today is the real answer opt in with default_today.
+        w.setDate(QDate.fromString(value[:10], "yyyy-MM-dd") if value else QDate.currentDate() if default_today else QDate(1900, 1, 1))
         return self.add(key, label, w)
 
     def values(self):

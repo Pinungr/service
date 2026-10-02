@@ -61,22 +61,23 @@ class IntakePhotos:
         form.layout.insertRow(product_row + 1,'Existing warranty',self.warranty_hint)
         self.device_choice.currentIndexChanged.connect(self.select_device)
         self.preview = QLabel()
-        self.photo_label = QLabel('Required intake photo')
+        self.photo_label = QLabel('Saved customer photo')
         self.photo_label.setWordWrap(True)
-        self.role = combo([('Device owner', 'owner'), ('Submitting person', 'submitter')])
         customer_row = form.layout.getWidgetPosition(form.fields['customer_id'])[0]
-        form.layout.insertRow(customer_row + 1, 'Person to photograph', self.role)
         controls = QWidget()
         line = QHBoxLayout(controls)
         line.addWidget(self.preview)
         column = QVBoxLayout()
         column.addWidget(self.photo_label)
-        self.capture_button=button('Capture customer photo', lambda: window.safe(self.capture))
-        column.addWidget(self.capture_button)
-        self.upload_button=button('Upload customer photo', lambda: window.safe(self.upload))
-        column.addWidget(self.upload_button)
         line.addLayout(column, 1)
-        form.layout.insertRow(customer_row + 2, 'Customer photo', controls)
+        form.layout.insertRow(customer_row + 1, 'Customer photo', controls)
+        # The customer's own photo comes from their record; the product is always
+        # photographed here, on the product being received.
+        self.product_photos = IntakeProductPhotos(window, form)
+        self.product_photos.changed = self.changed
+        self.product_photos.before_capture = self.save_draft
+        device_row = form.layout.getWidgetPosition(form.fields['serial'])[0]
+        form.layout.insertRow(device_row + 1, 'Product photos', self.product_photos)
         form.fields['customer_id'].box.currentIndexChanged.connect(self.customer_changed)
         form.layout.addRow('', button('Save draft', lambda: window.safe(self.save_draft)))
         self.timer = QTimer(form)
@@ -119,8 +120,8 @@ class IntakePhotos:
 
     def payload(self):
         result = self.form.values()
-        result.update(photo_id=self.photo_id, photo_role=self.role.currentData(), parent_id=self.parent,
-            sale_id=self.sale['id'] if self.sale else None,
+        result.update(photo_id=self.photo_id, photo_role='owner', parent_id=self.parent,
+            sale_id=self.sale['id'] if self.sale else None, product_photos=list(self.product_photos.photo_ids),
             accessories=[dict(description=c.text(), quantity=c.quantity_control.value(), serial=c.serial_control.text(),
                 condition=c.condition_control.currentData() if hasattr(c, 'condition_control') else '',
                 notes=c.notes_control.text() if hasattr(c, 'notes_control') else '',
@@ -184,13 +185,16 @@ class IntakePhotos:
                         if check.photo_id:
                             check.photo_control.setText('Photo ✓')
         self.photo_id = payload.get('photo_id')
-        self.role.setCurrentIndex(self.role.findData(payload.get('photo_role', 'owner')))
+        self.product_photos.restore(payload.get('product_photos'))
         self.update_photo()
 
     def customer_changed(self, *_):
         customer = self.form.fields['customer_id'].text()
         row = self.window.db.one('SELECT current_photo_id FROM customers WHERE id=?', (customer,))
         self.photo_id = row['current_photo_id'] if row else None
+        # Product evidence belongs to one customer. Changing who is at the counter drops
+        # it rather than carrying a previous customer's pictures onto this intake.
+        self.product_photos.clear()
         self.device_choice.blockSignals(True)
         self.device_choice.clear()
         self.device_choice.addItem('New physical device (even if same model)', None)
@@ -219,45 +223,112 @@ class IntakePhotos:
     def update_photo(self):
         photo = self.window.db.one('SELECT * FROM attachments WHERE id=?', (self.photo_id,))
         show_photo(self.preview, self.window.db, photo)
-        self.photo_label.setText(f"Saved {photo['person_role']} photo: {photo['person_name']}\nCaptured: {photo['captured']}" if photo else 'Capture and save the required photo before finalizing this intake.')
-        selected=bool(self.form.fields['customer_id'].text())
-        self.capture_button.setEnabled(selected and not self.window.db.readonly)
-        if not selected:
-            self.photo_label.setText('Select a saved customer or use New customer above. Then capture their photo.')
+        self.photo_label.setText(f"Saved customer photo: {photo['person_name']}\nCaptured: {photo['captured']}" if photo else 'No customer photo on record. Add one from Customer details.')
+
+
+class IntakeProductPhotos(QWidget):
+    """Photographs of the product itself, taken at the counter during intake.
+
+    The device record does not exist yet, so each photo is stored against the customer
+    and claimed for the device and the repair when the intake is saved. That ordering is
+    what lets the customer receiving job card carry the pictures it references.
+    """
+    def __init__(self, window, form):
+        super().__init__()
+        self.window, self.form = window, form
+        self.records = CustomerRecords(window.s)
+        self.photo_ids = []
+        self.changed = None
+        self.before_capture = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.strip = QHBoxLayout()
+        layout.addLayout(self.strip)
+        controls = FlowLayout()
+        self.capture_button = button('Capture product photo', lambda: window.safe(self.capture))
+        self.upload_button = button('Upload product photo', lambda: window.safe(self.upload))
+        self.clear_button = button('Remove last photo', lambda: window.safe(self.remove_last))
+        for control in (self.capture_button, self.upload_button, self.clear_button):
+            controls.addWidget(control)
+        layout.addLayout(controls)
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        self.hint.setObjectName('subtitle')
+        layout.addWidget(self.hint)
+        self.reload()
+
+    def _requirements(self):
+        customer = self.form.fields['customer_id'].text()
+        description = self.form.fields['device'].text().strip()
+        if not customer:
+            raise RuleError('Select or register the customer before photographing the product.')
+        if not description:
+            raise RuleError('Enter the product description before photographing it.')
+        return customer, description
 
     def capture(self):
-        self.save_draft()  # Durable before camera startup; cancel/failure leaves all fields intact.
-        customer = self.form.fields['customer_id'].text()
-        role = self.role.currentData()
-        name = self.form.fields['submitter'].text().strip()
-        if not customer:
-            raise RuleError('Select the device owner before taking a photo.')
-        if role == 'submitter' and not name:
-            raise RuleError('Enter Submitted by before photographing the submitting person.')
-        owner = self.window.db.one('SELECT name FROM customers WHERE id=?', (customer,))['name']
-        dialog = CameraDialog(lambda image, captured: self.records.save_photo(image, customer, role, name, captured=captured), self.form,
-            label=f"{role.title()}: {owner if role == 'owner' else name}")
-        if dialog.exec():
-            self.photo_id = dialog.photo_id
-            self.update_photo()
-            self.save_draft()
+        customer, description = self._requirements()
+        if self.before_capture:
+            self.before_capture()  # Durable before camera startup; cancel/failure leaves all fields intact.
+        dialog = CameraDialog(lambda image, captured: self.records.save_photo(
+            image, customer, 'product', description, captured=captured), self, label='Product: ' + description)
+        if dialog.exec() and dialog.photo_id:
+            self.add(dialog.photo_id)
 
     def upload(self):
-        customer = self.form.fields['customer_id'].text()
-        role, name = self.role.currentData(), self.form.fields['submitter'].text().strip()
-        if not customer: raise RuleError('Select the device owner before uploading a photo.')
-        if role == 'submitter' and not name: raise RuleError('Enter Submitted by before uploading their photo.')
-        path, _ = QFileDialog.getOpenFileName(self.form, 'Choose customer photo', '', 'Photos (*.jpg *.jpeg *.png *.bmp *.webp)')
-        if not path: return
+        customer, description = self._requirements()
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose a product photo', '', 'Photos (*.jpg *.jpeg *.png *.bmp *.webp)')
+        if not path:
+            return
         source = Path(path)
         if not source.is_file() or source.stat().st_size > 50 * 1024**2:
             raise RuleError('Choose a local photo smaller than 50 MB.')
-        reader = QImageReader(str(source)); reader.setAutoTransform(True)
+        reader = QImageReader(str(source))
+        reader.setAutoTransform(True)
         size = reader.size()
         if not size.isValid() or size.width() * size.height() > 80_000_000:
             raise RuleError('Choose a supported photo with at most 80 million pixels.')
-        self.photo_id = self.records.save_photo(reader.read(), customer, role, name)
-        self.update_photo(); self.save_draft()
+        self.add(self.records.save_photo(reader.read(), customer, 'product', description))
+
+    def add(self, photo_id):
+        self.photo_ids.append(photo_id)
+        self.reload()
+
+    def remove_last(self):
+        # The stored evidence is never deleted; it is only dropped from this intake, so a
+        # photo taken against the wrong product cannot silently travel onto the job card.
+        if not self.photo_ids:
+            raise RuleError('No product photo has been added to this product yet.')
+        self.photo_ids.pop()
+        self.reload()
+
+    def restore(self, photo_ids):
+        self.photo_ids = [i for i in (photo_ids or []) if i]
+        self.reload()
+
+    def clear(self):
+        self.photo_ids = []
+        self.reload()
+
+    def reload(self):
+        while self.strip.count():
+            item = self.strip.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for photo_id in self.photo_ids[-4:]:
+            thumbnail = QLabel()
+            show_photo(thumbnail, self.window.db, self.window.db.one('SELECT * FROM attachments WHERE id=?', (photo_id,)), 90)
+            self.strip.addWidget(thumbnail)
+        self.strip.addStretch()
+        count = len(self.photo_ids)
+        self.hint.setText(f'{count} photo(s) of this product. They are filed against this product and printed on its job card.'
+                          if count else 'Optional. Photograph the product as received — front, back, serial plate and any existing damage.')
+        readonly = self.window.db.readonly
+        for control in (self.capture_button, self.upload_button):
+            control.setEnabled(not readonly)
+        self.clear_button.setEnabled(bool(count) and not readonly)
+        if self.changed:
+            self.changed()
 
 
 class DevicePhotos(QWidget):

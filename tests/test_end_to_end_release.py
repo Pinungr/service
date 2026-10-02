@@ -138,7 +138,8 @@ def test_a_full_day_at_the_counter(service, tmp_path):
     life.execute(mobile, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(mobile)], consent=True,
                                                   condition='Intact', expected_return='2099-01-01',
                                                   transport_mode='BUS',
-                                                  transport={'bus_name': 'Shivneri', 'bus_number': 'MH12AB1234'}))
+                                                  transport={'bus_number': 'MH12AB1234', 'contact_name': 'Shivneri desk',
+                                                             'contact_mobile': '9990012345'}))
     life.execute(mobile, 'dispatch', dict(counterparty='Bus office', condition='Intact', acknowledgment='D9'))
     life.execute(mobile, 'diagnose', dict(notes='Port failure', repairable=True))
     PartyQuotes(service).issue(mobile, [dict(kind='part', name='Charging port', quantity=1,

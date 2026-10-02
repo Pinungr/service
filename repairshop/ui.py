@@ -777,11 +777,11 @@ class MainWindow(QMainWindow):
             source = dict(source, customer_id=customer_id, device_id=device_id)
         d = IntakeForm("New repair intake", self, "Select the customer and product, record the problem, then review. Receive several products in one visit. Your progress is saved as a draft.")
         d.resize(700, 850)
-        d.section('Customer & authorization')
+        d.section('Customer')
         def register_customer(search):
             initial={'phone':search} if search and search.replace('+','').replace(' ','').isdigit() else {'name':search}
             return self.customer_form(parent=d,initial=initial,refresh=False)
-        d.add("customer_id", "Device owner", CustomerSelector(self.s, source.get("customer_id"),create=register_customer))
+        d.add("customer_id", "Customer", CustomerSelector(self.s, source.get("customer_id"),create=register_customer))
         d.text("submitter", "Submitted by (if different)")
         d.text("relationship", "Relationship to owner")
         d.add("update_contact_id", "Additional authorized updates to", CustomerSelector(self.s))

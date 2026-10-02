@@ -339,7 +339,9 @@ def at_estimate(service, customer, estimate=0):
     """Third-party repair progressed to the point where a customer estimate is due."""
     job, life = external_repair(service, customer, estimate=estimate)
     life.execute(job, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(job)], consent=True,
-                                               condition='Intact', expected_return='2099-01-01'))
+                                               condition='Intact', expected_return='2099-01-01',
+                                               transport_mode='IN_HAND',
+                                               transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(job, 'dispatch', dict(counterparty='Repairer', condition='Intact', acknowledgment='D1'))
     life.execute(job, 'diagnose', dict(notes='Charging port failure confirmed', repairable=True))
     return job, life
@@ -604,7 +606,8 @@ def test_full_third_party_repair_from_intake_to_close(service, customer):
     life.execute(mobile, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(mobile)], consent=True,
                                                   condition='Intact', expected_return='2099-01-01',
                                                   transport_mode='BUS',
-                                                  transport={'bus_name': 'Shivneri', 'bus_number': 'MH12AB1234'}))
+                                                  transport={'bus_number': 'MH12AB1234', 'contact_name': 'Shivneri desk',
+                                                             'contact_mobile': '9990012345'}))
     life.execute(mobile, 'dispatch', dict(counterparty='Bus office', condition='Intact', acknowledgment='D9'))
     life.execute(mobile, 'diagnose', dict(notes='Port failure', repairable=True))
     PartyQuotes(service).issue(mobile, [dict(kind='part', name='Charging port', quantity=1,

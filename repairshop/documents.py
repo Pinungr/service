@@ -93,7 +93,6 @@ class Documents:
         if len({(j['customer_id'],j['visit_id'] or j['intake_ref']) for j in jobs})!=1:
             raise RuleError('A visit receipt must contain one customer and one visit reference.')
         from . import app_settings
-        show_estimate=app_settings.value(self.db,'show_estimate_on_receipt')
         show_advance=app_settings.value(self.db,'show_advance_on_receipt')
         show_completion=app_settings.value(self.db,'show_completion_date')
         visit=self.db.one('SELECT number FROM visits WHERE id=?',(jobs[0]['visit_id'],)) if jobs[0]['visit_id'] else None
@@ -107,33 +106,21 @@ class Documents:
                 owner=p['from'];sections.append(('Customer',owner['name']+'\n'+owner.get('phone','')+'\n'+owner.get('email','')))
                 sections.append(('Visit',reference+f" · {len(jobs)} products received"))
             summary = (f"{p['device']} · DEV-{p['device_id']:06d}\n"
-                f"Category: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\n"
+                f"Category: {p.get('device_type','Not specified')}\n"
                 f"Serial: {p['serial'] or 'Not recorded'}\nComplaint: {p['complaint']}\nCondition: {p['condition']}\n"
                 f"Received: {local_time(p['effective'])} {timezone_name()} · Staff: {p['staff']}")
             # A figure the shop chose not to show is left out of the document entirely,
             # not merely unlabelled elsewhere on the page.
-            if show_estimate:
-                summary += f"\nInitial estimate: {rupees(j['initial_estimate'] or 0)}"
             if show_completion and j['repair_due']:
                 summary += f"\nEstimated completion: {j['repair_due']}"
             if j['customer_requirement']:
                 summary += f"\nAdditional customer requirement: {j['customer_requirement']}"
             sections.append((j['number']+' / '+p['card_number'], summary))
             sections.append(('Items received',[{k:r.get(k,'') for k in ('description','quantity','serial','condition','notes')} for r in p['items']]))
-        estimate=sum(j['initial_estimate'] or 0 for j in jobs)
         advance=self.db.one("""SELECT -COALESCE(sum(amount),0) n FROM entries WHERE account_type='customer'
             AND kind='receipt' AND notes='Intake advance' AND job_id IN ("""+','.join('?' for _ in jobs)+')',
             tuple(j['id'] for j in jobs))['n']
-        if show_estimate:
-            money = 'Total initial estimate: ' + rupees(estimate)
-            if show_advance:
-                money += ('\nAdvance received: ' + rupees(advance)
-                          + '\nEstimated balance against this initial estimate: ' + rupees(estimate - advance))
-            sections.append(('Initial estimate', money))
-            sections.append(('Please note','The initial estimate above is the figure given when the products were '
-                'received. It is not the final repair quotation. Any chargeable repair is quoted after diagnosis '
-                'and started only after your recorded approval.'))
-        elif show_advance:
+        if show_advance:
             sections.append(('Advance received', rupees(advance)))
         return self.snapshot('Customer visit receiving receipt · '+reference,sections,job_id=jobs[0]['id'],
             paper=paper or self.paper(document='intake_receipt'))

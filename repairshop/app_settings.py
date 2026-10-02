@@ -58,7 +58,8 @@ SETTINGS = {
     'email_enabled': Setting(True, 'Email', 'Send emails at all'),
     'email_attach_pdf': Setting(True, 'Email', 'Attach the PDF'),
 
-    'show_estimate_on_receipt': Setting(True, 'Estimates', 'Show the initial estimate on the intake receipt'),
+    # The initial estimate is an internal working figure and is deliberately absent from
+    # every customer-facing document, so there is no longer a switch that shows it.
     'show_advance_on_receipt': Setting(True, 'Estimates', 'Show the advance received on the intake receipt'),
     'show_completion_date': Setting(True, 'Estimates', 'Show the estimated completion date'),
     'require_initial_estimate': Setting(False, 'Estimates', 'Require an initial estimate at intake'),

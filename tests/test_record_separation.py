@@ -46,7 +46,8 @@ def loaded(service):
     vendor = service.save_master('vendor', 'ABC Board Repair', contact='9998887771', **ADDRESS)
     life.execute(job, 'select_route', {'route': 'third_party', 'confirmed': True, 'contact_id': vendor})
     life.execute(job, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(job)], consent=True,
-                                               condition='Intact', expected_return='2099-01-01'))
+                                               condition='Intact', expected_return='2099-01-01',
+                                               transport_mode='IN_HAND', transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(job, 'dispatch', dict(counterparty='Courier', condition='Intact', acknowledgment='D1'))
     life.execute(job, 'diagnose', dict(notes='Board fault', repairable=True))
 

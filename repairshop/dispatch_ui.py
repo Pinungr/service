@@ -8,17 +8,62 @@ import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QCheckBox
 from .ui_widgets import Form, Grid, button, FlowLayout
-from .dispatch import Dispatches, TRANSPORT_MODES, TRANSPORT_PAYERS
+from .dispatch import Dispatches, TRANSPORT_MODES, TRANSPORT_PAYERS, TRANSPORT_DATES, TRANSPORT_LABELS
 from .domain import rupees, money, RuleError, in_shop
 
-MODE_LABELS = [('By hand', 'BY_HAND'), ('Bus', 'BUS'), ('Courier', 'COURIER'), ('Other', 'OTHER')]
+MODE_LABELS = [('Courier', 'COURIER'), ('Bus', 'BUS'), ('In hand', 'IN_HAND')]
 PAYER_LABELS = [(label, key) for key, label in TRANSPORT_PAYERS.items()]
-FIELD_LABELS = {
-    'person_name': 'Person name', 'mobile': 'Mobile / contact', 'handover_date': 'Handover date',
-    'bus_name': 'Bus name', 'bus_number': 'Bus number', 'dispatch_date': 'Dispatch date',
-    'courier_name': 'Courier / transport name', 'docket_number': 'Docket number',
-    'docket_date': 'Docket date', 'details': 'Transport details',
-}
+# One label map, shared with the workspace's prepare-dispatch form, so the same field is
+# never called two different things on the two screens that write it.
+FIELD_LABELS = TRANSPORT_LABELS
+
+
+def transport_fields(form, mode_selector, current=None):
+    """Build every mode's fields once and show only the selected mode's.
+
+    Switching mode clears the fields of the mode being left, so a value typed under
+    Courier can never be saved against a Bus dispatch.
+    """
+    modes, state = {}, {'mode': mode_selector.currentData()}
+    for mode, keys in TRANSPORT_MODES.items():
+        rows = []
+        for key in keys:
+            name = 'transport_' + mode + '_' + key
+            saved = (current or {}).get(key, '') if current is not None and state['mode'] == mode else ''
+            widget = (form.date(name, TRANSPORT_LABELS[key], saved or None) if key in TRANSPORT_DATES
+                      else form.text(name, TRANSPORT_LABELS[key], saved))
+            rows.append((key, widget))
+        modes[mode] = rows
+
+    def show(*_):
+        chosen = mode_selector.currentData()
+        if chosen != state['mode']:
+            for key, widget in modes.get(state['mode'], []):
+                if key in TRANSPORT_DATES:
+                    widget.setDate(widget.minimumDate())
+                else:
+                    widget.clear()
+            state['mode'] = chosen
+        for mode, rows in modes.items():
+            for _, widget in rows:
+                widget.setVisible(mode == chosen)
+                field_label = form.layout.labelForField(widget)
+                if field_label:
+                    field_label.setVisible(mode == chosen)
+    mode_selector.currentIndexChanged.connect(show)
+    show()
+
+    def collect(values):
+        """Take every mode's keys out of the payload, keep only the chosen mode's."""
+        chosen = values.pop('transport_mode')
+        transport = {}
+        for mode, rows in modes.items():
+            for key, _ in rows:
+                value = values.pop('transport_' + mode + '_' + key, '')
+                if mode == chosen and str(value or '').strip():
+                    transport[key] = str(value).strip()
+        return chosen, transport
+    return collect
 
 
 def describe(d):
@@ -99,39 +144,16 @@ class DispatchPanel(QWidget):
         return b
 
     def _fields(self, form, current, mode_editable=True):
-        modes = {}
         selector = form.select('transport_mode', 'Transport mode', MODE_LABELS, current['transport_mode'])
         selector.setEnabled(mode_editable)
-        for mode, keys in TRANSPORT_MODES.items():
-            rows = []
-            for key in keys:
-                widget = form.text('transport_' + mode + '_' + key, FIELD_LABELS.get(key, key.replace('_', ' ').title()),
-                                   current['transport'].get(key, '') if current['transport_mode'] == mode else '')
-                rows.append((key, widget))
-            modes[mode] = rows
-        def show(*_):
-            chosen = selector.currentData()
-            for mode, rows in modes.items():
-                for _, widget in rows:
-                    widget.setVisible(mode == chosen)
-                    field_label = form.layout.labelForField(widget)
-                    if field_label:
-                        field_label.setVisible(mode == chosen)
-        selector.currentIndexChanged.connect(show)
-        show()
-        form.text('amount', 'Transport amount (INR)', str(current['amount'] / 100))
+        gather = transport_fields(form, selector, current['transport'])
+        form.text('amount', 'Amount (INR)', str(current['amount'] / 100))
         form.select('paid_by', 'Transport paid by', PAYER_LABELS, current.get('paid_by') or 'shop')
         form.text('reference', 'Service centre job / vendor ticket number', current['reference'])
         form.date('expected_return', 'Expected return date', current['expected_return'])
         form.text('notes', 'Dispatch notes', current['notes'], multiline=True)
         def collect(p):
-            mode = p.pop('transport_mode')
-            transport = {}
-            for other, rows in modes.items():
-                for key, _ in rows:
-                    value = p.pop('transport_' + other + '_' + key, '')
-                    if other == mode and str(value).strip():
-                        transport[key] = str(value).strip()
+            mode, transport = gather(p)
             return dict(transport_mode=mode, transport=transport, amount=money(p.pop('amount') or '0'),
                         paid_by=p.pop('paid_by', 'shop'), reference=p.pop('reference', ''), expected_return=p.pop('expected_return', None),
                         notes=p.pop('notes', ''))

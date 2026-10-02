@@ -434,3 +434,90 @@ def test_dispatch_panel_edits_before_send_and_amends_after(qtbot, service, custo
     assert [r['version'] for r in history] == [1, 2]
     assert history[1]['transport']['docket_number'] == 'BD12355'
     assert 'Wrong docket number entered' in history[1]['amendment_reason']
+
+
+# ---- Transport section -------------------------------------------------
+
+def test_only_three_transport_modes_each_with_its_own_fields():
+    from repairshop.dispatch import TRANSPORT_MODES
+    assert set(TRANSPORT_MODES) == {'COURIER', 'BUS', 'IN_HAND'}
+    assert TRANSPORT_MODES['COURIER'] == ('docket_number', 'courier_name', 'docket_date')
+    assert TRANSPORT_MODES['BUS'] == ('bus_number', 'contact_name', 'contact_mobile')
+    assert TRANSPORT_MODES['IN_HAND'] == ('person_name', 'mobile')
+
+
+def test_a_mode_refuses_another_modes_fields(service, customer):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    with pytest.raises(RuleError, match='Unsupported transport detail for Bus'):
+        prepared(service, life, ident, transport_mode='BUS',
+                 transport={'bus_number': 'MH12AB1234', 'contact_name': 'Desk',
+                            'contact_mobile': '9990012345', 'docket_number': 'BD1'})
+
+
+@pytest.mark.parametrize('mode,transport,missing', [
+    ('COURIER', {'courier_name': 'Blue Dart'}, 'Docket number'),
+    ('COURIER', {'docket_number': 'BD1'}, 'Transport / courier name'),
+    ('BUS', {'bus_number': 'MH12AB1234', 'contact_name': 'Desk'}, 'Contact person number'),
+    ('IN_HAND', {'person_name': 'Runner'}, 'Contact number'),
+])
+def test_each_mode_requires_what_makes_it_traceable(service, customer, mode, transport, missing):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    with pytest.raises(RuleError, match=missing):
+        prepared(service, life, ident, transport_mode=mode, transport=transport)
+
+
+def test_contact_numbers_are_validated_and_normalised(service, customer):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    with pytest.raises(RuleError, match='valid contact person number'):
+        prepared(service, life, ident, transport_mode='BUS',
+                 transport={'bus_number': 'MH12AB1234', 'contact_name': 'Desk', 'contact_mobile': '123'})
+    record = prepared(service, life, ident, transport_mode='BUS',
+                      transport={'bus_number': 'MH12AB1234', 'contact_name': 'Desk', 'contact_mobile': '9990012345'})
+    assert record['transport']['contact_mobile'] == '+919990012345'
+
+
+def test_docket_date_must_be_a_real_date(service, customer):
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    with pytest.raises(RuleError, match='docket date as a real calendar date'):
+        prepared(service, life, ident, transport_mode='COURIER',
+                 transport={'docket_number': 'BD1', 'courier_name': 'Blue Dart', 'docket_date': '2099-13-45'})
+    record = prepared(service, life, ident, transport_mode='COURIER',
+                      transport={'docket_number': 'BD1', 'courier_name': 'Blue Dart', 'docket_date': '2099-01-02'})
+    assert record['transport']['docket_date'] == '2099-01-02'
+
+
+def test_switching_mode_shows_only_that_modes_fields_and_clears_the_others(qtbot, service, customer):
+    from repairshop.ui_widgets import Form
+    from repairshop.dispatch_ui import MODE_LABELS, transport_fields
+    form = Form('Transport', None)
+    qtbot.addWidget(form)
+    selector = form.select('transport_mode', 'Transport mode', MODE_LABELS, 'COURIER')
+    gather = transport_fields(form, selector)
+    form.show()
+
+    visible = lambda: {k for k, w in form.fields.items() if k != 'transport_mode'
+                       and k.startswith('transport_') and w.isVisible()}
+    assert visible() == {'transport_COURIER_docket_number', 'transport_COURIER_courier_name',
+                         'transport_COURIER_docket_date'}
+    form.fields['transport_COURIER_docket_number'].setText('BD12345')
+
+    selector.setCurrentIndex(selector.findData('BUS'))
+    assert visible() == {'transport_BUS_bus_number', 'transport_BUS_contact_name', 'transport_BUS_contact_mobile'}
+    # The courier value is gone, so it cannot be saved against a bus dispatch.
+    assert form.fields['transport_COURIER_docket_number'].text() == ''
+
+    form.fields['transport_BUS_bus_number'].setText('MH12AB1234')
+    form.fields['transport_BUS_contact_name'].setText('Desk')
+    form.fields['transport_BUS_contact_mobile'].setText('9990012345')
+    mode, transport = gather(form.values())
+    assert mode == 'BUS'
+    assert transport == {'bus_number': 'MH12AB1234', 'contact_name': 'Desk', 'contact_mobile': '9990012345'}
+
+    selector.setCurrentIndex(selector.findData('IN_HAND'))
+    assert visible() == {'transport_IN_HAND_person_name', 'transport_IN_HAND_mobile'}
+    assert gather(form.values())[1] == {}
+    form.close()

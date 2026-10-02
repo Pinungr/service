@@ -53,6 +53,16 @@ def test_external_report_saved_with_audit_but_no_verified_coverage(service, cust
     assert service.db.one('SELECT count(*) n FROM manual_warranty_checks')['n'] == 0
 
 
+def test_unlinked_shop_purchase_keeps_warranty_customer_reported(service, customer):
+    ident = service.intake(customer, 'Laptop', 'No power', origin='shop',
+                           intake_warranty={'source': 'shop_unlinked', 'status': 'UNKNOWN'})
+    job = service.job(ident)
+    snapshot = json.loads(job['lifecycle_data'])['intake_warranty']
+    assert job['sale_id'] is None
+    assert snapshot['source'] == 'shop_unlinked'
+    assert snapshot['verification'] == 'customer_reported'
+
+
 @pytest.mark.parametrize('metadata', [
     {'source': 'shop', 'status': 'VALID'},
     {'source': 'external', 'status': 'APPROVED'},

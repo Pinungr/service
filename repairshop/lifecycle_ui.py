@@ -200,12 +200,12 @@ class JobWorkspace(QDialog):
             d.text('condition','Device condition at dispatch',v['damage'],multiline=True)
             d.date('expected_return','Expected return date',v['return_due'])
             d.text('reference','External reference (service centre case / third-party ticket)')
-            d.text('carrier','Courier / transport information')
-            from .dispatch_ui import MODE_LABELS, PAYER_LABELS
-            d.select('transport_mode','Transport mode',MODE_LABELS,'BY_HAND')
-            d.text('transport_amount','Transport amount (INR)','0')
+            # The same conditional transport block as the dispatch tab, which corrects
+            # this record later: one builder, so the two screens cannot drift apart.
+            from .dispatch_ui import MODE_LABELS, PAYER_LABELS, transport_fields
+            gather=transport_fields(d, d.select('transport_mode','Transport mode',MODE_LABELS,'COURIER'))
+            d.text('transport_amount','Amount (INR)','0')
             d.select('paid_by','Transport paid by',PAYER_LABELS,'shop')
-            d.layout.addRow(label('Bus, courier and by-hand details are recorded on the Third-party dispatch tab, where they can be corrected before sending and amended with a reason afterwards.'))
             checks=[]
             for h in v['holdings']:
                 if in_shop(h['location']):
@@ -215,11 +215,8 @@ class JobWorkspace(QDialog):
             d.text('notes','Dispatch notes',multiline=True)
             def prepare(p):
                 p=dict(p,items=[i for i,w in checks if w.isChecked()],amount=money(p.pop('transport_amount') or '0'))
-                carrier=(p.get('carrier') or '').strip()
-                if carrier and p['transport_mode']=='COURIER':p['transport']={'courier_name':carrier}
-                elif carrier and p['transport_mode']=='BUS':p['transport']={'bus_name':carrier}
-                elif carrier and p['transport_mode']=='BY_HAND':p['transport']={'person_name':carrier}
-                elif carrier:p['transport']={'details':carrier}
+                mode,transport=gather(p)
+                p['transport_mode'],p['transport']=mode,transport
                 self.life.execute(self.ident,action,p,v['version'])
             return d.submit(prepare)
         elif action=='hand_over':

@@ -31,7 +31,7 @@ class IntakeWizard:
         form.select('warranty_status', 'Reported warranty', [
             ('Warranty unknown', 'UNKNOWN'), ('Valid warranty', 'VALID'),
             ('Expired warranty', 'EXPIRED'), ('No warranty', 'NONE')], 'UNKNOWN')
-        form.date('warranty_expiry', 'Warranty expiry (optional)')
+        form.date('warranty_expiry', 'Warranty expiry (optional)', default_today=False)
         form.text('warranty_provider', 'Provider / seller (optional)')
         form.text('warranty_notes', 'Warranty notes (optional)', multiline=True)
         form.check('identity_unknown', 'Brand / model unavailable or not applicable')
@@ -128,10 +128,10 @@ class IntakeWizard:
             scroll.setWidget(body); self.stack.addWidget(scroll); self.pages.append(layout)
 
         groups = [
-            ['customer_id', 'origin', 'submitter', 'relationship', 'update_contact_id'],
+            ['customer_id', 'origin'],
             ['device_id', 'category_id', 'device', 'brand', 'model', 'identity_unknown', 'serial',
              'warranty_status', 'warranty_expiry', 'warranty_provider', 'warranty_notes'],
-            ['complaint', 'damage', 'customer_requirement', 'no_accessories', 'service_id', 'repair_due'],
+            ['complaint', 'damage', 'customer_requirement', 'no_accessories', 'repair_due'],
             ['initial_estimate', 'transport_agreed', 'advance', 'policy', 'assessment_agreed', 'assessment_consent',
              'deposit', 'collection_due', 'intake_ref']]
         by_widget = {widget: key for key, widget in form.fields.items()}
@@ -157,7 +157,7 @@ class IntakeWizard:
                 error = QLabel(); error.setWordWrap(True); error.setStyleSheet('color:#b42318;'); error.hide()
                 line.addWidget(error); self.inline_errors[key] = error
                 self.rows[key] = (label, wrapper)
-                labels = {'customer_id': 'Device owner *', 'category_id': 'Product category *',
+                labels = {'customer_id': 'Customer *', 'category_id': 'Product category *',
                           'device': 'Product description *', 'brand': 'Brand *', 'model': 'Model *',
                           'complaint': 'Reported issue *', 'damage': 'Visible condition / damage',
                           'advance': 'Advance received now (INR)', 'initial_estimate': 'Initial estimated cost (INR) *',
@@ -167,15 +167,15 @@ class IntakeWizard:
                 self.pages[index].addRow(label, wrapper)
         for label, field in leftovers:
             text = label.text() if label else ''
-            if text in ('Person to photograph', 'Customer photo'):
-                self.pages[0].addRow(label, field)
-            elif text == 'Existing warranty':
+            if text in ('Existing warranty', 'Product photos'):
                 self.pages[1].addRow(label, field)
             elif text == 'Accessories actually received' or (hasattr(field, 'text') and field.text().startswith('+ Add new accessory')):
                 self.pages[2].insertRow(4, label or '', field)
             else:
-                if label: label.deleteLater()
-                field.deleteLater()  # Old Save draft action is replaced in the persistent footer.
+                # Still read by form.values() and by the photo/draft support, so these are
+                # hidden rather than destroyed: deleting them crashes the first save.
+                if label: label.hide()
+                field.hide()
 
         # Keep the original source combo for draft/business bindings, present two explicit choices.
         form.fields['origin'].hide()
@@ -187,26 +187,14 @@ class IntakeWizard:
             radio.setProperty('origin', value)
             QWidget.layout(source_wrapper).insertWidget(0 if value == 'shop' else 1, radio)
             radio.toggled.connect(lambda checked, v=value: checked and form.fields['origin'].setCurrentIndex(form.fields['origin'].findData(v)))
-        self.disclosure(0, 'Submitting person or additional authorized contact', ['submitter', 'relationship', 'update_contact_id'])
-        self.disclosure(3, 'Additional charges, consent & collection details', ['policy', 'assessment_agreed', 'assessment_consent', 'deposit', 'collection_due', 'intake_ref'])
         self.back = form.buttons.addButton('Back', QDialogButtonBox.ButtonRole.ActionRole)
         self.back.clicked.connect(lambda: self.go(self.step - 1))
         self.next = form.buttons.addButton('Next', QDialogButtonBox.ButtonRole.ActionRole)
         self.next.setObjectName('primary'); self.next.clicked.connect(self.next_step)
         self.draft = form.buttons.addButton('Save as Draft', QDialogButtonBox.ButtonRole.ActionRole)
         self.draft.clicked.connect(self.save_draft)
-        old_scroll.deleteLater()
+        old_scroll.hide()  # Still parents the intake fields the wizard does not lay out.
         form.resize(940, 880)
-
-    def disclosure(self, index, title, keys):
-        toggle = QCheckBox(title)
-        self.pages[index].addRow(toggle)
-        for key in keys:
-            label, field = self.rows[key]
-            self.pages[index].removeWidget(label); self.pages[index].removeWidget(field)
-            self.pages[index].addRow(label, field)
-            label.hide(); field.hide()
-        toggle.toggled.connect(lambda visible: [self.set_row(key, visible) for key in keys])
 
     def set_row(self, key, visible):
         for widget in self.rows[key]:
@@ -232,10 +220,12 @@ class IntakeWizard:
     def validate(self, step):
         values = self.form.values()
         if step == 0:
-            if not values['customer_id']: self.fail('customer_id', 'Select or register the device owner.')
-            if not self.support.photo_id: self.fail('customer_id', 'Capture or upload the required customer photo before continuing.')
-            if values['origin'] == 'shop' and not self.support.sale:
-                self.fail('origin', 'Select a product from this customer’s purchase history.')
+            if not values['customer_id']: self.fail('customer_id', 'Select or register the customer.')
+            # The photo belongs to the customer record, not to this intake, so a missing
+            # one is reported here with where to fix it rather than at the final save.
+            if not self.support.photo_id:
+                self.fail('customer_id', 'This customer has no saved photo. Open their Customer details, '
+                                         'add a photo, then reselect them here.')
         if step == 1:
             if not values['category_id']: self.fail('category_id', 'Choose a product category.')
             if not values['device']:
@@ -245,11 +235,10 @@ class IntakeWizard:
             if not values['identity_unknown']:
                 for key in ('brand', 'model'):
                     if not values[key]: self.fail(key, f'Enter the {key}, or mark brand / model unavailable.')
-            if values['origin'] != 'shop' and values['warranty_status'] == 'VALID' and values['warranty_expiry'] and values['warranty_expiry'] < today():
+            if not self.support.sale and values['warranty_status'] == 'VALID' and values['warranty_expiry'] and values['warranty_expiry'] < today():
                 self.fail('warranty_expiry', 'This expiry date has passed. Select Expired warranty or correct the date.')
         if step == 2:
             if not values['complaint']: self.fail('complaint', 'Describe the problem reported by the customer.')
-            if not values['service_id']: self.fail('service_id', 'Choose a repair / service type.')
         if step == 3:
             for key in ('transport_agreed', 'advance', 'deposit', 'assessment_agreed', 'initial_estimate'):
                 try:
@@ -333,7 +322,7 @@ class IntakeWizard:
         self.sales.setVisible(shop)
         self.pages[0].labelForField(self.sales).setVisible(shop)
         self.sale_summary.setVisible(shop)
-        self.set_row('device_id', not shop)
+        self.set_row('device_id', not shop or not self.support.sale)
         if shop:
             self.select_sale()
         elif self.support.sale:
@@ -349,7 +338,8 @@ class IntakeWizard:
         self.support.sale = sale
         if not sale:
             if previous: self.clear_sale_fields()
-            self.sale_summary.setText('Select a purchase to load product details and warranty dates.' if self.sale_rows else 'No sales history for this customer. Register the sale in Products sold, or choose External / other product.')
+            self.sale_summary.setText('Select a purchase to fill details automatically, or enter the product on the next page.' if self.sale_rows else 'No sale recorded for this customer. Enter the product on the next page; it will be saved for future visits. Shop warranty dates cannot be verified without a linked sale.')
+            self.set_row('device_id', True)
             self.warranty_changed(); return
         self.support.parent = None
         self.restoring = True
@@ -361,6 +351,7 @@ class IntakeWizard:
         category.setCurrentIndex(category.findData(sale['category_id']))
         self.form.fields['identity_unknown'].setChecked(not device.get('brand') or not device.get('model'))
         self.restoring = False
+        self.set_row('device_id', False)
         warranty = sale_warranty(sale)
         self.sale_summary.setText(f"{sale['device']}\nPurchased: {sale['sale_date'] or 'Not recorded'}  ·  Serial: {sale['serial'] or 'Not recorded'}\n{self.warranty_text(warranty)}")
         self.warranty_changed(); self.support.changed()
@@ -380,12 +371,12 @@ class IntakeWizard:
         return text
 
     def warranty_changed(self):
-        shop = self.form.fields['origin'].currentData() == 'shop'
+        linked_sale = self.form.fields['origin'].currentData() == 'shop' and bool(self.support.sale)
         status = self.form.fields['warranty_status'].currentData()
-        self.set_row('warranty_status', not shop)
-        for key in ('warranty_expiry', 'warranty_provider', 'warranty_notes'): self.set_row(key, not shop and status == 'VALID')
-        warranty = sale_warranty(self.support.sale) if shop and self.support.sale else {'status': 'UNKNOWN' if shop else status}
-        self.warranty_badge.setText(self.warranty_text(warranty) + ('\nSales dates checked automatically; coverage is verified during assessment.' if shop else '\nReported at intake. Warranty coverage still needs verification.'))
+        self.set_row('warranty_status', not linked_sale)
+        for key in ('warranty_expiry', 'warranty_provider', 'warranty_notes'): self.set_row(key, not linked_sale and status == 'VALID')
+        warranty = sale_warranty(self.support.sale) if linked_sale else {'status': status}
+        self.warranty_badge.setText(self.warranty_text(warranty) + ('\nSales dates checked automatically; coverage is verified during assessment.' if linked_sale else '\nReported at intake. Warranty coverage still needs verification.'))
         self.warranty_badge.setStyleSheet('padding:12px;border-radius:8px;background:' + ('#dcfce7;color:#166534;' if warranty['status']=='VALID' else '#fff3dd;color:#805414;'))
         self.suggest_service(warranty['status'])
 
@@ -419,7 +410,7 @@ class IntakeWizard:
             field = self.form.fields[key]; value = payload[key]
             if isinstance(field, QCheckBox): field.setChecked(bool(value))
             elif isinstance(field, QComboBox): field.setCurrentIndex(field.findData(value))
-            elif key == 'warranty_expiry': field.setDate(QDate.fromString(value, 'yyyy-MM-dd') if value else QDate(1900, 1, 1))
+            elif key == 'warranty_expiry': field.setDate(QDate.fromString(value, 'yyyy-MM-dd') if value else field.minimumDate())
             elif key == 'warranty_notes': field.setPlainText(value or '')
             else: field.setText(value or '')
         self.load_sales(payload.get('sale_id'))
@@ -430,16 +421,18 @@ class IntakeWizard:
         for radio in self.source_buttons.buttons():
             radio.blockSignals(True); radio.setChecked(radio.property('origin') == ('shop' if shop else 'elsewhere')); radio.blockSignals(False)
         self.sales.setVisible(shop); self.pages[0].labelForField(self.sales).setVisible(shop); self.sale_summary.setVisible(shop)
-        self.set_row('device_id', not shop)
+        self.set_row('device_id', not shop or not self.support.sale)
         if self.support.sale:
             self.sale_summary.setText(self.support.sale['device'] + '\n' + self.warranty_text(sale_warranty(self.support.sale)))
+        else:
+            self.sale_summary.setText('Enter the product on the next page. It will be saved for future visits.')
         self.warranty_changed()
 
     def reset_product(self):
         self.restoring = True
         for key in ('warranty_provider', 'warranty_notes'): self.form.fields[key].clear()
         self.form.fields['warranty_status'].setCurrentIndex(0)
-        self.form.fields['warranty_expiry'].setDate(QDate(1900, 1, 1))
+        self.form.fields['warranty_expiry'].setDate(self.form.fields['warranty_expiry'].minimumDate())
         self.form.fields['identity_unknown'].setChecked(False)
         self.form.fields['no_accessories'].setChecked(False)
         self.sales.setCurrentIndex(0)

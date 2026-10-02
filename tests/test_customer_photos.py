@@ -407,7 +407,7 @@ def test_intake_cancel_camera_fail_and_restart_preserve_draft(qtbot, service, cu
         checks = [w for w in form.findChildren(QCheckBox) if hasattr(w, 'quantity_control')]
         checks[0].setChecked(True)
         checks[0].quantity_control.setValue(2)
-        capture = next(b for b in form.findChildren(__import__('PyQt6.QtWidgets', fromlist=['QPushButton']).QPushButton) if b.text() == 'Capture customer photo')
+        capture = next(b for b in form.findChildren(__import__('PyQt6.QtWidgets', fromlist=['QPushButton']).QPushButton) if b.text() == 'Capture product photo')
         capture.click()
         assert created[-1].status.text() == NO_CAMERA
         assert form.fields['complaint'].toPlainText() == 'Entered fault'
@@ -449,3 +449,42 @@ def test_overview_shows_history_and_missing_photo_placeholder(qtbot, service, cu
     dialog.reload()
     assert 'missing' in dialog.photo.text()
     qtbot.waitUntil(lambda: not window.tasks)
+
+
+def test_product_photo_taken_at_intake_is_claimed_by_the_device_and_its_card(service, customer):
+    """The product is photographed before its device record exists, so intake claims it."""
+    records = CustomerRecords(service)
+    first = records.save_photo(picture(), customer, 'product', 'ThinkPad T14')
+    second = records.save_photo(picture('#912f2f'), customer, 'product', 'ThinkPad T14')
+    pending = service.db.one('SELECT * FROM attachments WHERE id=?', (first,))
+    assert pending['kind'] == 'product_photo' and pending['device_id'] is None and pending['job_id'] is None
+    assert 'Product-Photos' in pending['path']
+
+    job = service.intake(customer, 'ThinkPad T14', 'Does not start', product_photos=[first, second])
+    device_id = service.job(job)['device_id']
+    for ident in (first, second):
+        row = service.db.one('SELECT * FROM attachments WHERE id=?', (ident,))
+        assert row['device_id'] == device_id and row['job_id'] == job
+
+    from repairshop.job_cards import JobCards
+    card = next(r for r in JobCards(service).rows(job) if r['kind'] == 'customer_receiving')
+    assert sorted(json.loads(card['snapshot'])['device_photo_references']) == sorted([first, second])
+
+
+def test_product_photo_cannot_be_reused_for_another_customers_intake(service, customer):
+    other = service.save_customer('Second Owner', '9990000077', complete=False)
+    CustomerRecords(service).save_photo(picture(), other)
+    stray = CustomerRecords(service).save_photo(picture(), other, 'product', 'Their laptop')
+    with pytest.raises(RuleError, match='captured for this customer'):
+        service.intake(customer, 'ThinkPad T14', 'Does not start', product_photos=[stray])
+
+
+def test_product_photo_needs_a_description_and_rejects_a_foreign_device(service, customer, job):
+    records = CustomerRecords(service)
+    with pytest.raises(RuleError, match='product description'):
+        records.save_photo(picture(), customer, 'product', '   ')
+    # A photo already claimed by one repair is not evidence for the next one.
+    claimed = records.save_photo(picture(), customer, 'product', 'ThinkPad T14')
+    service.intake(customer, 'Second device', 'Cracked screen', product_photos=[claimed])
+    with pytest.raises(RuleError, match='already belongs to another repair'):
+        service.intake(customer, 'Third device', 'No power', product_photos=[claimed])

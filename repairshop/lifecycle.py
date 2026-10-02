@@ -634,8 +634,7 @@ class Lifecycle:
                     from .dispatch import Dispatches
                     data['dispatch_id']=Dispatches(self.s).prepare(c,j,dict(
                         contact_id=v['assignment']['contact_id'],reference=p.get('reference',''),
-                        transport_mode=p.get('transport_mode') or ('COURIER' if p.get('carrier','').strip() else 'BY_HAND'),
-                        transport=p.get('transport') or ({'courier_name':p['carrier'].strip()} if p.get('carrier','').strip() else {}),
+                        transport_mode=p.get('transport_mode') or 'COURIER',transport=p.get('transport') or {},
                         amount=p.get('amount',0),paid_by=p.get('paid_by','shop'),expected_return=day(p.get('expected_return')),
                         condition=p.get('condition',''),notes=p.get('notes',''),
                         manifest=sorted(selected),consent=True))

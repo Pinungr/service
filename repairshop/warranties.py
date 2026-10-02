@@ -39,9 +39,9 @@ def reported_intake_warranty(values):
     allowed = {'source', 'status', 'expiry', 'provider', 'notes'}
     if not isinstance(values, dict) or not set(values) <= allowed:
         raise RuleError('Enter supported intake warranty details.')
-    if values.get('source') != 'external' or values.get('status') not in ('VALID', 'EXPIRED', 'NONE', 'UNKNOWN'):
-        raise RuleError('Choose the reported external warranty status.')
-    result = dict(source='external', status=values['status'], expiry=None, provider='', notes='',
+    if values.get('source') not in ('external', 'shop_unlinked') or values.get('status') not in ('VALID', 'EXPIRED', 'NONE', 'UNKNOWN'):
+        raise RuleError('Choose the reported warranty status.')
+    result = dict(source=values['source'], status=values['status'], expiry=None, provider='', notes='',
                   checked_on=today(), verification='customer_reported')
     # Hidden valid-warranty fields must not leak into another status.
     if result['status'] == 'VALID':

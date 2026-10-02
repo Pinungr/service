@@ -1,5 +1,7 @@
+import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QLineEdit
+from repairshop.domain import RuleError
 from repairshop.ui import MainWindow
 from repairshop.ui_widgets import Form, CustomerSelector, MasterSelector, STYLE
 
@@ -68,7 +70,7 @@ def test_real_intake_accessories_start_unchecked_and_persist(qtbot,service,custo
     qtbot.waitUntil(lambda:not window.tasks,timeout=10000)
 
 
-def test_intake_registers_customer_inline_and_enables_photo(qtbot,service,monkeypatch):
+def test_intake_registers_customer_inline_and_uses_saved_photo(qtbot,service,monkeypatch):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtGui import QImage,QColor
@@ -95,12 +97,16 @@ def test_intake_registers_customer_inline_and_enables_photo(qtbot,service,monkey
             form.fields['device'].setText('Inline registration test laptop')
             form.fields['complaint'].setPlainText('Screen fault')
             owner.search.setText('Bibhu Test')
-            assert owner.text() is None and not form.intake_support.capture_button.isEnabled()
+            assert owner.text() is None
             assert 'No matching customer' in owner.hint.text()
             QTimer.singleShot(10,register)
             owner.create_button.click()
             customer=service.db.one("SELECT id FROM customers WHERE name='Bibhu Test'")['id']
-            assert owner.text()==customer and form.intake_support.capture_button.isEnabled()
+            # Registered without a photo: intake reports it against the customer field
+            # rather than letting the counter reach the final save and fail there.
+            assert owner.text()==customer and form.intake_support.photo_id is None
+            assert 'No customer photo on record' in form.intake_support.photo_label.text()
+            with pytest.raises(RuleError,match='no saved photo'):form.wizard.validate(0)
             assert form.fields['device'].text()=='Inline registration test laptop'
             assert form.fields['complaint'].toPlainText()=='Screen fault'
             photo=QImage(64,64,QImage.Format.Format_RGB32);photo.fill(QColor('#68a398'))

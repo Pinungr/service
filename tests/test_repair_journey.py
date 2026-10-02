@@ -147,7 +147,8 @@ def test_route_selection_branches_the_visible_path(service, customer, kind, warr
 def test_in_transit_and_external_stages_read_as_waiting_not_as_shop_work(service, customer):
     ident, life = route(service, customer, 'third_party')
     life.execute(ident, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(ident)], consent=True,
-                                                 condition='Intact', expected_return='2099-01-01'))
+                                                 condition='Intact', expected_return='2099-01-01',
+                                                 transport_mode='IN_HAND', transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(ident, 'dispatch', dict(counterparty='Courier', condition='Intact',
                                          acknowledgment='Receipt D1', carrier='Blue Dart'))
     v, nodes, current = project(life, ident)

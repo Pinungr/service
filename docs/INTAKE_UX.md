@@ -2,12 +2,14 @@
 
 ## Workflow
 
-1. **Customer:** search by name, phone or alternate number, or register a new customer inline. Capture/upload a photo. Choose a shop purchase or an external product.
-2. **Product:** verify autofilled category, brand/model and serial; add master choices inline. Shop warranty dates are calculated automatically. External warranty offers valid, expired, none or unknown; valid reveals optional provider, expiry and notes.
-3. **Repair:** record the issue, condition, actual accessories, service and optional completion date. New accessories are saved to the selected category and immediately checked. No accessories clears the checklist. Active warranty suggests Warranty Assessment while leaving the service editable.
+1. **Customer:** search by name, phone or alternate number, or register a new customer inline. The selected customer is the submitting customer; any saved customer photo is reused automatically. A recorded shop sale can fill product and warranty details, but it is optional. For an unrecorded shop purchase, enter the product manually on the next step. The saved physical product is available to select for this customer on future visits.
+2. **Product:** verify autofilled category, brand/model and serial, or enter them manually; add master choices inline. Photograph the product as received — several photos per product, captured or uploaded here and nowhere else. Linked shop sale warranty dates are calculated automatically. A shop purchase without a linked sale and an external product use customer-reported warranty status until verified; valid reveals optional provider, expiry and notes.
+3. **Repair:** record the issue, condition, actual accessories and optional completion date. New accessories are saved to the selected category and immediately checked. No accessories clears the checklist. Repair/service classification is left for later diagnosis.
 4. **Confirm:** enter optional transportation/initial deposit, expand additional financial controls if needed, and review. Create Repair Job saves through the existing service. For several devices, Add product and receive another preserves customer/photo and opens a fresh product entry. Each product receives a separate repair job in one atomic visit.
 
-Back/Next preserves input. Save as Draft and existing autosave retain unfinished work, including the visit basket. Required customer photo enforcement remains in the service. Registration may be saved without a photo; intake cannot be finalized without one.
+Back/Next preserves input. Save as Draft and existing autosave retain unfinished work, including the visit basket.
+
+Two photo rules, deliberately separate. The **person** is photographed only in the customer section: registration may be saved without a photo, and intake then reuses the saved customer photo rather than asking for a duplicate. A customer with no photo at all is refused on the Customer step, naming Customer details as the place to fix it, instead of failing at the final save. The **product** is photographed only on the Product step, once per product and never shared between products in a visit. Product photos are optional, are stored against the customer while the device record does not yet exist, and are claimed for the device and the repair when the intake is saved — which is what lets the receiving job card reference them.
 
 ## Components and data
 

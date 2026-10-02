@@ -593,7 +593,7 @@ class Service:
                         'outcomes': {r['channel']: r['state'] for r in results}})
             return results
 
-    def intake(self, customer_id, device, complaint, accessories=(), storage=None, advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, **fields):
+    def intake(self, customer_id, device, complaint, accessories=(), storage=None, advance=0, operation_id=None, photo_id=None, device_id=None, draft_id=None, guided=False, brand=None, model=None, intake_warranty=None, visit_id=None, product_photos=(), **fields):
         self.require_permission('intake')
         # Whoever is signed in is the person the customer handed the product to, so they
         # become the receiver and the first custodian without being asked to say so.
@@ -679,6 +679,16 @@ class Service:
                 c.execute('DELETE FROM intake_drafts WHERE id=? AND actor=?', (draft_id, self.user['id']))
             number = f"REP-{today()[:4]}-{ident:06d}"
             c.execute("UPDATE jobs SET number=? WHERE id=?", (number, ident))
+            # Product photos are taken at the counter before this device record existed.
+            # Claiming them here, before the receiving card is issued, is what lets the
+            # card reference the pictures of the product it is a receipt for.
+            for attachment_id in dict.fromkeys(product_photos or ()):
+                self._bind_evidence(c, attachment_id, customer_id, ident, ('product_photo',),
+                                    'A product photo must be a photo captured for this customer at this intake.')
+                bound = c.execute('SELECT device_id FROM attachments WHERE id=?', (attachment_id,)).fetchone()
+                if bound['device_id'] is not None and bound['device_id'] != device_id:
+                    raise RuleError('A product photo must belong to the product being received.')
+                c.execute('UPDATE attachments SET device_id=? WHERE id=?', (device_id, attachment_id))
             received = [{"type": "device", "description": device, "quantity": 1, "serial": fields.get("serial", ""), "condition": fields.get("damage", "")}, *accessories]
             for item in received:
                 if not isinstance(item.get("quantity", 1), int) or item.get("quantity", 1) < 1:

@@ -12,6 +12,13 @@ from repairshop.customer_records import CustomerRecords
 from repairshop.intake_fields import INTAKE_STYLE
 
 
+def picture(color='#456f93'):
+    from PyQt6.QtGui import QImage, QColor
+    image = QImage(100, 80, QImage.Format.Format_RGB32)
+    image.fill(QColor(color))
+    return image
+
+
 def open_intake(qtbot, service, monkeypatch, **kwargs):
     window = MainWindow(service); window.timer.stop(); qtbot.addWidget(window)
     dialogs = []
@@ -63,6 +70,34 @@ def test_shop_sale_autofill_warranty_and_end_to_end_save(qtbot,service,customer,
     assert json.loads(job['lifecycle_data'])['intake_warranty']['status']=='VALID'
     assert service.db.one("SELECT amount FROM entries WHERE kind='receipt'")['amount']==-50000
     form.keep_draft=None; form.close()
+
+
+def test_manual_shop_product_is_saved_and_offered_on_next_visit(qtbot,service,customer,monkeypatch):
+    form=open_intake(qtbot,service,monkeypatch,customer_id=customer)
+    wizard=form.wizard
+    select(form,'origin','This shop')
+    assert wizard.sales.currentData() is None
+    wizard.next_step(); assert wizard.step==1
+    assert wizard.rows['device_id'][1].isVisibleTo(form)
+    product(form,'Manually entered laptop')
+    form.fields['serial'].setText('MANUAL-001')
+    select(form,'warranty_status','Warranty unknown')
+    wizard.next_step(); wizard.next_step()
+    ids=form.visit_intake.save()
+    job=service.job(ids[0])
+    assert job['origin']=='shop' and job['sale_id'] is None
+    saved=service.db.one('SELECT * FROM devices WHERE id=?',(job['device_id'],))
+    assert saved['name']=='Manually entered laptop' and saved['serial']=='MANUAL-001'
+    assert json.loads(job['lifecycle_data'])['intake_warranty']['source']=='shop_unlinked'
+    form.keep_draft=None; form.close()
+
+    again=open_intake(qtbot,service,monkeypatch,customer_id=customer)
+    select(again,'origin','This shop')
+    again.intake_support.device_choice.setCurrentIndex(
+        again.intake_support.device_choice.findData(saved['id']))
+    assert again.fields['device'].text()=='Manually entered laptop'
+    assert again.fields['serial'].text()=='MANUAL-001'
+    again.keep_draft=None; again.close()
 
 
 def test_external_wizard_validation_back_draft_and_save(qtbot,service,customer,monkeypatch):
@@ -202,3 +237,47 @@ def test_brand_master_names_and_free_text_preserve_device_identity(qtbot,service
     device=service.db.one('SELECT * FROM devices WHERE id=?',(service.job(ident)['device_id'],))
     assert device['brand']=='Existing brand' and device['model']=='Free text model'
     form.keep_draft=None;form.close()
+
+
+def test_product_photos_live_on_the_product_step_and_reach_the_saved_job(qtbot,service,customer,monkeypatch):
+    """The product picture is captured on the product itself, never on the customer step."""
+    from PyQt6.QtWidgets import QFormLayout
+    form=open_intake(qtbot,service,monkeypatch,customer_id=customer)
+    wizard=form.wizard
+    photos=form.intake_support.product_photos
+    placed={index:[layout.itemAt(row,QFormLayout.ItemRole.LabelRole) for row in range(layout.rowCount())]
+            for index,layout in enumerate(wizard.pages)}
+    labels={index:[item.widget().text() for item in items if item and item.widget()] for index,items in placed.items()}
+    assert 'Product photos' in labels[1]
+    assert not any('Product photos' in labels[index] for index in (0,2,3))
+
+    product(form)
+    first=CustomerRecords(service).save_photo(picture(),customer,'product','Test laptop')
+    photos.add(first)
+    assert form.intake_support.payload()['product_photos']==[first]
+
+    wizard.next_step(); wizard.next_step(); wizard.next_step()
+    ids=form.visit_intake.save()
+    job=service.job(ids[0])
+    stored=service.db.one('SELECT device_id,job_id FROM attachments WHERE id=?',(first,))
+    assert stored['job_id']==ids[0] and stored['device_id']==job['device_id']
+    form.keep_draft=None; form.close()
+
+
+def test_each_product_in_a_visit_keeps_its_own_photos(qtbot,service,customer,monkeypatch):
+    form=open_intake(qtbot,service,monkeypatch,customer_id=customer)
+    photos=form.intake_support.product_photos
+    product(form,'First laptop')
+    photos.add(CustomerRecords(service).save_photo(picture(),customer,'product','First laptop'))
+    form.visit_intake.add_current()
+    # Adding the product to the basket clears the strip: the next device starts empty.
+    assert photos.photo_ids==[]
+    assert form.visit_intake.products[0]['product_photos']
+    product(form,'Second laptop')
+    second=CustomerRecords(service).save_photo(picture('#912f2f'),customer,'product','Second laptop')
+    photos.add(second)
+    ids=form.visit_intake.save()
+    assert len(ids)==2
+    owners={service.db.one('SELECT job_id FROM attachments WHERE id=?',(second,))['job_id']}
+    assert owners=={ids[1]}
+    form.keep_draft=None; form.close()

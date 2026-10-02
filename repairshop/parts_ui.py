@@ -70,7 +70,9 @@ class RepairRecords(QWidget):
             intake=json.loads(job['lifecycle_data']).get('intake_warranty')
             self.intake_warranty_info.setVisible(bool(intake))
             if intake:
-                source='Recorded shop sale dates' if intake['source']=='shop' else 'Customer-reported external warranty'
+                source={'shop': 'Recorded shop sale dates',
+                        'shop_unlinked': 'Customer-reported shop purchase (sale not linked)',
+                        'external': 'Customer-reported external warranty'}.get(intake['source'], 'Reported warranty')
                 details=[f"{source} at intake: {intake['status']}", 'Coverage must be verified before repair authorization.']
                 for key,label in (('checked_on','Recorded'),('sale_date','Sale date'),('start_date','Starts'),('expiry','Expires'),('provider','Provider'),('terms','Sale terms'),('notes','Customer notes')):
                     if intake.get(key):details.append(f"{label}: {intake[key]}")

@@ -166,7 +166,8 @@ def test_third_party_supplier_is_locked_and_external_supplier_is_distinct(servic
 @pytest.mark.parametrize('kind,warranty',[('third_party',False),('warranty_centre',True)])
 def test_courier_outbound_and_reverse_custody_cards_are_consistent(service,customer,kind,warranty):
     job,life=route(service,customer,kind,warranty)
-    life.execute(job,'prepare_dispatch',dict(items=[r['id'] for r in life.holdings(job)],consent=True,condition='Intact'))
+    life.execute(job,'prepare_dispatch',dict(items=[r['id'] for r in life.holdings(job)],consent=True,condition='Intact',
+        transport_mode='IN_HAND', transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(job,'dispatch',dict(carrier='DTDC',counterparty='Driver',condition='Packed',acknowledgment='AWB-100'))
     v=life.snapshot(job)
     assert v['current_location']=='IN TRANSIT' and v['current_custodian']=='DTDC'

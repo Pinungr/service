@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox, QWidget
 from . import app_settings
-from .ui_widgets import button, combo, FlowLayout
+from .ui_widgets import button, FlowLayout
 from .domain import rupees, RuleError
 from .messaging import status_label
 
@@ -30,12 +30,10 @@ class PostIntakeDialog(QDialog):
         heading = QLabel('INTAKE CREATED SUCCESSFULLY')
         heading.setObjectName('title')
         layout.addWidget(heading)
-        estimate = sum(r['initial_estimate'] or 0 for r in rows)
         summary = QLabel('\n'.join(filter(None, [
             'Visit: ' + str(visit.get('number', 'Not recorded')),
             'Customer: ' + rows[0]['customer'],
-            'Jobs: ' + ', '.join(r['number'] for r in rows),
-            'Total initial estimate: ' + rupees(estimate)])))
+            'Jobs: ' + ', '.join(r['number'] for r in rows)])))
         summary.setWordWrap(True)
         summary.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(summary)
@@ -75,12 +73,6 @@ class PostIntakeDialog(QDialog):
             extra_layout.addWidget(box)
         self.print_copy.setEnabled(bool(documents))
         extra_layout.addWidget(self.print_copy)
-        choice = FlowLayout()
-        extra_layout.addLayout(choice)
-        self.paper = combo([(size, size) for size in app_settings.PAPER_CHOICES],
-                           window.docs.paper(document='intake_receipt'))
-        choice.addWidget(QLabel('Paper size for this copy'))
-        choice.addWidget(self.paper)
         send = button('Send / print the extra copy', lambda: window.safe(self.deliver))
         send.setObjectName('primary')
         extra_layout.addWidget(send)
@@ -103,8 +95,8 @@ class PostIntakeDialog(QDialog):
             try:
                 results = self.window.s.auto_notify(
                     'intake_receipt', self.attachment(path), self.window.s.job(self.jobs[0])['customer_id'],
-                    'Your products have been received. The attached receipt lists each product, its '
-                    'initial estimate and the advance recorded.', uuid.uuid4().hex, job_id=job_id)
+                    'Your products have been received. The attached receipt lists each product and the '
+                    'advance recorded.', uuid.uuid4().hex, job_id=job_id)
                 notes += [r['channel'].title() + ': ' + status_label(r['state']) for r in results]
                 if not results:
                     notes.append('No customer message is configured for intake receipts.')
@@ -143,11 +135,11 @@ class PostIntakeDialog(QDialog):
             try:
                 results = self.window.s.queue_customer_document(
                     self.attachment(path), customer_id, channels, 'intake_receipt',
-                    'Your products have been received. The attached receipt lists each product, its '
-                    'initial estimate and the advance recorded.', uuid.uuid4().hex, job_id=job_id)
+                    'Your products have been received. The attached receipt lists each product and the '
+                    'advance recorded.', uuid.uuid4().hex, job_id=job_id)
                 notes += [r['channel'].title() + ': ' + status_label(r['state']) for r in results]
             except Exception as exc:
                 notes.append('Could not queue the message: ' + str(exc) + ' The intake is saved.')
         if self.print_copy.isChecked() and self.documents:
-            notes.append(self.open_for_print(self.paper.currentData() or 'A4'))
+            notes.append(self.open_for_print(self.window.docs.paper(document='intake_receipt')))
         self.status.setText('\n'.join(notes) or 'Nothing selected.')

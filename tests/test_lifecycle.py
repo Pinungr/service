@@ -26,7 +26,8 @@ def route(s,customer,kind='in_house',warranty=False):
 
 
 def dispatch(s,ident,life,carrier=''):
-    life.execute(ident,'prepare_dispatch',dict(items=[r['id'] for r in life.holdings(ident)],consent=True,condition='Intact',expected_return='2099-01-01'))
+    life.execute(ident,'prepare_dispatch',dict(items=[r['id'] for r in life.holdings(ident)],consent=True,condition='Intact',expected_return='2099-01-01',
+        transport_mode='IN_HAND', transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(ident,'dispatch',dict(counterparty='Courier' if carrier else 'Repairer',condition='Intact',acknowledgment='Receipt D1',carrier=carrier))
     if carrier:
         assert 'IN TRANSIT' in life.snapshot(ident)['current_location']

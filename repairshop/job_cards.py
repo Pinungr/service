@@ -141,29 +141,19 @@ class JobCards:
         if not internal:
             from .inventory import public_values
             p=public_values(p)
+            if p.get('kind','').startswith(('third_party', 'service_center', 'carrier')):
+                p['from']={'name': p.get('shop_name') or 'Repair shop'}
+                p['to']={'name': p.get('shop_name') or 'Repair shop'}
         def party(v):
             return '\n'.join(str(x) for k,x in v.items() if k!='id' and x)
         from .domain import rupees
         sections=[('Repair job',f"Job: {p['master_job']}\nVisit: {p.get('visit') or 'Not recorded'}\nCard: {p['card_number']}"),
-            ('From',party(p['from'])),('To',party(p['to'])),('Device',f"DEV-{p['device_id']:06d} · {p['device']}\nType: {p.get('device_type','Not specified')} · Service: {p.get('requested_service','Not specified')}\nBrand: {p['brand'] or 'Not recorded'} · Model: {p['model'] or 'Not recorded'}\nSerial / IMEI: {p['serial'] or 'Not recorded'}"),
+            ('From',party(p['from'])),('To',party(p['to'])),('Device',f"DEV-{p['device_id']:06d} · {p['device']}\nType: {p.get('device_type','Not specified')}\nBrand: {p['brand'] or 'Not recorded'} · Model: {p['model'] or 'Not recorded'}\nSerial / IMEI: {p['serial'] or 'Not recorded'}"),
             ('Complaint and condition',p['complaint']+'\n'+p['condition']),
             ('Items handed over',[{k:r.get(k,'') for k in ('description','quantity','serial','condition')} for r in p['items']]),
-            ('Receipt details',f"Effective: {local_time(p['effective'])} {timezone_name()}\nReceived / recorded by: {p['staff']}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
-        if p.get('initial_estimate') is not None:
-            warranty=p.get('intake_warranty') or {}
-            sections.append(('Initial estimate given at collection',
-                'Initial estimate: ' + rupees(p['initial_estimate'])
-                + '\nAdvance received at intake: ' + rupees(p.get('advance_at_intake') or 0)
-                + '\nThis is the estimate given when the product was received. It is not the final '
-                'repair quotation; chargeable repair is quoted after diagnosis and started only '
-                'after recorded customer approval.'))
-            if p.get('customer_requirement'):
-                sections.append(('Additional customer requirement',p['customer_requirement']))
-            if warranty:
-                sections.append(('Warranty reported at collection',
-                    'Status: ' + str(warranty.get('status','Not recorded'))
-                    + '\nExpiry: ' + str(warranty.get('expiry') or 'Not recorded')
-                    + '\nProvider: ' + str(warranty.get('provider') or 'Not recorded')))
+            ('Receipt details',f"Effective: {local_time(p['effective'])} {timezone_name()}\nReceived / recorded by: {p['staff']}\nAmount paid at intake: {rupees(p.get('advance_at_intake') or 0)}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
+        if p.get('customer_requirement'):
+            sections.append(('Additional customer requirement',p['customer_requirement']))
         if p.get('current_custodian'):
             sections.append(('Physical custody',f"Custodian: {p['current_custodian']}\n{p['custody_status']}\nFinal destination: {p.get('final_destination') or 'Direct handover'}"))
         if p.get('return_details'):

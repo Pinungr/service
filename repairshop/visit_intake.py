@@ -43,21 +43,22 @@ class VisitIntake:
         p=dict(payload)
         if 'warranty_status' in p:
             p['intake_warranty'] = dict(source='shop') if p.get('sale_id') else dict(
-                source='external',status=p.get('warranty_status','UNKNOWN'),
+                source='shop_unlinked' if p.get('origin') == 'shop' else 'external',
+                status=p.get('warranty_status','UNKNOWN'),
                 expiry=p.get('warranty_expiry'),provider=p.get('warranty_provider',''),notes=p.get('warranty_notes',''))
             for key in ('warranty_status','warranty_expiry','warranty_provider','warranty_notes','identity_unknown','no_accessories'):
                 p.pop(key,None)
         if not p.get('customer_id'):
-            raise RuleError('Select or register the device owner first.')
+            raise RuleError('Select or register the customer first.')
         if not p.get('photo_id'):
-            raise RuleError('Capture and save the required customer photo before adding products.')
+            raise RuleError('This customer has no saved photo. Add one from their Customer details, then reselect them.')
         if not p.get('device','').strip() or not p.get('complaint','').strip():
             raise RuleError('Enter the device description and reported fault for this product.')
-        self.w.s.validate_intake_service(p.get('category_id'),p.get('service_id'))
         # Custody starts with whoever is signed in and took the product from the
         # customer, so the counter is not asked to nominate a storage place or a receiver.
         p.pop('storage_id',None)
         p.pop('photo_role',None);p.pop('visit_products',None)
+        p['product_photos']=[i for i in (p.get('product_photos') or []) if i]
         for key in ('advance','deposit','transport_agreed','assessment_agreed','initial_estimate'):
             p[key]=money(p.get(key) or '0')
             if p[key]<0:raise RuleError('Intake amounts cannot be negative.')
@@ -86,12 +87,14 @@ class VisitIntake:
         for key in ('device','brand','model','serial','complaint','damage','customer_requirement'):
             self.form.fields[key].clear()
         for key in ('repair_due','collection_due'):
-            self.form.fields[key].setDate(QDate(1900,1,1))
+            self.form.fields[key].setDate(self.form.fields[key].minimumDate())
         for key in ('advance','deposit','transport_agreed','assessment_agreed','initial_estimate'):
             self.form.fields[key].setText('0')
         self.form.fields['assessment_consent'].setChecked(False)
         self.form.fields['origin'].setCurrentIndex(self.form.fields['origin'].findData('elsewhere'))
         for check in self.checks:check.setChecked(False)
+        # Photographs are evidence for the product just added, never for the next one.
+        self.support.product_photos.clear()
         if hasattr(self.form,'wizard'):self.form.wizard.reset_product()
 
     def edit_selected(self):
