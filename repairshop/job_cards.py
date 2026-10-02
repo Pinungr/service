@@ -33,6 +33,30 @@ class JobCards:
             return user or {'name':name,'location':'Technician work area'}
         return {'name':name or location,'location':kind}
 
+    def _partner(self, assignment_id):
+        """The external partner as recorded on the assignment, for printing on an immutable card."""
+        row=self.db.one('SELECT a.contact_id,a.contact_snapshot,m.name,m.contact FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id WHERE a.id=?',(assignment_id,)) or {}
+        if not row.get('contact_id'):
+            return {}
+        shot=json.loads(row.get('contact_snapshot') or '{}') or {'name':row['name'],'phone':row['contact']}
+        card={'id':row['contact_id'],'name':shot.get('name'),'contact_person':shot.get('contact_person',''),
+              'contact':shot.get('phone',''),'address':shot.get('address','')}
+        return {k:v for k,v in card.items() if v}
+
+    def transport(self, job_id):
+        """How the parcel travels, copied from the current dispatch record onto the card."""
+        from .dispatch import Dispatches, TRANSPORT_METHODS, TRANSPORT_LABELS, tracking
+        row=self.db.one('SELECT * FROM dispatches WHERE job_id=? AND current=1 ORDER BY cycle DESC LIMIT 1',(job_id,))
+        if not row:
+            return {}
+        d=Dispatches._readable(row);operator=d['transporter_snapshot']
+        found={'method':TRANSPORT_METHODS.get(d['transport_mode'],d['transport_mode']),'carrier':d['carrier'],'tracking':tracking(d),
+               'bus_service_contact':' · '.join(x for x in (operator.get('contact_person'),operator.get('phone')) if x),
+               'route':' → '.join(x for x in (operator.get('route_from'),operator.get('route_to')) if x),
+               'pickup':operator.get('pickup_point',''),'drop':operator.get('drop_point','')}
+        found.update({TRANSPORT_LABELS.get(k,k):v for k,v in d['transport'].items() if k not in ('courier_name','docket_number','parcel_number')})
+        return {k:v for k,v in found.items() if v}
+
     def return_details(self,j,p):
         data=json.loads(j['lifecycle_data']);details=data.get('route_details',{})
         parts=self.db.rows("SELECT name,source,quantity,serial,installed_by,installed_at,warranty_duration,warranty_unit,warranty_provider,warranty_terms,supplier_snapshot FROM repair_parts WHERE job_id=? AND status='installed'",(j['id'],))
@@ -41,11 +65,12 @@ class JobCards:
         warranty=self.db.one('SELECT decision,rma,findings,covered,excluded,terms FROM warranty WHERE job_id=? ORDER BY id DESC LIMIT 1',(j['id'],)) or {}
         result=p.get('repair_result') or ('RETURNED WITHOUT REPAIR' if data.get('unrepaired') else 'REPLACED' if data.get('replacement') else 'REPAIRED' if data.get('repair_completed') else 'NOT RECORDED')
         from .costing import JobCosts
-        repairer=self.db.one('SELECT m.name,m.contact FROM assignments a JOIN masters m ON m.id=a.contact_id WHERE a.id=?',(j['assignment_id'],)) or {}
+        repairer=self._partner(j['assignment_id'])
         remaining=self.db.one("SELECT h.location FROM holdings h JOIN items i ON i.id=h.item_id WHERE i.job_id=? AND i.type='device' AND h.quantity>0 AND NOT "+sql_in_shop('h.location')+" AND h.location NOT LIKE 'exception:%'",(j['id'],))
+        reference=details.get('external_reference') or (self.db.one('SELECT reference FROM assignments WHERE id=?',(j['assignment_id'],)) or {}).get('reference','')
         return dict(result=result,repair_status='Partial return; device remains away from shop' if remaining else 'Received at shop; final quality check pending',repairer=repairer.get('name','Not recorded'),repairer_contact=repairer.get('contact',''),work_performed=p.get('work_performed') or data.get('repair_summary',''),
             diagnosis=data.get('diagnosis',''),parts_installed=parts,parts_reported=p.get('parts_reported') or data.get('parts_used',''),
-            vendor_invoice=p.get('vendor_invoice') or details.get('vendor_invoice',''),service_reference=details.get('external_reference',''),
+            vendor_invoice=p.get('vendor_invoice') or details.get('vendor_invoice',''),service_reference=reference,
             claim_number=details.get('claim_number') or warranty.get('rma',''),warranty_decision=warranty,
             chargeable_repair=bool(warranty.get('decision') in ('rejected','partial')),
             replacement=data.get('replacement',{}),condition=p.get('condition',''),notes=p.get('notes',''),
@@ -62,7 +87,7 @@ class JobCards:
             shop = {k: self.db.setting(k, '') for k in ('shop_name', 'address', 'phone', 'email')}
             shop['name'] = shop.pop('shop_name') or 'Repair shop'
             customer = dict(c.execute('SELECT id,name,phone,email,address FROM customers WHERE id=?', (j['customer_id'],)).fetchone())
-            assignment = self.db.one("SELECT a.*,m.name,m.contact,m.details,COALESCE(tm.name,u.name) technician FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?", (j['assignment_id'],)) or {}
+            assignment = self.db.one("SELECT a.*,COALESCE(tm.name,u.name) technician FROM assignments a LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?", (j['assignment_id'],)) or {}
             external = kind.startswith(('third_party', 'service_center', 'carrier'))
             if external:
                 movement_ids=p.get('movement_ids',[])
@@ -72,7 +97,7 @@ class JobCards:
                     movement=c.execute('SELECT m.*,i.job_id FROM movements m JOIN items i ON i.id=m.item_id WHERE m.id=? AND i.job_id=?',(movement_id,job_id)).fetchone()
                     if not movement or kind.endswith('return') and not in_shop(movement['to_location']) or kind.endswith('dispatch') and not in_shop(movement['from_location']):
                         raise RuleError('The card must match the recorded custody event.')
-            party = {'id': assignment.get('contact_id'), 'name': assignment.get('name'), 'contact': assignment.get('contact'), 'details': assignment.get('details')}
+            party = self._partner(j['assignment_id']) or {'id': None, 'name': None}
             if kind == 'customer_receiving':
                 sender, receiver = customer, shop
             elif kind == 'customer_delivery':
@@ -92,6 +117,10 @@ class JobCards:
                 if len(moves)!=len(p['movement_ids']) or any(m['job_id']!=job_id for m in moves):raise RuleError('All custody movements must belong to this master job.')
                 if len({(m['from_location'],m['to_location']) for m in moves})!=1:raise RuleError('One custody card must describe one sender and receiver. Record separate handovers for different holders.')
                 sender=self._party(moves[0]['from_location'],shop);receiver=self._party(moves[0]['to_location'],shop)
+                # The repairer's contact details as they were when the work was assigned.
+                for side in (sender,receiver):
+                    if side.get('location') in ('vendor','centre') and side.get('name')==party.get('name'):
+                        side.update({k:v for k,v in party.items() if k!='id'})
             if kind=='part_transfer':
                 movement=self.db.one('SELECT * FROM stock_movements WHERE id=? AND job_id=?',(p.get('stock_movement_id'),job_id))
                 if not movement or movement['kind'] not in ('ISSUED_TO_VENDOR','ISSUED_TO_TECHNICIAN','RETURNED_UNUSED'):raise RuleError('A part transfer card requires a matching stock custody event.')
@@ -121,6 +150,8 @@ class JobCards:
             if kind=='in_house_assignment':snapshot['custody_status']='Assignment only; physical handover recorded separately'
             if kind in ('third_party_return','service_center_return'):
                 snapshot['return_details']=self.return_details(j,p)
+            if kind.endswith('dispatch'):
+                snapshot['transport']=self.transport(job_id)
             if kind=='part_transfer':snapshot['stock_movement_id']=p['stock_movement_id']
             # Never copy a whole customer/job/attachment record to an external card.
             ident = insert(c, 'job_cards', job_id=job_id, sequence=sequence, kind=kind, event_key=event_key,
@@ -154,6 +185,8 @@ class JobCards:
             ('Receipt details',f"Effective: {local_time(p['effective'])} {timezone_name()}\nReceived / recorded by: {p['staff']}\nAmount paid at intake: {rupees(p.get('advance_at_intake') or 0)}\nExpected return: {p['expected_return'] or 'Not specified'}\nReference: {p['reference'] or 'Not recorded'}\nAcknowledgment: {p['acknowledgment'] or 'Not recorded'}\nDevice photo references: {', '.join(str(i) for i in p['device_photo_references']) or 'None at issue time'}\n{p['notes']}")]
         if p.get('customer_requirement'):
             sections.append(('Additional customer requirement',p['customer_requirement']))
+        if p.get('transport'):
+            sections.append(('Transport','\n'.join(k.replace('_',' ').capitalize()+': '+str(v) for k,v in p['transport'].items())))
         if p.get('current_custodian'):
             sections.append(('Physical custody',f"Custodian: {p['current_custodian']}\n{p['custody_status']}\nFinal destination: {p.get('final_destination') or 'Direct handover'}"))
         if p.get('return_details'):

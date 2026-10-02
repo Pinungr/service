@@ -147,7 +147,7 @@ class Service:
             for key, value in defaults.items():
                 insert(c, "settings", key=key, value=json.dumps(value))
         self.login(username, password)
-        for kind, names in {"category": ["Laptop", "Desktop", "Printer", "Phone"], "service": ["Laptop repair", "Diagnosis", "Warranty assessment"], "transport_method": ["Courier", "Bus", "Train", "Hand delivery"], "payment_method": ["Cash", "UPI", "Bank"], "accessory": ["Adapter", "Mouse", "Wi-Fi dongle", "Loose RAM", "Bag"]}.items():
+        for kind, names in {"category": ["Laptop", "Desktop", "Printer", "Phone"], "service": ["Laptop repair", "Diagnosis", "Warranty assessment"], "payment_method": ["Cash", "UPI", "Bank"], "accessory": ["Adapter", "Mouse", "Wi-Fi dongle", "Loose RAM", "Bag"]}.items():
             for value in names:
                 self.save_master(kind, value)
         laptop = self.db.one("SELECT id FROM masters WHERE kind='category' AND name='Laptop'")["id"]
@@ -236,34 +236,63 @@ class Service:
 
     PARTY_KINDS = ('vendor', 'centre', 'supplier')
 
-    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, user_id=None, **address_fields):
+    def save_master(self, kind, name, contact="", details="", category_id=None, ident=None, active=True, category_ids=None, photo_id=None, specialization=None, user_id=None, profile=None, supports=None, address_required=True, workflow_job_id=None, keep_profile=False, **address_fields):
         self.require_permission('directories')
         if kind not in MASTER_KINDS or not norm(name):
             raise RuleError("Choose a directory and enter a name.")
         if user_id is not None and kind != 'technician':
             raise RuleError("Only a technician directory entry can be linked to a login account.")
         from . import addresses
+        from .contacts import PROFILE_FIELDS, FLAGS, SUPPORT_KINDS
         if not set(address_fields) <= set(addresses.FIELDS):
             raise RuleError("Unknown directory address field.")
         if address_fields and kind not in self.PARTY_KINDS:
             raise RuleError("Postal address applies to third parties, service centres and suppliers.")
-        profile = dict(addresses.clean(address_fields, required=False)) if address_fields else {}
+        columns = dict(addresses.clean(address_fields, required=False)) if address_fields else {}
         if kind in self.PARTY_KINDS and address_fields:
             if not contact.strip():
                 raise RuleError("Enter a mobile number for this third party.")
-            profile = addresses.clean(address_fields, required=True)
+            columns = addresses.clean(address_fields, required=address_required)
         if specialization is not None:
-            profile['specialization'] = specialization.strip()
+            columns['specialization'] = specialization.strip()
         if photo_id is not None:
-            profile['photo_id'] = photo_id
+            columns['photo_id'] = photo_id
+        for key, value in (profile or {}).items():
+            if key not in PROFILE_FIELDS.get(kind, ()):
+                raise RuleError("That detail does not apply to a " + kind.replace('_', ' ') + " record: " + key.replace('_', ' ') + ".")
+            if key in FLAGS:
+                columns[key] = int(bool(value))
+            elif key == 'turnaround_days':
+                try:
+                    columns[key] = int(value or 0)
+                except (TypeError, ValueError):
+                    raise RuleError("Enter the usual turnaround as a whole number of days.") from None
+                if columns[key] < 0:
+                    raise RuleError("Enter the usual turnaround as a whole number of days.")
+            else:
+                columns[key] = str(value or '').strip()
+        if columns.get('email') and '@' not in columns['email']:
+            raise RuleError("Enter a valid email address, or leave it blank.")
         with self.db.transaction() as c:
             if photo_id and not c.execute("SELECT 1 FROM attachments WHERE id=?", (photo_id,)).fetchone():
                 raise RuleError("The selected directory photo is not available.")
             if user_id is not None:
                 # The link is what lets job ownership be checked for a technician who is
                 # assigned through the directory rather than through their login account.
-                profile['user_id'] = self._technician_login(c, user_id, ident)
+                columns['user_id'] = self._technician_login(c, user_id, ident)
+            before = c.execute("SELECT * FROM masters WHERE id=?", (ident,)).fetchone() if ident else None
+            if ident and not before:
+                raise RuleError("Directory record not found.")
+            if keep_profile and before:
+                # Activation is a status change only; nothing else on the record moves.
+                c.execute("UPDATE masters SET active=?,updated=? WHERE id=?", (int(active), now(), ident))
+                if bool(before['active']) != bool(active):
+                    self.audit(c, "master", ident, "deactivated" if not active else "reactivated",
+                               {"kind": kind, "name": before['name']})
+                return ident
             existing = c.execute("SELECT * FROM masters WHERE kind=? AND normalized=?", (kind, norm(name))).fetchone()
+            if ident and existing and existing['id'] != ident:
+                raise RuleError("Another " + kind.replace('_', ' ') + " record already uses this name.")
             new_record=not existing and not ident
             if existing and not ident:
                 # Re-adding an existing normalized directory entry means the owner
@@ -272,14 +301,15 @@ class Service:
                 # always applying the requested active state (so an inactive entry
                 # can be reactivated simply by adding it again).
                 ident = existing["id"]
+                before = existing
                 merged_contact = contact if contact.strip() else existing["contact"]
                 merged_details = details if details.strip() else existing["details"]
-                c.execute("UPDATE masters SET contact=?,details=?,active=? WHERE id=?",
-                          (merged_contact, merged_details, int(active), ident))
+                c.execute("UPDATE masters SET contact=?,details=?,active=?,updated=? WHERE id=?",
+                          (merged_contact, merged_details, int(active), now(), ident))
             elif ident:
-                c.execute("UPDATE masters SET name=?,normalized=?,contact=?,details=?,active=? WHERE id=?", (name.strip(), norm(name), contact, details, int(active), ident))
+                c.execute("UPDATE masters SET name=?,normalized=?,contact=?,details=?,active=?,updated=? WHERE id=?", (name.strip(), norm(name), contact, details, int(active), now(), ident))
             else:
-                ident = insert(c, "masters", kind=kind, name=name.strip(), normalized=norm(name), contact=contact, details=details, category_id=category_id)
+                ident = insert(c, "masters", kind=kind, name=name.strip(), normalized=norm(name), contact=contact, details=details, category_id=category_id, created=now(), updated=now())
             if kind == "accessory" and category_id:
                 c.execute("INSERT OR IGNORE INTO category_accessories VALUES (?,?)", (category_id, ident))
             if kind=='service':
@@ -289,9 +319,24 @@ class Service:
                         raise RuleError('Choose valid product categories for this service.')
                     c.execute('DELETE FROM category_services WHERE service_id=?',(ident,))
                     for category in set(categories):c.execute('INSERT INTO category_services VALUES (?,?)',(category,ident))
-            if profile:
-                c.execute("UPDATE masters SET " + ",".join(k + "=?" for k in profile) + " WHERE id=?", (*profile.values(), ident))
-            self.audit(c, "master", ident, "saved", dict({"kind": kind, "name": name, "active": active}, **profile))
+            if columns:
+                c.execute("UPDATE masters SET " + ",".join(k + "=?" for k in columns) + " WHERE id=?", (*columns.values(), ident))
+            if supports is not None:
+                targets = sorted({int(t) for t in supports if t})
+                for target in targets:
+                    if not c.execute("SELECT 1 FROM masters WHERE id=? AND kind IN (" + ",".join("?" for _ in SUPPORT_KINDS) + ")",
+                                     (target, *SUPPORT_KINDS)).fetchone():
+                        raise RuleError("Choose valid categories, brands and services for this contact.")
+                c.execute("DELETE FROM master_supports WHERE master_id=?", (ident,))
+                for target in targets:
+                    c.execute("INSERT INTO master_supports(master_id,target_id) VALUES (?,?)", (ident, target))
+                columns['supports'] = targets
+            self.audit(c, "master", ident, "saved", dict({"kind": kind, "name": name, "active": active}, **columns))
+            if before is not None and bool(before['active']) != bool(active):
+                self.audit(c, "master", ident, "deactivated" if not active else "reactivated", {"kind": kind, "name": name})
+            if workflow_job_id and new_record:
+                # Created from inside a repair: the repair's own history says so.
+                self.audit(c, "job", workflow_job_id, "contact_created", {"master_id": ident, "kind": kind, "name": name.strip()})
         return ident
 
     @staticmethod
@@ -859,10 +904,16 @@ class Service:
             self.notify(c, item["job_id"], event, f"{item['description']}: {quantity} unit(s) handed to {counterparty}. Reference: {reference}.")
         return ident
 
-    def assign(self, job_id, route, contact_id=None, technician_id=None, technician_master_id=None, reference="", estimate=0):
+    def assign(self, job_id, route, contact_id=None, technician_id=None, technician_master_id=None, reference="", estimate=0, expected_return=None, instructions=""):
+        """Record who is responsible for the repair. Never moves the product.
+
+        An external partner is stored by id for reporting and as a snapshot for history,
+        so a later change to the directory record cannot rewrite this assignment.
+        """
         self.require_permission('assign_job')
         if route not in ROUTES or (route != "in_house" and not contact_id):
             raise RuleError("Choose a route and its responsible repairer.")
+        expected_return = day(expected_return) if expected_return else None
         with self.db.transaction() as c:
             j = self._job(c, job_id)
             from .lifecycle import guard
@@ -883,11 +934,23 @@ class Service:
                     raise RuleError('Assign an active shop technician.')
             else:
                 technician_id = technician_master_id = None
+            from .contacts import snapshot
+            partner = snapshot(c, contact_id) if contact_id else {}
+            previous = c.execute("SELECT contact_id,contact_snapshot,route FROM assignments WHERE id=?", (j['assignment_id'],)).fetchone() if j['assignment_id'] else None
             ident = insert(c, "assignments", job_id=job_id, route=route, contact_id=contact_id, technician_id=technician_id,
-                           technician_master_id=technician_master_id, reference=reference, estimate=estimate, created=now(), actor=self.user["id"])
+                           technician_master_id=technician_master_id, reference=str(reference or '').strip(), estimate=estimate,
+                           contact_snapshot=json.dumps(partner, ensure_ascii=False), expected_return=expected_return,
+                           instructions=str(instructions or '').strip(), created=now(), actor=self.user["id"])
             c.execute("UPDATE jobs SET assignment_id=?,route=?,version=version+1 WHERE id=?", (ident, route, job_id))
-            self.audit(c, "job", job_id, "assigned", {"assignment": ident, "route": route, "contact_id": contact_id,
-                "technician_id": technician_id, "technician_master_id": technician_master_id})
+            if expected_return:
+                c.execute("UPDATE jobs SET return_due=? WHERE id=?", (expected_return, job_id))
+            event = {"assignment": ident, "route": route, "contact_id": contact_id, "partner": partner.get('name'),
+                     "technician_id": technician_id, "technician_master_id": technician_master_id,
+                     "reference": str(reference or '').strip(), "expected_return": expected_return}
+            if previous and (previous['contact_id'] or previous['route'] != route):
+                event['replaces'] = (json.loads(previous['contact_snapshot'] or '{}').get('name')
+                                     or ('In-house' if previous['route'] == 'in_house' else ''))
+            self.audit(c, "job", job_id, "assigned", event)
             if route == 'in_house' and (technician_id or technician_master_id):
                 from .job_cards import JobCards
                 JobCards(self).issue(job_id, 'in_house_assignment', f'assignment:{ident}')

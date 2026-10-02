@@ -221,7 +221,7 @@ class CustomerRecords:
             raise RuleError('Customer not found.')
         scope, scope_args = self.s.scope_jobs()
         money = self.s.may('collect_payment') or self.s.may('billing')
-        jobs = self.db.rows('''SELECT j.*,COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,
+        jobs = self.db.rows('''SELECT j.*,COALESCE(json_extract(a.contact_snapshot,'$.name'),m.name,tm.name,u.name,'Unassigned') AS responsible,
             ''' + ("(SELECT COALESCE(sum(amount),0) FROM entries WHERE job_id=j.id AND account_type='customer')"
                    if money else 'NULL') + ''' AS balance,
             (SELECT path FROM attachments WHERE device_id=j.device_id AND kind='product_photo' ORDER BY id DESC LIMIT 1) AS thumbnail

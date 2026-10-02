@@ -433,15 +433,18 @@ class MasterSelector(QWidget):
     def text(self):
         return self.box.currentText() if self.value() else ""
 
-    LABELS = {'vendor': 'Third Party', 'centre': 'Authorized Service Center', 'supplier': 'Parts Supplier',
-              'technician': 'Internal Technician', 'service': 'Repair / Service', 'category': 'Product Category'}
-
     def add(self):
-        # Shop-owner wording. A quick add stays quick; the full third-party postal address
-        # and photo are completed from Directories.
-        d = Form("Add " + self.LABELS.get(self.kind, self.kind.replace('_', ' ').title()), self)
+        from .contacts import CONTACT_KINDS, label
+        if self.kind in CONTACT_KINDS:
+            # Reusable business contacts: the shared quick add with duplicate protection.
+            from .contacts_ui import quick_create
+            ident = quick_create(self.s, self.kind, self)
+            if ident:
+                self.reload(ident)
+            return
+        d = Form("Add " + label(self.kind), self)
         d.text("name", "Name")
-        d.text("contact", "Mobile" if self.kind in ('vendor', 'centre', 'supplier') else "Phone / contact")
+        d.text("contact", "Phone / contact")
         d.text("details", "Notes", multiline=True)
         def save(v):
             self.reload(self.s.save_master(self.kind, v["name"], v["contact"], v["details"], category_id=self.category))

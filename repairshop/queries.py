@@ -41,7 +41,7 @@ class Queries:
         args.extend(scope_args)
         args.append(offset)
         return self.db.rows("""SELECT j.id,j.number,c.name AS customer,c.phone,j.device,j.serial,j.stage,j.route,
-            COALESCE(m.name,tm.name,u.name,'Unassigned') AS responsible,j.repair_due,j.collection_due,j.return_due,
+            COALESCE(json_extract(a.contact_snapshot,'$.name'),m.name,tm.name,u.name,'Unassigned') AS responsible,j.repair_due,j.collection_due,j.return_due,
             (SELECT group_concat(h.location || ' (' || h.quantity || ')', ', ') FROM items i JOIN holdings h ON h.item_id=i.id WHERE i.job_id=j.id AND i.type='device' AND h.quantity>0) AS custody,
             (SELECT COALESCE(sum(e.amount),0) FROM entries e WHERE e.job_id=j.id AND e.account_type='customer') AS balance,
             (SELECT state FROM outbox o WHERE o.job_id=j.id ORDER BY o.id DESC LIMIT 1) AS message

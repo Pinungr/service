@@ -9,30 +9,41 @@ correction creates a new version that supersedes the previous one, with a
 mandatory reason, and both versions remain readable.
 """
 import json
+import re
 from .domain import RuleError, now, money, in_shop, phone, day
 from .persistence import insert
 
-# Three ways a product physically leaves the shop, each asking only for what that way
-# actually needs. The money is the dispatch's own validated `amount`, not a transport
-# detail, so it is recorded once instead of once per mode.
+#: The single source of truth for how a product physically leaves the shop. Each method
+#: asks only for what that journey needs. Reusable configuration (a bus operator's route
+#: and contact) lives in the Bus / Transport Service directory, never in these fields.
+#: Courier companies stay free text: a courier is chosen per parcel, not configured.
+TRANSPORT_METHODS = {'BUS': 'Bus', 'COURIER': 'Courier', 'IN_HAND': 'In hand'}
 TRANSPORT_MODES = {
-    'COURIER': ('docket_number', 'courier_name', 'docket_date'),
-    'BUS': ('bus_number', 'contact_name', 'contact_mobile'),
-    'IN_HAND': ('person_name', 'mobile'),
+    'COURIER': ('courier_name', 'docket_number', 'docket_date'),
+    'BUS': ('bus_number', 'parcel_number', 'departure_date', 'departure_time', 'arrival_date', 'arrival_time'),
+    'IN_HAND': ('person_name', 'mobile', 'role', 'departure_date', 'departure_time'),
 }
+#: Bus dispatches recorded before bus services became reusable typed the operator's
+#: contact on every dispatch. Those keys stay valid only for a bus dispatch that names no
+#: saved bus service, so old records can still be read and amended.
+LEGACY_TRANSPORT = {'BUS': ('contact_name', 'contact_mobile')}
 # Without these a dispatch record cannot be used to trace the product, which is the
-# only reason it exists. The docket date is the one genuinely optional detail.
+# only reason it exists.
 TRANSPORT_REQUIRED = {
-    'COURIER': ('docket_number', 'courier_name'),
-    'BUS': ('bus_number', 'contact_name', 'contact_mobile'),
+    'COURIER': ('courier_name', 'docket_number'),
+    'BUS': ('bus_number',),
     'IN_HAND': ('person_name', 'mobile'),
 }
 TRANSPORT_PHONES = ('contact_mobile', 'mobile')
-TRANSPORT_DATES = ('docket_date',)
+TRANSPORT_DATES = ('docket_date', 'departure_date', 'arrival_date')
+TRANSPORT_TIMES = ('departure_time', 'arrival_time')
 TRANSPORT_LABELS = {
-    'docket_number': 'Docket number', 'courier_name': 'Transport / courier name', 'docket_date': 'Docket date',
-    'bus_number': 'Bus number', 'contact_name': 'Contact person name', 'contact_mobile': 'Contact person number',
-    'person_name': 'Person name', 'mobile': 'Contact number',
+    'courier_name': 'Courier company', 'docket_number': 'Tracking / docket number', 'docket_date': 'Docket date',
+    'bus_number': 'Bus number', 'parcel_number': 'Parcel / ticket number',
+    'departure_date': 'Departure date', 'departure_time': 'Departure time',
+    'arrival_date': 'Expected arrival date', 'arrival_time': 'Expected arrival time',
+    'contact_name': 'Contact person name', 'contact_mobile': 'Contact person number',
+    'person_name': 'Person name', 'mobile': 'Mobile', 'role': 'Role / relationship',
 }
 TRANSPORT_PAYERS = {
     'shop': 'Shop',
@@ -42,8 +53,31 @@ TRANSPORT_PAYERS = {
     'other': 'Other',
 }
 EDITABLE = ('reference', 'transport_mode', 'transport', 'amount', 'paid_by', 'expected_return',
-            'condition', 'notes', 'manifest', 'consent', 'contact_id')
+            'condition', 'notes', 'manifest', 'consent', 'contact_id', 'transporter_id')
 SENT = ('DISPATCHED', 'RETURNED')
+
+
+def carrier(d):
+    """Who physically carries a dispatch, read from what was already recorded on it.
+
+    The send step offers this instead of asking the same question a second time.
+    """
+    if not d:
+        return ''
+    transport = d.get('transport') or {}
+    mode = d.get('transport_mode')
+    if mode == 'BUS':
+        operator = (d.get('transporter_snapshot') or {}).get('name') or transport.get('contact_name', '')
+        return ' · '.join(x for x in (operator, transport.get('bus_number')) if x)
+    if mode == 'COURIER':
+        return transport.get('courier_name', '')
+    return transport.get('person_name', '')
+
+
+def tracking(d):
+    """The one number staff would quote to trace the parcel."""
+    transport = (d or {}).get('transport') or {}
+    return transport.get('docket_number') or transport.get('parcel_number') or (d or {}).get('reference', '')
 
 
 class Dispatches:
@@ -63,19 +97,72 @@ class Dispatches:
             FROM dispatches d LEFT JOIN masters m ON m.id=d.contact_id
             WHERE d.job_id=? ORDER BY d.cycle,d.version''', (job_id,))]
 
+    def attempts(self, job_id):
+        """Each external partner this repair was assigned to, in order, with what happened.
+
+        A projection over the existing immutable records: an assignment is one attempt,
+        its dispatches say when the product left and came back, and the guided receive
+        step records the result. Nothing here is stored separately.
+        """
+        self.s.require_job_access(job_id)
+        current = (self.db.one('SELECT assignment_id FROM jobs WHERE id=?', (job_id,)) or {}).get('assignment_id')
+        rows = self.db.rows('''SELECT a.*,m.name AS live_name FROM assignments a LEFT JOIN masters m ON m.id=a.contact_id
+            WHERE a.job_id=? AND a.contact_id IS NOT NULL ORDER BY a.id''', (job_id,))
+        receipts = self.db.rows('''SELECT created,payload FROM audit WHERE entity='job' AND entity_id=? AND action='lifecycle'
+            AND json_extract(payload,'$.action')='receive' ORDER BY id''', (job_id,))
+        everything = self.db.rows('SELECT id FROM assignments WHERE job_id=? ORDER BY id', (job_id,))
+        result = []
+        for number, row in enumerate(rows, 1):
+            later = [a['id'] for a in everything if a['id'] > row['id']]
+            ends = self.db.one('SELECT created FROM assignments WHERE id=?', (later[0],))['created'] if later else None
+            sent = self.db.rows('''SELECT d.cycle,max(d.actual_dispatch_at) AS sent,max(d.status) AS status,
+                    (SELECT min(r.created) FROM return_verifications r JOIN dispatches x ON x.id=r.dispatch_id
+                     WHERE x.job_id=d.job_id AND x.cycle=d.cycle) AS returned
+                FROM dispatches d WHERE d.assignment_id=? GROUP BY d.cycle ORDER BY d.cycle''', (row['id'],))
+            outcome = ''
+            for event in receipts:
+                if event['created'] >= row['created'] and (ends is None or event['created'] < ends):
+                    outcome = (json.loads(event['payload']).get('evidence') or {}).get('repair_result') or outcome
+            shot = json.loads(row['contact_snapshot'] or '{}')
+            result.append(dict(attempt=number, assignment_id=row['id'], contact_id=row['contact_id'],
+                               partner=shot.get('name') or row['live_name'], snapshot=shot, route=row['route'],
+                               reference=row['reference'], expected_return=row.get('expected_return'),
+                               instructions=row.get('instructions', ''), assigned=row['created'],
+                               sent=next((d['sent'] for d in sent if d['sent']), None),
+                               returned=next((d['returned'] for d in reversed(sent) if d['returned']), None),
+                               result=outcome or ('In progress' if row['id'] == current else 'Reassigned'),
+                               current=row['id'] == current))
+        return result
+
+    def courier_suggestions(self, limit=12):
+        """Courier companies this shop has already used, most frequent first. Free text stays allowed."""
+        self.s.require()
+        return [r['name'] for r in self.db.rows("""SELECT trim(json_extract(transport,'$.courier_name')) AS name,count(*) AS n
+            FROM dispatches WHERE transport_mode='COURIER' AND trim(COALESCE(json_extract(transport,'$.courier_name'),''))!=''
+            GROUP BY lower(trim(json_extract(transport,'$.courier_name'))) ORDER BY n DESC,name LIMIT ?""", (limit,))]
+
     @staticmethod
     def _readable(row):
         row = dict(row)
-        try:
-            row['transport'] = json.loads(row['transport'] or '{}')
-        except ValueError:
-            row['transport'] = {}
-        try:
-            row['manifest'] = json.loads(row['manifest'] or '[]')
-        except ValueError:
-            row['manifest'] = []
-        row['transport_summary'] = ' · '.join(
-            k.replace('_', ' ').title() + ': ' + str(v) for k, v in row['transport'].items() if v)
+        for key, empty in (('transport', {}), ('manifest', []), ('contact_snapshot', {}), ('transporter_snapshot', {})):
+            try:
+                row[key] = json.loads(row.get(key) or json.dumps(empty))
+            except ValueError:
+                row[key] = empty
+        operator = row['transporter_snapshot']
+        row['transporter'] = operator.get('name', '')
+        details = []
+        if operator:
+            details.append('Bus service: ' + operator.get('name', ''))
+            route = ' → '.join(x for x in (operator.get('route_from'), operator.get('route_to')) if x)
+            if route:
+                details.append('Route: ' + route)
+        details += [TRANSPORT_LABELS.get(k, k.replace('_', ' ').title()) + ': ' + str(v)
+                    for k, v in row['transport'].items() if v]
+        row['transport_summary'] = ' · '.join(details)
+        # History shows the partner as recorded on the dispatch, not as the directory reads today.
+        row['party'] = row['contact_snapshot'].get('name') or row.get('party') or row.get('contact_name')
+        row['carrier'] = carrier(row)
         row['label'] = f"Version {row['version']}" + ('' if row['current'] else ' · superseded')
         row['editable'] = row['status'] in ('DRAFT', 'READY')
         return row
@@ -93,15 +180,33 @@ class Dispatches:
         if not isinstance(transport, dict):
             raise RuleError('Transport details must be recorded as named fields.')
         transport = {k: str(v).strip() for k, v in transport.items() if str(v).strip()}
-        unknown = set(transport) - set(TRANSPORT_MODES[mode])
+        # A bus journey uses a saved bus service; its route and contact come from there.
+        transporter_id = p.get('transporter_id') if mode == 'BUS' else None
+        legacy = LEGACY_TRANSPORT.get(mode, ()) if not transporter_id else ()
+        unknown = set(transport) - set(TRANSPORT_MODES[mode]) - set(legacy)
         if unknown:
+            if transporter_id and unknown <= set(LEGACY_TRANSPORT.get(mode, ())):
+                raise RuleError('The bus service contact comes from the selected bus service. Update it in Contacts & Services.')
             raise RuleError('Unsupported transport detail for ' + mode.replace('_', ' ').title() + ': ' + ', '.join(sorted(unknown)))
         # Both entry screens validate here rather than each on its own, so a dispatch
         # saved from the workspace and one corrected on the dispatch tab are held to the
         # same standard.
-        missing = [TRANSPORT_LABELS[k] for k in TRANSPORT_REQUIRED[mode] if not transport.get(k)]
+        required = TRANSPORT_REQUIRED[mode] + (legacy if any(transport.get(k) for k in legacy) else ())
+        missing = [TRANSPORT_LABELS[k] for k in required if not transport.get(k)]
         if missing:
             raise RuleError('Enter ' + ', '.join(missing) + ' for a ' + mode.replace('_', ' ').lower() + ' dispatch.')
+        operator, operator_shot = None, {}
+        if mode == 'BUS':
+            if transporter_id:
+                operator = c.execute("SELECT id,active FROM masters WHERE id=? AND kind='transporter'", (transporter_id,)).fetchone()
+                keep = existing and existing.get('transporter_id') == transporter_id and existing.get('transporter_snapshot')
+                if not operator or (not operator['active'] and not keep):
+                    raise RuleError('Select an active bus / transport service.')
+                from .contacts import snapshot
+                # A correction keeps the operator exactly as it was recorded when sent.
+                operator_shot = existing['transporter_snapshot'] if keep and not verify_manifest else snapshot(c, transporter_id)
+            elif not all(transport.get(k) for k in legacy):
+                raise RuleError('Select the bus / transport service carrying this parcel.')
         for key in TRANSPORT_PHONES:
             if transport.get(key):
                 try:
@@ -114,6 +219,12 @@ class Dispatches:
                     transport[key] = day(transport[key][:10])
                 except ValueError:
                     raise RuleError('Enter ' + TRANSPORT_LABELS[key].lower() + ' as a real calendar date.') from None
+        for key in TRANSPORT_TIMES:
+            if transport.get(key):
+                match = re.fullmatch(r'([01]?\d|2[0-3]):([0-5]\d)', transport[key])
+                if not match:
+                    raise RuleError('Enter ' + TRANSPORT_LABELS[key].lower() + ' as HH:MM, for example 21:30.')
+                transport[key] = f'{int(match.group(1)):02d}:{match.group(2)}'
         amount = p.get('amount', 0)
         if isinstance(amount, str):
             amount = money(amount or '0')
@@ -130,10 +241,22 @@ class Dispatches:
         elif not manifest:
             raise RuleError('Select the physical items being sent.')
         contact_id = p.get('contact_id')
-        party = c.execute('SELECT name,kind FROM masters WHERE id=? AND active=1', (contact_id,)).fetchone()
-        if not party or party['kind'] != ('centre' if job['route'] == 'warranty_centre' else 'vendor'):
-            raise RuleError('Select the active external repairer assigned to this job.')
+        if existing and not verify_manifest:
+            # A sent dispatch is corrected, not re-addressed: keep the partner as recorded,
+            # even if the directory record has since been edited or deactivated.
+            party = dict(name=existing['contact_name'], kind=None)
+            partner = existing.get('contact_snapshot') or {}
+        else:
+            party = c.execute('SELECT name,kind FROM masters WHERE id=? AND active=1', (contact_id,)).fetchone()
+            if not party or party['kind'] != ('centre' if job['route'] == 'warranty_centre' else 'vendor'):
+                raise RuleError('Select the active external repairer assigned to this job.')
+            from .contacts import snapshot
+            partner = snapshot(c, contact_id)
         return dict(contact_id=contact_id, contact_name=party['name'], route=job['route'],
+                    assignment_id=existing.get('assignment_id') if existing and not verify_manifest else job.get('assignment_id'),
+                    contact_snapshot=json.dumps(partner, ensure_ascii=False),
+                    transporter_id=operator['id'] if operator else None,
+                    transporter_snapshot=json.dumps(operator_shot, ensure_ascii=False),
                     reference=str(p.get('reference', '')).strip(), transport_mode=mode,
                     transport=json.dumps(transport), amount=amount, paid_by=paid_by,
                     expected_return=p.get('expected_return') or None,
@@ -268,7 +391,10 @@ class Dispatches:
 
     @staticmethod
     def _public(fields):
+        """Audit-friendly view: the partner snapshot is on the dispatch row, only names go to the timeline."""
         values = dict(fields)
         values['transport'] = json.loads(values['transport'])
         values['manifest'] = json.loads(values['manifest'])
+        values.pop('contact_snapshot', None)
+        values['transporter'] = json.loads(values.pop('transporter_snapshot') or '{}').get('name', '')
         return values

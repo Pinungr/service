@@ -20,11 +20,15 @@ class InventoryPage(QWidget):
         self.grid=Grid();layout.addWidget(self.grid,1)
         controls=FlowLayout();layout.addLayout(controls)
         actions=[('Part details',self.detail),('New inventory item',self.edit),('Edit item / warranty defaults',lambda:self.edit(self.w.selected(self.grid))),
-            ('Receive / adjust stock',self.adjust),('Stock movements',self.history),('Suppliers',lambda:self.w.navigate('Directories'))]
+            ('Receive / adjust stock',self.adjust),('Stock movements',self.history),('Suppliers',self.suppliers)]
         for i,(title,fn) in enumerate(actions):
             b=button(title,lambda checked=False,f=fn:self.w.safe(f),title=='New inventory item');controls.addWidget(b)
             if i in (1,2,3):b.setEnabled(self.s.may('manage_inventory') and not self.w.db.readonly)
         self.search.textChanged.connect(self.reload);self.filter.currentIndexChanged.connect(self.reload);self.reload()
+
+    def suppliers(self):
+        self.w.__dict__.setdefault('contacts_tabs',{})['_section']=1
+        self.w.navigate('Contacts & Services')
 
     def reload(self,*_):
         rows=self.inventory.rows(self.search.text(),self.filter.currentData());allrows=self.inventory.rows()
@@ -42,11 +46,11 @@ class InventoryPage(QWidget):
         suppliers=self.w.db.rows("SELECT id,name FROM masters WHERE kind IN ('supplier','vendor') AND active=1 ORDER BY name")
         supplier=d.select('supplier_id','Supplier',[('Not recorded',None)]+[(r['name'],r['id']) for r in suppliers],row.get('supplier_id'))
         def new_supplier():
-            f=Form('New supplier',d)
-            for k in ('name','contact','details'):f.text(k,k.title())
-            def save(v):
-                ident=self.s.save_master('supplier',**v);supplier.addItem(v['name'],ident);supplier.setCurrentIndex(supplier.findData(ident))
-            f.submit(save)
+            from .contacts_ui import quick_create
+            ident=quick_create(self.s,'supplier',d)
+            if ident:
+                if supplier.findData(ident)<0:supplier.addItem(self.s.db.one('SELECT name FROM masters WHERE id=?',(ident,))['name'],ident)
+                supplier.setCurrentIndex(supplier.findData(ident))
         d.layout.addRow(button('+ New supplier',lambda:self.w.safe(new_supplier)))
         d.date('purchase_date','Purchase date',row.get('purchase_date'))
         for k,title in [('purchase_cost','Unit purchase cost (INR)'),('customer_price','Default customer price (INR)')]:d.text(k,title,str(row.get(k,0)/100))

@@ -139,4 +139,7 @@ def day(value):
 STAGES = ["received", "diagnosis", "awaiting_estimate", "awaiting_approval", "approved", "ready_dispatch", "under_repair", "waiting_parts", "awaiting_return", "testing", "ready_repaired", "return_unrepaired", "ready_unrepaired", "collected", "closed"]
 STAGES += ['inspection', 'warranty_check', 'route_selection', 'external_diagnosis', 'technician_testing', 'final_qc', 'billing']
 ROUTES = ["in_house", "third_party", "warranty_centre"]
-MASTER_KINDS = ["category", "brand", "model", "service", "accessory", "technician", "vendor", "supplier", "centre", "transporter", "transport_method", "payment_method"]
+# Transport *methods* are not a directory: dispatch.TRANSPORT_MODES is their single source
+# of truth, because each method needs its own fields and rules. Reusable bus operators are
+# `transporter` contacts. Legacy `transport_method` rows were deactivated by migration 15.
+MASTER_KINDS = ["category", "brand", "model", "service", "accessory", "technician", "vendor", "supplier", "centre", "transporter", "payment_method"]

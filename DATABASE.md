@@ -161,6 +161,42 @@ application no longer offers.
   used for an earlier return. An intake photo of the same product is therefore never
   silently reusable as proof of transit damage.
 
+## Schema version 15 — Contacts & Services and partner snapshots
+
+`migration15.py` is additive and lossless. Rule: **reusable information is configured once
+as a master record; a repair or dispatch stores the master id plus a snapshot.** The id is
+for reporting and linking; the snapshot is what history, cards and documents display, so
+editing a directory record never rewrites where an old repair was sent.
+
+* `masters` (still the one directory table; `kind` unchanged) gains profile columns:
+  `contact_person`, `alternate`, `email`, `city`, `notes`; centre capabilities
+  `warranty_service`, `pickup`, `turnaround_days`; bus-service route `route_from`,
+  `route_to`, `pickup_point`, `drop_point`, `vehicle_number` (the *usual* bus — the actual
+  bus is recorded per dispatch); `created`, `updated`. `contacts.PROFILE_FIELDS` says which
+  kind may use which column.
+* New `master_supports(master_id, target_id)` links a repairer or centre to the category,
+  brand and service masters it works on. Used only to rank recommendations, never to hide
+  a contact.
+* `assignments` (one immutable row per repair attempt) gains `contact_snapshot`,
+  `expected_return` and `instructions`.
+* `dispatches` gains `assignment_id` (the attempt it was sent under), `contact_snapshot`,
+  `transporter_id` (a `transporter` master, Bus only) and `transporter_snapshot`. The
+  `dispatch_history_update` trigger now also protects these four columns once sent.
+
+Backfill: the JSON profile that used to sit in `masters.details` for vendors, centres,
+suppliers and transporters was lifted into the new columns, then `details` was cleared.
+A centre's "company / OEM" became a supported brand; any other company name and any
+unknown keys were kept in `notes`. Assignments recorded earlier received a snapshot of
+the directory as it stood at upgrade (`captured: "schema upgrade"`), which is the most
+accurate record still available; the immutability trigger was lifted only for that
+statement. Each dispatch was linked to the assignment it was created under and copied
+its snapshot. The unused `transport_method` list was deactivated (rows kept) and is no
+longer a directory kind: `dispatch.TRANSPORT_MODES` is the single source of truth for
+Bus, Courier and In hand. Movements, holdings, job cards, entries and quotes are untouched.
+
+Legacy bus dispatches that typed `contact_name` / `contact_mobile` stay valid and can still
+be amended; those keys are only accepted on a bus dispatch that names no saved bus service.
+
 ## Authorization
 
 `permissions.py` is the authority for what each role may do. Services call

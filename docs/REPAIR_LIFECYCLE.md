@@ -80,7 +80,7 @@ Physical movement records, financial entries, quote decisions and audit rows rem
 - **Final QC:** original complaint, diagnosis, work, parts, route, repairer and available job photos with an explicit checklist. Unrepaired returns use a separate condition check.
 - **Billing / handover:** existing ledgers integrated with the ready stage; customer/device photos, accessory reconciliation, delivery confirmation and automatic collection receipt.
 - **Customer overview:** route, readable lifecycle state, current location, next action and last update added alongside stable devices, previous repairs, payments and photos.
-- **Directories:** existing reusable vendor/center records gain structured company/OEM, address, contact person, email, specialization and notes within the existing details field. Legacy free-text details remain readable.
+- **Contacts & Services** (formerly Directories): reusable repairer, service centre, supplier and bus-service records hold contact person, mobiles, email, address, specialization, supported categories/brands/services and notes in their own fields (schema 15). Repairs select them and store a snapshot; see `DATABASE.md`.
 
 ## Attention and operating assumptions
 

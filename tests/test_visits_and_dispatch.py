@@ -439,11 +439,13 @@ def test_dispatch_panel_edits_before_send_and_amends_after(qtbot, service, custo
 # ---- Transport section -------------------------------------------------
 
 def test_only_three_transport_modes_each_with_its_own_fields():
-    from repairshop.dispatch import TRANSPORT_MODES
-    assert set(TRANSPORT_MODES) == {'COURIER', 'BUS', 'IN_HAND'}
-    assert TRANSPORT_MODES['COURIER'] == ('docket_number', 'courier_name', 'docket_date')
-    assert TRANSPORT_MODES['BUS'] == ('bus_number', 'contact_name', 'contact_mobile')
-    assert TRANSPORT_MODES['IN_HAND'] == ('person_name', 'mobile')
+    from repairshop.dispatch import TRANSPORT_MODES, TRANSPORT_METHODS
+    assert set(TRANSPORT_MODES) == set(TRANSPORT_METHODS) == {'COURIER', 'BUS', 'IN_HAND'}
+    assert TRANSPORT_MODES['COURIER'] == ('courier_name', 'docket_number', 'docket_date')
+    # The bus operator's route and contact come from the saved bus service, not these fields.
+    assert TRANSPORT_MODES['BUS'] == ('bus_number', 'parcel_number', 'departure_date', 'departure_time',
+                                      'arrival_date', 'arrival_time')
+    assert TRANSPORT_MODES['IN_HAND'] == ('person_name', 'mobile', 'role', 'departure_date', 'departure_time')
 
 
 def test_a_mode_refuses_another_modes_fields(service, customer):
@@ -456,16 +458,27 @@ def test_a_mode_refuses_another_modes_fields(service, customer):
 
 
 @pytest.mark.parametrize('mode,transport,missing', [
-    ('COURIER', {'courier_name': 'Blue Dart'}, 'Docket number'),
-    ('COURIER', {'docket_number': 'BD1'}, 'Transport / courier name'),
+    ('COURIER', {'courier_name': 'Blue Dart'}, 'Tracking / docket number'),
+    ('COURIER', {'docket_number': 'BD1'}, 'Courier company'),
     ('BUS', {'bus_number': 'MH12AB1234', 'contact_name': 'Desk'}, 'Contact person number'),
-    ('IN_HAND', {'person_name': 'Runner'}, 'Contact number'),
+    ('BUS', {'bus_number': 'MH12AB1234'}, 'bus / transport service'),
+    ('IN_HAND', {'person_name': 'Runner'}, 'Mobile'),
 ])
 def test_each_mode_requires_what_makes_it_traceable(service, customer, mode, transport, missing):
     ident = three(service, customer)[0]
     life = external(service, customer, ident)
     with pytest.raises(RuleError, match=missing):
         prepared(service, life, ident, transport_mode=mode, transport=transport)
+
+
+def test_bus_contact_from_the_saved_service_is_not_retyped(service, customer):
+    from repairshop.contacts import Contacts
+    ident = three(service, customer)[0]
+    life = external(service, customer, ident)
+    operator = Contacts(service).save('transporter', dict(name='Sharma Travels', mobile='9990012345'))
+    with pytest.raises(RuleError, match='comes from the selected bus service'):
+        prepared(service, life, ident, transport_mode='BUS', transporter_id=operator,
+                 transport={'bus_number': 'MH12AB1234', 'contact_name': 'Desk', 'contact_mobile': '9990012345'})
 
 
 def test_contact_numbers_are_validated_and_normalised(service, customer):
@@ -493,10 +506,13 @@ def test_docket_date_must_be_a_real_date(service, customer):
 def test_switching_mode_shows_only_that_modes_fields_and_clears_the_others(qtbot, service, customer):
     from repairshop.ui_widgets import Form
     from repairshop.dispatch_ui import MODE_LABELS, transport_fields
+    from repairshop.contacts import Contacts
+    operator = Contacts(service).save('transporter', dict(name='Sharma Travels', mobile='9990012345',
+        route_from='Pune', route_to='Bhubaneswar', vehicle_number='MH12AB1234'))
     form = Form('Transport', None)
     qtbot.addWidget(form)
     selector = form.select('transport_mode', 'Transport mode', MODE_LABELS, 'COURIER')
-    gather = transport_fields(form, selector)
+    gather = transport_fields(form, selector, service=service)
     form.show()
 
     visible = lambda: {k for k, w in form.fields.items() if k != 'transport_mode'
@@ -506,18 +522,25 @@ def test_switching_mode_shows_only_that_modes_fields_and_clears_the_others(qtbot
     form.fields['transport_COURIER_docket_number'].setText('BD12345')
 
     selector.setCurrentIndex(selector.findData('BUS'))
-    assert visible() == {'transport_BUS_bus_number', 'transport_BUS_contact_name', 'transport_BUS_contact_mobile'}
+    assert visible() == {'transport_BUS_service', 'transport_BUS_bus_number', 'transport_BUS_parcel_number',
+                         'transport_BUS_departure_date', 'transport_BUS_departure_time',
+                         'transport_BUS_arrival_date', 'transport_BUS_arrival_time'}
     # The courier value is gone, so it cannot be saved against a bus dispatch.
     assert form.fields['transport_COURIER_docket_number'].text() == ''
 
-    form.fields['transport_BUS_bus_number'].setText('MH12AB1234')
-    form.fields['transport_BUS_contact_name'].setText('Desk')
-    form.fields['transport_BUS_contact_mobile'].setText('9990012345')
-    mode, transport = gather(form.values())
-    assert mode == 'BUS'
-    assert transport == {'bus_number': 'MH12AB1234', 'contact_name': 'Desk', 'contact_mobile': '9990012345'}
+    picker = form.fields['transport_BUS_service']
+    picker.box.setCurrentIndex(picker.box.findData(operator))
+    # The usual bus is offered, and stays editable because tonight's bus may differ.
+    assert form.fields['transport_BUS_bus_number'].text() == 'MH12AB1234'
+    assert 'Pune → Bhubaneswar' in picker.card.text()
+    form.fields['transport_BUS_bus_number'].setText('MH12XY9999')
+    form.fields['transport_BUS_parcel_number'].setText('P-77')
+    mode, transport, transporter = gather(form.values())
+    assert (mode, transporter) == ('BUS', operator)
+    assert transport == {'bus_number': 'MH12XY9999', 'parcel_number': 'P-77'}
 
     selector.setCurrentIndex(selector.findData('IN_HAND'))
-    assert visible() == {'transport_IN_HAND_person_name', 'transport_IN_HAND_mobile'}
-    assert gather(form.values())[1] == {}
+    assert visible() == {'transport_IN_HAND_person_name', 'transport_IN_HAND_mobile', 'transport_IN_HAND_role',
+                         'transport_IN_HAND_departure_date', 'transport_IN_HAND_departure_time'}
+    assert gather(form.values())[1:] == ({}, None)
     form.close()

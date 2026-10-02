@@ -3,7 +3,7 @@ import json
 import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QLineEdit,QScrollArea,QTabWidget,QCheckBox,QMessageBox,QDialogButtonBox,QSpinBox,QSplitter)
-from .ui_widgets import Form,Grid,button,combo,MasterSelector,panel,FlowLayout,Cancelled
+from .ui_widgets import Form,Grid,button,combo,panel,FlowLayout,Cancelled
 from .lifecycle import Lifecycle,ACTIONS,ROUTE_LABELS,local_time
 from .domain import rupees, money, RuleError, in_shop
 from .customer_ui import DevicePhotos,show_photo
@@ -232,15 +232,18 @@ class JobWorkspace(QDialog):
             d.select('warranty_status','Warranty status',[('Unknown / requires verification','unknown'),('Under manufacturer warranty','under_warranty'),('Out of warranty','out_of_warranty')])
             d.text('notes','Purchase proof / warranty dates / verification notes',multiline=True)
         elif action=='prepare_dispatch':
-            d.text('condition','Device condition at dispatch',v['damage'],multiline=True)
-            d.date('expected_return','Expected return date',v['return_due'])
-            d.text('reference','External reference (service centre case / third-party ticket)')
+            partner=v['assignment']
+            d.layout.addRow('Sending to',label(partner.get('summary') or partner.get('party') or 'External repairer'))
             # The same conditional transport block as the dispatch tab, which corrects
             # this record later: one builder, so the two screens cannot drift apart.
             from .dispatch_ui import MODE_LABELS, PAYER_LABELS, transport_fields
-            gather=transport_fields(d, d.select('transport_mode','Transport mode',MODE_LABELS,'COURIER'))
-            d.text('transport_amount','Amount (INR)','0')
+            usual='BUS' if self.window.s.masters('transporter') else 'COURIER'
+            gather=transport_fields(d, d.select('transport_mode','Transport method',MODE_LABELS,usual), service=self.window.s)
+            d.text('transport_amount','Transport charge (INR)','0')
             d.select('paid_by','Transport paid by',PAYER_LABELS,'shop')
+            d.text('condition','Device condition at dispatch',v['damage'],multiline=True)
+            d.date('expected_return','Expected return date',v['return_due'])
+            d.text('reference','Service centre ticket / external job number',partner.get('reference',''))
             checks=[]
             for h in v['holdings']:
                 if in_shop(h['location']):
@@ -250,8 +253,7 @@ class JobWorkspace(QDialog):
             d.text('notes','Dispatch notes',multiline=True)
             def prepare(p):
                 p=dict(p,items=[i for i,w in checks if w.isChecked()],amount=money(p.pop('transport_amount') or '0'))
-                mode,transport=gather(p)
-                p['transport_mode'],p['transport']=mode,transport
+                p['transport_mode'],p['transport'],p['transporter_id']=gather(p)
                 self.life.execute(self.ident,action,p,v['version'])
             return d.submit(prepare)
         elif action=='hand_over':
@@ -273,12 +275,17 @@ class JobWorkspace(QDialog):
             d.text('notes','Handover notes',multiline=True)
         elif action in ('dispatch','arrive','receive','return_dispatch'):
             manifest=v['data'].get('dispatch',{})
+            from .dispatch import carrier, tracking
+            record=(v.get('dispatch') or {}) if action=='dispatch' else {}
+            # What the dispatch record already says is offered, not asked for again.
+            sender=((record.get('transport') or {}).get('person_name') or (record.get('transporter_snapshot') or {}).get('contact_person')
+                    or (record.get('transport') or {}).get('courier_name') or '')
             d.layout.addRow(label('Current custodian: '+v['current_custodian']+'\nDestination: '+(v['final_destination'] or v['assignment'].get('party') or 'Shop')))
-            d.text('counterparty','Person receiving the items')
+            d.text('counterparty','Person receiving the items',sender)
             d.text('condition','Condition at handover',manifest.get('condition',''),multiline=True)
-            d.text('reference','Tracking / external job reference',manifest.get('reference',''))
+            d.text('reference','Tracking / external job reference',tracking(record) if record else manifest.get('reference',''))
             d.text('acknowledgment','Acknowledgment / receipt reference',multiline=True)
-            if action in ('dispatch','return_dispatch'):d.text('carrier','Carrier (blank = direct handover)' if action=='dispatch' else 'Courier receiving the return',manifest.get('carrier','') if action=='dispatch' else '')
+            if action in ('dispatch','return_dispatch'):d.text('carrier','Carrier (blank = direct handover)' if action=='dispatch' else 'Courier receiving the return',carrier(record) if action=='dispatch' else '')
             if action=='receive':d.layout.addRow(label('Received by: '+self.window.s.user['name']+' (you)'))
             d.text('notes','Notes',multiline=True)
             if action=='receive':
@@ -307,8 +314,10 @@ class JobWorkspace(QDialog):
             if v['data'].get('legacy_review'):
                 d.select('warranty_status','Verified legacy warranty status',[('Unknown','unknown'),('Under warranty','under_warranty'),('Out of warranty','out_of_warranty')],v['warranty_status'])
             if v['route']!='in_house':
-                for key,title in [('external_reference','Service center / vendor job number'),('claim_number','Warranty claim number'),('contact_person','Contact person'),('address','Address'),('phone','Phone'),('specialization','Brand / specialization'),('transport','Courier / transport'),('vendor_status','External repair status')]:
-                    d.text(key,title,details.get(key,''))
+                d.layout.addRow('Repair partner',label((v['assignment'].get('summary') or v['assignment'].get('party') or 'Not selected')
+                    +'\nContact details are kept in Contacts & Services.'))
+                for key,title in [('external_reference','Service centre ticket / external job number'),('claim_number','Warranty claim number'),('vendor_status','External repair status')]:
+                    d.text(key,title,details.get(key,'') or (v['assignment'].get('reference','') if key=='external_reference' else ''))
                 d.date('expected_return','Expected return',v['return_due'])
                 if self.window.s.may('view_internal_cost'):
                     for k,title in [('vendor_parts','Vendor parts cost'),('vendor_labour','Vendor labour cost'),('transport_cost','Transport cost'),('other_cost','Other cost'),('customer_price','Proposed customer price')]:
@@ -364,7 +373,11 @@ class JobWorkspace(QDialog):
         layout.addWidget(label('Warranty: '+v['warranty_status'].replace('_',' ')))
         def choose(route):
             f=Form(ROUTE_LABELS[route],d,'Assign responsibility here. Physical location changes only when you record an actual handover.')
-            if route!='in_house':f.add('contact_id','Authorized Service Center' if route=='warranty_centre' else 'Third Party',MasterSelector(self.window.s,'centre' if route=='warranty_centre' else 'vendor'))
+            if route!='in_house':
+                from .contacts_ui import ContactSelector
+                centre=route=='warranty_centre'
+                picker=f.add('contact_id','Service centre' if centre else 'Third-party repairer',
+                             ContactSelector(self.window.s,'centre' if centre else 'vendor',job_id=self.ident))
             else:
                 opts = [(r['name'],r['id']) for r in self.window.db.rows("SELECT id,name FROM masters WHERE kind='technician' AND active=1 ORDER BY name")]
                 if not opts:
@@ -376,7 +389,18 @@ class JobWorkspace(QDialog):
             # The job itself identifies the work; the owner never types an internal reference.
             f.layout.addRow('Internal job reference', label(f"{v['number']} | {v['device']} | "
                 + ('SN-' + v['serial'] if v['serial'] else 'No serial recorded')))
-            f.text('reference','External reference (service centre case / third-party ticket)')
+            if route!='in_house':
+                # Only what is unique to this repair; the partner's details come from the directory.
+                f.text('reference','Service centre ticket / RMA' if centre else 'External job / ticket no.')
+                expected=f.date('expected_return','Expected return',v['return_due'])
+                f.text('instructions','Special instructions / notes',multiline=True)
+                def turnaround(option):
+                    days=((option or {}).get('snapshot') or {}).get('turnaround_days')
+                    if days and expected.date()==expected.minimumDate():
+                        from PyQt6.QtCore import QDate
+                        expected.setDate(QDate.currentDate().addDays(int(days)))
+                picker.on_change=turnaround
+                turnaround(picker.selected_option())
             def save(p):
                 # Saving is the confirmation for a first assignment. Replacing an
                 # existing one asks explicitly, because it discards the current party.

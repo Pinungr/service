@@ -8,15 +8,12 @@ from PyQt6 import sip
 from PyQt6.QtGui import QDesktopServices, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox, QProgressBar, QListWidget, QListWidgetItem)
 from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel, MetricCard, CardGrid, FlowLayout
-from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS, today
+from .domain import RuleError, money, rupees, STAGES, ROUTES, today
 from .queries import Queries
 from .documents import Documents
 from .backup import Backups
 from .messaging import Outbox, secret
 
-# Shop-owner wording. Internal table values stay as they are, so no data migration risk.
-DIRECTORY_LABELS = {'vendor': 'Third Party', 'centre': 'Authorized Service Center', 'supplier': 'Parts Supplier',
-                    'technician': 'Internal Technician', 'service': 'Repair / Service'}
 from .customer_records import CustomerRecords
 from .customer_ui import CustomerOverview, IntakeForm, IntakePhotos, DevicePhotos
 from .local_files import managed_path
@@ -71,7 +68,7 @@ class MainWindow(QMainWindow):
         links = QVBoxLayout(navigation)
         links.setContentsMargins(0, 0, 4, 0)
         links.setSpacing(4)
-        names = ["Dashboard", "New Repair Intake", "Active Repairs", "Ready for Delivery", "Repair History", "Inventory", "Customers", "Products sold", "Dispatch & receive", "Directories", "Quotations", "Customer accounts", "Vendor accounts", "Reports", "Notifications", "Backups", "Settings & staff"]
+        names = ["Dashboard", "New Repair Intake", "Active Repairs", "Ready for Delivery", "Repair History", "Inventory", "Customers", "Products sold", "Dispatch & receive", "Contacts & Services", "Quotations", "Customer accounts", "Vendor accounts", "Reports", "Notifications", "Backups", "Settings & staff"]
         for name in names:
             groups = {'Dashboard': 'WORKSHOP', 'Customers': 'PEOPLE & SALES', 'Quotations': 'ACCOUNTS', 'Notifications': 'MANAGEMENT'}
             if name in groups:
@@ -287,7 +284,7 @@ class MainWindow(QMainWindow):
     SCREENS = {
         'New Repair Intake': 'intake', 'Customers': 'customer_records',
         'Products sold': 'register_sale', 'Dispatch & receive': 'handover',
-        'Inventory': 'inventory', 'Directories': 'directories',
+        'Inventory': 'inventory', 'Contacts & Services': 'directories',
         'Quotations': 'create_quote', 'Customer accounts': 'collect_payment',
         'Vendor accounts': 'vendor_accounts', 'Reports': 'reports',
         'Notifications': 'messaging', 'Backups': 'backup_restore',
@@ -305,7 +302,7 @@ class MainWindow(QMainWindow):
         self.page_name = name
         self.title.setText(name)
         descriptions = {"Dashboard": "Your shop at a glance · physical items and work progress", "Jobs": "Track each repair from intake to collection", "Dispatch & receive": "Choose the actual items handed over; accessories can stay at the shop", "Customer accounts": "Bills, receipts and refunds · balances remain after collection", "Vendor accounts": "Confirmed payables and monthly settlement", "Backups": "Verified recovery copies, long-term archives and historical viewing", "Notifications": "Preview and manage updates · provider acceptance is not delivery"}
-        descriptions.update({'New Repair Intake': 'Receive a customer’s devices and create their repair jobs', 'Active Repairs': 'Find a repair and continue its next step', 'Ready for Delivery': 'Repairs ready for customer collection', 'Repair History': 'Look up previous visits and the complete repair record', 'Inventory': 'Track available, reserved and issued repair parts', 'Customers': 'Find customers, their devices and previous visits', 'Products sold': 'Record sales, warranties and customer collection', 'Directories': 'Manage repairers, suppliers, categories and services', 'Quotations': 'Prepare estimates and record customer decisions', 'Reports': 'Review shop activity and export your records', 'Settings & staff': 'Manage your shop, staff access and local preferences'})
+        descriptions.update({'New Repair Intake': 'Receive a customer’s devices and create their repair jobs', 'Active Repairs': 'Find a repair and continue its next step', 'Ready for Delivery': 'Repairs ready for customer collection', 'Repair History': 'Look up previous visits and the complete repair record', 'Inventory': 'Track available, reserved and issued repair parts', 'Customers': 'Find customers, their devices and previous visits', 'Products sold': 'Record sales, warranties and customer collection', 'Contacts & Services': 'Repair partners, service centres, suppliers, bus services and shop setup lists', 'Quotations': 'Prepare estimates and record customer decisions', 'Reports': 'Review shop activity and export your records', 'Settings & staff': 'Manage your shop, staff access and local preferences'})
         self.subtitle.setText(descriptions.get(name, "Saved records · changes persist on this computer"))
         for n, b in self.nav.items():
             b.setProperty("active", n == name)
@@ -333,7 +330,7 @@ class MainWindow(QMainWindow):
         self.layout = QVBoxLayout(page)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(14)
-        method = {"Dashboard": self.dashboard, "New Repair Intake": self.intake_landing, "Active Repairs": self.active_repairs, "Ready for Delivery": lambda: self.active_repairs('ready'), "Repair History": lambda: self.active_repairs('history'), "Inventory": self.inventory, "Customers": self.customers, "Products sold": self.sales, "Jobs": self.jobs, "Dispatch & receive": self.custody, "Directories": self.directories, "Quotations": self.quotes, "Customer accounts": lambda: self.accounts("customer"), "Vendor accounts": lambda: self.accounts("vendor"), "Reports": self.reports, "Notifications": self.notifications, "Backups": self.backups, "Settings & staff": self.settings}[self.page_name]
+        method = {"Dashboard": self.dashboard, "New Repair Intake": self.intake_landing, "Active Repairs": self.active_repairs, "Ready for Delivery": lambda: self.active_repairs('ready'), "Repair History": lambda: self.active_repairs('history'), "Inventory": self.inventory, "Customers": self.customers, "Products sold": self.sales, "Jobs": self.jobs, "Dispatch & receive": self.custody, "Contacts & Services": self.directories, "Quotations": self.quotes, "Customer accounts": lambda: self.accounts("customer"), "Vendor accounts": lambda: self.accounts("vendor"), "Reports": self.reports, "Notifications": self.notifications, "Backups": self.backups, "Settings & staff": self.settings}[self.page_name]
         method()
         for index in range(self.layout.count()):
             widget = self.layout.itemAt(index).widget()
@@ -1261,47 +1258,23 @@ class MainWindow(QMainWindow):
         preview.setText('Photo saved: ' + attachment.name)
 
     def directories(self):
-        kind = combo([(DIRECTORY_LABELS.get(k, k.replace('_', ' ').title()), k) for k in MASTER_KINDS])
-        self.layout.addWidget(kind)
-        self.toolbar([("+ Add option", lambda: self.master_form(kind.currentData()), True), ("Edit / deactivate", lambda: self.master_form(kind.currentData(), self.selected(grid)), False)])
-        grid = self.table(self.db.rows("SELECT * FROM masters WHERE kind=? ORDER BY name", (kind.currentData(),)))
-        kind.currentIndexChanged.connect(lambda: grid.fill(self.db.rows("SELECT * FROM masters WHERE kind=? ORDER BY name", (kind.currentData(),))))
+        from .contacts_ui import ContactsPage
+        self.contacts_page = ContactsPage(self)
+        self.layout.addWidget(self.contacts_page, 1)
 
     def master_form(self, kind, row=None):
+        """Shop setup lists. Reusable business contacts use the Contacts & Services form."""
+        from .contacts_ui import ContactForm, CONTACT_KINDS
+        if kind in CONTACT_KINDS:
+            if ContactForm(self, kind, row).open():
+                self.refresh()
+            return
         row = row or {}
-        d = Form(DIRECTORY_LABELS.get(kind, kind.title()) + " directory", self)
-        party = kind in self.s.PARTY_KINDS
-        d.text("name", "Name *" if party else "Name", row.get("name"))
-        d.text("contact", "Mobile *" if party else "Phone / contact", row.get("contact"))
-        address_widgets = {}
-        if party:
-            try:
-                profile=json.loads(row.get('details') or '{}')
-                if not isinstance(profile,dict):profile={'notes':row.get('details','')}
-            except ValueError:
-                profile={'notes':row.get('details','')}
-            from . import addresses
-            d.text('address_line1', 'Address Line 1 *', row.get('address_line1') or profile.get('address',''))
-            d.text('address_line2', 'Address Line 2', row.get('address_line2',''))
-            d.text('pincode', 'PIN Code *', row.get('pincode',''))
-            state = combo([(name, name) for name in addresses.STATES], row.get('state') or None)
-            state.setEditable(True); state.setInsertPolicy(state.InsertPolicy.NoInsert)
-            if row.get('state'): state.setCurrentText(row['state'])
-            d.add('state', 'State *', state)
-            district = combo([(name, name) for name in addresses.districts(self.db, row.get('state'))])
-            district.setEditable(True); district.setInsertPolicy(district.InsertPolicy.NoInsert)
-            if row.get('district'): district.setCurrentText(row['district'])
-            d.add('district', 'District *', district)
-            address_widgets = {'state': state, 'district': district}
-            d.text('specialization', 'Specialization', row.get('specialization') or profile.get('specialization',''))
-            for key,title in [('company','Company / brand / OEM'),('contact_person','Contact person'),('email','Email'),('notes','Notes')]:
-                d.text(key,title,profile.get(key,''),multiline=key=='notes')
-            photo_state = {'id': row.get('photo_id')}
-            preview = QLabel('No photo' if not photo_state['id'] else 'Photo saved')
-            d.layout.addRow('Photo (optional)', preview)
-            d.layout.addRow('', button('Camera / Upload', lambda: self.safe(lambda: self.party_photo(d, photo_state, preview))))
-        else:
-            d.text("details", "Details", row.get("details"), multiline=True)
+        from .contacts import label
+        d = Form(label(kind), self)
+        d.text("name", "Name", row.get("name"))
+        d.text("contact", "Phone / contact", row.get("contact"))
+        d.text("details", "Details", row.get("details"), multiline=True)
         d.check("active", "Available for new work", row.get("active", True))
         if kind == "accessory":
             d.add("category_id", "Suggest for category", MasterSelector(self.s, "category"))
@@ -1313,11 +1286,6 @@ class MainWindow(QMainWindow):
                 check=QCheckBox(category['name']);check.setChecked(category['id'] in selected)
                 d.layout.addRow('',check);service_categories.append((category['id'],check))
         def save(v):
-            if party:
-                for key, widget in address_widgets.items():
-                    v[key] = widget.currentText().strip()
-                v['photo_id'] = photo_state['id']
-                v['details']=json.dumps({k:v.pop(k) for k in ('company','contact_person','email','notes')},ensure_ascii=False)
             if kind=='service':v['category_ids']=[ident for ident,check in service_categories if check.isChecked()]
             self.s.save_master(kind, **v, ident=row.get('id'))
         if d.submit(save):

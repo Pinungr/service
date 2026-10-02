@@ -110,6 +110,11 @@ ACTION_PERMISSIONS = {
 }
 
 
+#: Reusable partner facts that once were retyped on each job. They live on the directory
+#: record (and the assignment snapshot), so the route-details step no longer accepts them.
+MASTER_OWNED = frozenset(('contact_person', 'address', 'phone', 'specialization', 'transport'))
+
+
 def guard(j, operation):
     if j['lifecycle_version'] and not _command.get():
         raise RuleError('Use the guided job action to ' + operation + '. Open the job to see the next required step.')
@@ -189,22 +194,29 @@ class Lifecycle:
                 return label+' · '+self.s.custodian(value)['name']
             return label+(': '+value.split(':',1)[1] if ':' in value else '')
         location = ' / '.join(place(v) for v in locations) or 'LOCATION NEEDS REVIEW'
-        assignment = self.db.one('''SELECT a.*,m.name AS party,m.contact,m.details,COALESCE(tm.name,u.name) AS technician FROM assignments a
+        assignment = self.db.one('''SELECT a.*,m.name AS live_name,m.contact AS live_contact,COALESCE(tm.name,u.name) AS technician FROM assignments a
             LEFT JOIN masters m ON m.id=a.contact_id LEFT JOIN users u ON u.id=a.technician_id LEFT JOIN masters tm ON tm.id=a.technician_master_id WHERE a.id=?''', (j['assignment_id'],)) or {}
-        try:
-            profile=json.loads(assignment.get('details') or '{}')
-        except ValueError:
-            profile={}
-        if isinstance(profile,dict) and profile:
-            assignment['details']=' · '.join(k.replace('_',' ').title()+': '+str(val) for k,val in profile.items() if val)
+        partner = {}
+        if assignment.get('contact_id'):
+            # The partner as recorded when this repair was assigned. A later directory edit
+            # changes future repairs only.
+            from .contacts import summary
+            try:
+                partner = json.loads(assignment.get('contact_snapshot') or '{}')
+            except ValueError:
+                partner = {}
+            partner = partner or {'name': assignment.get('live_name'), 'phone': assignment.get('live_contact')}
+            card = summary(partner)
+            assignment.update(partner=partner, party=partner.get('name'), contact=partner.get('phone', ''),
+                              summary=card, details='\n'.join(card.split('\n')[1:]))
         away = any(not in_shop(v) and v != 'customer' for v in locations)
         at_shop = bool(devices) and all(in_shop(h['location']) for h in devices)
         responsible = (j['customer'] if locations == ['customer'] else
             assignment.get('party') if j['route']!='in_house' else assignment.get('technician')) or 'Shop counter · assignment needed'
-        if away and data.get('route_details',{}).get('contact_person') and not any(v.startswith('transit:') for v in locations):
-            responsible=data['route_details']['contact_person']+' · '+(assignment.get('party') or 'External repairer')
-        elif away and isinstance(profile,dict) and profile.get('contact_person') and not any(v.startswith('transit:') for v in locations):
-            responsible=profile['contact_person']+' · '+(assignment.get('party') or 'External repairer')
+        # Jobs from before Contacts & Services may carry a job-specific contact person.
+        person = data.get('route_details',{}).get('contact_person') or partner.get('contact_person')
+        if away and person and not any(v.startswith('transit:') for v in locations):
+            responsible=person+' · '+(assignment.get('party') or 'External repairer')
         quotes = self.db.one('SELECT * FROM quotes WHERE job_id=? ORDER BY version DESC LIMIT 1', (ident,)) or {}
         warranty = self.db.one('SELECT * FROM warranty WHERE job_id=? ORDER BY id DESC LIMIT 1', (ident,)) or {}
         finances = self.db.one("SELECT COALESCE(sum(amount),0) balance,COALESCE(sum(CASE WHEN kind='invoice' THEN amount ELSE 0 END),0) billed FROM entries WHERE account_type='customer' AND job_id=?", (ident,))
@@ -649,7 +661,8 @@ class Lifecycle:
                         raise RuleError('Return issued shop parts before changing repairer.')
                     for part in c.execute("SELECT supplier_id FROM repair_parts WHERE job_id=? AND source='technician' AND status='planned'",(ident,)):
                         if route!='third_party' or part[0]!=p.get('contact_id'):raise RuleError('Remove or revise the old repairing-vendor parts before changing vendor.')
-                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,legacy_technician if route=='in_house' else None,technician_master_id=technician_master if route=='in_house' else None,reference=p.get('reference',''))
+                    self.s.assign(ident,route,p.get('contact_id') if route!='in_house' else None,legacy_technician if route=='in_house' else None,technician_master_id=technician_master if route=='in_house' else None,reference=p.get('reference',''),
+                                  expected_return=p.get('expected_return') if route!='in_house' else None,instructions=p.get('instructions','') if route!='in_house' else '')
                     data['custody_version']=2
                     data['in_transit']=False;data.pop('transit_direction',None);data.pop('transit_destination',None)
                     if route=='in_house' and p.get('handed_over'):
@@ -679,12 +692,15 @@ class Lifecycle:
                     if not any(h['type']=='device' for h in chosen):
                         raise RuleError('Select the physical device and only the accessories being sent.')
                     data['dispatch']=dict(p,items=sorted(selected))
-                    c.execute('UPDATE jobs SET assessment_consent=1,return_due=? WHERE id=?',(day(p.get('expected_return')),ident))
+                    expected=day(p.get('expected_return')) or v['assignment'].get('expected_return') or j['return_due']
+                    c.execute('UPDATE jobs SET assessment_consent=1,return_due=? WHERE id=?',(expected,ident))
                     from .dispatch import Dispatches
+                    # The partner's ticket was asked for once, when the partner was chosen.
                     data['dispatch_id']=Dispatches(self.s).prepare(c,j,dict(
-                        contact_id=v['assignment']['contact_id'],reference=p.get('reference',''),
+                        contact_id=v['assignment']['contact_id'],reference=p.get('reference') or v['assignment'].get('reference',''),
+                        transporter_id=p.get('transporter_id'),
                         transport_mode=p.get('transport_mode') or 'COURIER',transport=p.get('transport') or {},
-                        amount=p.get('amount',0),paid_by=p.get('paid_by','shop'),expected_return=day(p.get('expected_return')),
+                        amount=p.get('amount',0),paid_by=p.get('paid_by','shop'),expected_return=expected,
                         condition=p.get('condition',''),notes=p.get('notes',''),
                         manifest=sorted(selected),consent=True))
                 elif action in ('dispatch','arrive','receive','return_dispatch'):
@@ -825,6 +841,9 @@ class Lifecycle:
                     self.s.notify(c,ident,'ready_unrepaired' if data.get('unrepaired') else 'ready_repaired', 'Your device is ready for collection '+('without repair. ' if data.get('unrepaired') else 'after final shop QC. ')+ 'Please contact the shop to arrange collection.')
                     data['notified']=now()
                 elif action == 'details':
+                    if set(p)&MASTER_OWNED:
+                        raise RuleError("The repairer's contact person, phone, address and specialization come from "
+                                        "Contacts & Services; correct them there. Transport belongs to the dispatch record.")
                     if set(p)&{'vendor_parts','vendor_labour','transport_cost','other_cost','service_center_charge','in_house_cost','estimated_parts','estimated_labour'}:self.s.require_permission('view_internal_cost')
                     if any(not isinstance(p[k],int) or p[k]<0 for k in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price') if k in p):
                         raise RuleError('Enter nonnegative estimates in whole paise.')
