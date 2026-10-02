@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel
 
 from repairshop.domain import rupees
-from repairshop.repair_details import RepairDetails
+from legacy_desktop.repair_details import RepairDetails
 
 
 def snapshot():

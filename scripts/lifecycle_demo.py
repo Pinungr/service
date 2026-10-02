@@ -14,9 +14,9 @@ from repairshop.lifecycle import Lifecycle
 from repairshop.parts import Parts
 from repairshop.warranties import Warranties
 from repairshop.documents import Documents
-from repairshop.ui import MainWindow
-from repairshop.lifecycle_ui import JobWorkspace
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.lifecycle_ui import JobWorkspace
+from legacy_desktop.ui_widgets import STYLE
 
 ROOT=Path(__file__).resolve().parents[1]
 

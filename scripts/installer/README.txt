@@ -2,8 +2,10 @@ RepairShop Manager
 Offline repair shop software for Windows
 
 INSTALLATION
-This setup includes the application and its runtime. No internet connection,
-Python installation or source code is needed on the destination computer.
+This setup includes the local web application, backend and its runtime. No
+internet connection, Python installation or source code is needed on the
+destination computer. The app opens in your default browser and serves only
+on this computer (127.0.0.1).
 
 Choose an installation folder, Start Menu folder and optional Desktop shortcut.
 Use Back to review your choices, then Install. The final page can open the app.

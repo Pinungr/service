@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt
 
 from repairshop.journey_model import build_journey
 from repairshop.lifecycle import Lifecycle
-from repairshop.repair_journey import JOURNEY_STATES, RepairJourney
+from legacy_desktop.repair_journey import JOURNEY_STATES, RepairJourney
 from test_lifecycle import fresh, route, dispatch, qc
 
 CURRENT_ALIAS = {'ready_unrepaired': 'ready_repaired', 'testing': 'final_qc'}
@@ -268,8 +268,8 @@ def test_nodes_show_live_completed_pending_and_failed_states(qtbot, service, cus
 
 
 def test_workspace_keeps_horizontal_workflow_above_every_tab(qtbot, service, customer):
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     ident, life = route(service, customer, 'in_house')
     window = MainWindow(service)
     window.timer.stop()
@@ -355,8 +355,8 @@ def test_clicking_a_stage_only_opens_its_history(qtbot, service, customer, monke
 
 
 def test_workspace_separates_stage_actions_from_general_tools(qtbot, service, customer):
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     ident, life = fresh(service, customer)
     window = MainWindow(service)
     window.timer.stop()

@@ -223,8 +223,8 @@ def test_stale_action_and_invalid_master_do_not_write(service,customer):
 
 
 def test_guided_workspace_and_route_specific_tracker(qtbot,service,customer):
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     ident,life=route(service,customer,'third_party');dispatch(service,ident,life)
     window=MainWindow(service);window.timer.stop();qtbot.addWidget(window)
     d=JobWorkspace(window,ident);qtbot.addWidget(d);d.show()
@@ -449,11 +449,11 @@ def test_handover_to_technician_still_works_after_initial_route(service,customer
 
 
 def test_route_form_has_no_confirmation_checkbox_and_indicator_is_styled():
-    from repairshop.ui_widgets import STYLE, CHECKBOX_STYLE
-    from repairshop.intake_fields import INTAKE_STYLE
+    from legacy_desktop.ui_widgets import STYLE, CHECKBOX_STYLE
+    from legacy_desktop.intake_fields import INTAKE_STYLE
     from pathlib import Path
     import re, inspect
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     source=inspect.getsource(JobWorkspace.route_choice)
     assert "f.check('confirmed'" not in source and 'f.check("confirmed"' not in source
     assert CHECKBOX_STYLE.strip() in STYLE and INTAKE_STYLE==CHECKBOX_STYLE

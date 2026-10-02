@@ -6,15 +6,15 @@ import pytest
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import QImage, QColor
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QCheckBox
-from repairshop.camera import CameraDialog, NO_CAMERA
+from legacy_desktop.camera import CameraDialog, NO_CAMERA
 from repairshop.customer_records import CustomerRecords
-from repairshop.customer_ui import IntakeForm, CustomerOverview
+from legacy_desktop.customer_ui import IntakeForm, CustomerOverview
 from repairshop.domain import RuleError
 from repairshop.local_files import managed_path, digest
 from repairshop.persistence import Database, SCHEMA
 from repairshop.services import Service
 from repairshop.backup import Backups
-from repairshop.ui import MainWindow
+from legacy_desktop.ui import MainWindow
 
 
 def held_at(service, item_id):
@@ -382,7 +382,7 @@ def test_backup_failure_stops_migration_before_schema_changes(tmp_path, monkeypa
 
 
 def test_intake_cancel_camera_fail_and_restart_preserve_draft(qtbot, service, customer, monkeypatch):
-    import repairshop.customer_ui as ui
+    import legacy_desktop.customer_ui as ui
     real_camera = ui.CameraDialog
     created = []
     def simulated(*args, **kwargs):

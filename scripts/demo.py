@@ -8,7 +8,7 @@ from repairshop.persistence import Database
 from repairshop.services import Service
 from repairshop.documents import Documents
 from repairshop.customer_records import CustomerRecords
-from PyQt6.QtGui import QImage, QColor
+from repairshop.images import solid
 
 
 def create(root):
@@ -28,14 +28,21 @@ def create(root):
     devices=["Lenovo ThinkPad T14","HP LaserJet Pro M404","Dell Inspiron 15","Apple MacBook Air M1","Epson EcoTank L3250","Samsung Galaxy A54"]
     faults=["No power; charging light is off","Paper jam and faded prints","Display flickers on battery","Keyboard keys not responding","Printhead cleaning requested","Battery drains rapidly"]
     categories={r["name"]:r["id"] for r in s.masters("category")}
+    def device_and_location(job_id):
+        row = s.db.one("""SELECT i.id, h.location FROM items i JOIN holdings h ON h.item_id=i.id
+            WHERE i.job_id=? AND i.type='device' AND h.quantity>0""", (job_id,))
+        return row['id'], row['location']
     jobs=[]
     for i in range(24):
         n=i%len(names)
         if i<len(names):
-            customer=s.save_customer(names[n],f"999000{n:04d}",f"demo{n}@example.invalid",whatsapp_consent=True,email_consent=True)
-            image=QImage(160,160,QImage.Format.Format_RGB32)
-            image.fill(QColor('#86b5a4'))
-            CustomerRecords(s).save_photo(image,customer)  # Explicit synthetic demo image; no real person.
+            customer=s.save_customer(
+                names[n], f"999000{n:04d}", f"demo{n}@example.invalid",
+                whatsapp_consent=True, email_consent=True,
+                address_line1=f"{n + 1} Sample Market", pincode="110001",
+                district="New Delhi", state="Delhi",
+            )
+            CustomerRecords(s).save_photo(solid(160, 160), customer)  # Synthetic image; no real person.
         else:
             customer=n+1
         idx=i%len(devices)
@@ -48,14 +55,14 @@ def create(root):
             s.record_work(job,"diagnosis",{"notes":"Bench inspection booked; checking power supply."})
         elif i%6==1:
             s.assign(job,"third_party",vendor,estimate=95000)
-            device=s.db.one("SELECT id FROM items WHERE job_id=? AND type='device'",(job,))["id"]
-            s.move(device,1,"shop:Front desk","vendor:Precision Electronics","Precision staff",f"demo-move-{i}",reference=f"PE-{i:04d}")
+            device, location=device_and_location(job)
+            s.move(device,1,location,"vendor:Precision Electronics","Precision staff",f"demo-move-{i}",reference=f"PE-{i:04d}")
             s.stage(job,"awaiting_return")
             s.post("vendor",vendor,"charge",95000,f"demo-vendor-{i}",job_id=job,reference=f"PE-{i:04d}")
         elif i%6==2:
             s.assign(job,"warranty_centre",centre)
-            device=s.db.one("SELECT id FROM items WHERE job_id=? AND type='device'",(job,))["id"]
-            s.move(device,1,"shop:Front desk","centre:Authorized Care Centre","Service centre",f"demo-centre-{i}")
+            device, location=device_and_location(job)
+            s.move(device,1,location,"centre:Authorized Care Centre","Service centre",f"demo-centre-{i}")
             s.record_warranty(job,"pending",rma=f"RMA-DEMO-{i}",findings="Awaiting centre inspection")
         elif i%6==3:
             quote=s.issue_quote(job,"Replace keyboard and test",[{"description":"Keyboard assembly","amount":240000},{"description":"Labour and testing","amount":60000}])
@@ -68,8 +75,8 @@ def create(root):
             s.stage(job,"ready_repaired",test_result="passed")
         else:
             s.assign(job,"third_party",vendor)
-            device=s.db.one("SELECT id FROM items WHERE job_id=? AND type='device'",(job,))["id"]
-            s.move(device,1,"shop:Front desk","transit:Swift Courier","Swift Courier",f"demo-transit-{i}",reference=f"TRACK-DEMO-{i}")
+            device, location=device_and_location(job)
+            s.move(device,1,location,"transit:Swift Courier","Swift Courier",f"demo-transit-{i}",reference=f"TRACK-DEMO-{i}")
     s.save_sale(1,"Lenovo IdeaPad Slim 3",serial="SALE-DEMO-001",invoice_ref="DEMO-SALE-014",sale_date=date.today().isoformat(),amount=4500000,cost=4100000,provider="Manufacturer",warranty_start=date.today().isoformat(),warranty_end=(date.today()+timedelta(days=365)).isoformat(),warranty_terms="Demonstration only")
     Documents(s).generate("intake_receipt",jobs[0])
     print(f"Demo created at {root.resolve()}\nOwner login: demo / DemoShop2026!\nSynthetic data only. Messaging is local test capture.")

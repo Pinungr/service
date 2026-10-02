@@ -135,7 +135,7 @@ def test_documents_state_the_configured_zone_rather_than_a_fixed_label(service, 
 
 def window_for(qtbot, service):
     """Build the main window the way the existing UI tests do: no live timer or pool."""
-    from repairshop.ui import MainWindow
+    from legacy_desktop.ui import MainWindow
     window = MainWindow(service)
     window.timer.stop()
     qtbot.addWidget(window)

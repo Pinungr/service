@@ -14,6 +14,31 @@ _timezone = DEFAULT_TIMEZONE
 
 class RuleError(ValueError):
     """A business validation error safe to show to staff."""
+    code = 'BUSINESS_RULE'
+
+
+# Narrower kinds of RuleError. Callers that catch RuleError keep working; an adapter
+# such as the HTTP API can tell them apart without parsing messages.
+class AuthenticationRequired(RuleError):
+    code = 'AUTHENTICATION_REQUIRED'
+
+
+class PermissionDenied(RuleError):
+    code = 'PERMISSION_DENIED'
+
+
+class NotFound(RuleError):
+    code = 'NOT_FOUND'
+
+
+class VersionConflict(RuleError):
+    """The record changed since the caller read it; refresh before acting."""
+    code = 'VERSION_CONFLICT'
+
+
+class InvalidAction(RuleError):
+    """The requested workflow step is not available in the record's current state."""
+    code = 'INVALID_LIFECYCLE_ACTION'
 
 
 def use_timezone(name):
@@ -65,6 +90,17 @@ def money(value):
         return int((d * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     except (ValueError, InvalidOperation):
         raise RuleError("Enter a valid amount in rupees.")
+
+
+def paise(value):
+    """Money from a client: whole paise as an int, or rupee text typed by staff. Never a float."""
+    if isinstance(value, (bool, float)):
+        raise RuleError("Enter money as whole paise or rupee text, never a floating-point number.")
+    if isinstance(value, int):
+        if abs(value) > 999999999900:
+            raise RuleError("Enter a valid amount in rupees.")
+        return value
+    return money(value or "0")
 
 
 def rupees(paise):

@@ -388,8 +388,8 @@ def test_audit_records_the_significant_dispatch_events(service, customer):
 def test_dispatch_panel_edits_before_send_and_amends_after(qtbot, service, customer, monkeypatch):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication, QDialogButtonBox
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     ident = three(service, customer)[0]
     life = external(service, customer, ident)
     prepared(service, life, ident)
@@ -504,8 +504,8 @@ def test_docket_date_must_be_a_real_date(service, customer):
 
 
 def test_switching_mode_shows_only_that_modes_fields_and_clears_the_others(qtbot, service, customer):
-    from repairshop.ui_widgets import Form
-    from repairshop.dispatch_ui import MODE_LABELS, transport_fields
+    from legacy_desktop.ui_widgets import Form
+    from legacy_desktop.dispatch_ui import MODE_LABELS, transport_fields
     from repairshop.contacts import Contacts
     operator = Contacts(service).save('transporter', dict(name='Sharma Travels', mobile='9990012345',
         route_from='Pune', route_to='Bhubaneswar', vehicle_number='MH12AB1234'))

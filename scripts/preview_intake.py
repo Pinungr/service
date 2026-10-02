@@ -9,10 +9,10 @@ from PyQt6.QtGui import QImage, QColor
 from repairshop.persistence import Database
 from repairshop.services import Service
 from repairshop.customer_records import CustomerRecords
-from repairshop.customer_registration import CustomerRegistration
-from repairshop.customer_ui import IntakeForm
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.customer_registration import CustomerRegistration
+from legacy_desktop.customer_ui import IntakeForm
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
 
 
 def render(output):

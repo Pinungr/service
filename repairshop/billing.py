@@ -8,6 +8,7 @@ The initial estimate is the figure given at the counter and is never rewritten b
 later quotation. The approved quotation is the exact customer-approved version. The
 final bill is what was actually posted to the customer ledger.
 """
+import json
 from .domain import RuleError, rupees
 
 CATEGORIES = ('service', 'parts', 'transport', 'other')
@@ -119,3 +120,21 @@ class Billing:
                 f"This bill of {rupees(amount)} exceeds approved quotation version {approved['version']} "
                 f"({rupees(approved['total'])}). Issue a revised quotation and record the customer's "
                 "approval before billing the higher amount.")
+
+    def quote_preview(self, job_id, charges):
+        """What a new quotation version would total, against the last approved one.
+
+        `charges` are the customer charge lines typed for this version; planned parts are
+        added automatically, exactly as `Service.issue_quote` will add them.
+        """
+        self.s.require_permission('create_quote')
+        self.s.require_job_access(job_id)
+        from .parts import Parts
+        approved = self.db.one("""SELECT q.* FROM quotes q JOIN decisions d ON d.quote_id=q.id
+            WHERE q.job_id=? AND d.decision='approved' ORDER BY q.version DESC LIMIT 1""", (job_id,))
+        parts = Parts(self.s).quote_lines(job_id)
+        previous = {line['part_id'] for line in json.loads(approved['lines']) if 'part_id' in line} if approved else set()
+        total = sum(int(line['amount']) for line in charges) + sum(line['amount'] for line in parts)
+        before = approved['total'] if approved else None
+        return dict(parts=parts, new_parts=[line for line in parts if line['part_id'] not in previous],
+                    total=total, previous_approved=before, change=(total - before) if before is not None else None)

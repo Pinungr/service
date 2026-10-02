@@ -1,87 +1,72 @@
 # RepairShop Manager
 
-Native Windows desktop software for an offline computer/electronics repair counter. Built with Python 3.14.6, PyQt6, SQLite through SQLAlchemy, explicit versioned schema migrations, ReportLab, openpyxl, HTTPX and Windows keyring integration.
+Offline repair-shop software for Windows. The current application opens in a
+browser while one local FastAPI process serves the React interface, API and
+existing SQLite shop data. It needs no cloud account or network connection.
 
-## Run the Windows package
+## Run from source without making a Windows build
 
-Extract `RepairShopManager-Windows-x64.zip`, then double-click its only file, `RepairShopManager.exe`. The executable embeds its application and runtime dependencies; no separate `_internal` folder or installed Python is needed. Source files, guides, build scripts and dependency lists stay in the developer workspace and are not included in the end-user ZIP. The package is portable: no administrator rights or Windows service installation is required. The executable temporarily unpacks its runtime when launched; shop data continues to live outside the executable.
-
-For pen-drive installation on another Windows PC, copy `dist\RepairShopManager-Offline-Setup-1.5.0.exe`. The standard Windows setup wizard runs completely offline: Welcome, README, installation folder, Start Menu folder, Desktop shortcut, progress and Finish. Installing an update keeps existing records. **Uninstalling permanently removes the application and all saved local shop data and accounts after confirmation**, so reinstalling starts fresh. Close the application before updating or uninstalling. The `dist` folder contains only this setup file. See [installer details](docs/INSTALLER.md).
-
-New repair intake uses Customer → Product → Repair → Confirm. Register customers inline, capture or upload a photo, select a shop purchase for automatic product/warranty details, or enter an external product. Review each device and use **Add product and receive another** for a multi-product visit. **Create Repair Job** receives the device; Save as Draft keeps unfinished work. See [intake update details](docs/INTAKE_UX.md).
-
-On first launch, enter your shop name and create an owner username and password (at least 10 characters). There is no production default password. Production data is kept at `%LOCALAPPDATA%\RepairShopManager`, outside the program folder. Do not place a live SQLite database on a network drive.
-
-## Development setup
-
-Version 1.4.0 adds shop inventory, reserved/issued stock, separate internal costing, courier and technician handovers, structured repair returns and manual warranty verification. See [the implementation report](docs/INVENTORY_CUSTODY_IMPLEMENTATION_REPORT.md) for schema changes, validation and limits, and [the user guide](docs/USER_GUIDE.md) for the operating steps.
-
-To build without replacing an application currently running from `dist`, use `scripts/build.ps1 -OutputDirectory 'dist/releases/1.4.0'`. The portable ZIP still contains exactly one EXE.
-
-From this project folder in PowerShell:
+From the project folder in PowerShell, with Python 3.14 and Node.js installed:
 
 ```powershell
 py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-lock.txt
-.\.venv\Scripts\python.exe -m repairshop
-```
-
-Use a separate data directory when testing:
-
-```powershell
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
 .\.venv\Scripts\python.exe -m repairshop --data-dir '.\runtime\test-shop'
 ```
 
-## Synthetic demonstration
+Open the local address printed by the launcher if your browser does not open.
+Use a separate `--data-dir` for testing so the installed shop is untouched.
+The first visit asks for the shop name and owner account. A second launch for
+the same data folder opens the running instance instead of starting another
+SQLite writer. The app binds to `127.0.0.1` only.
+
+For frontend development, run the backend above and, in another terminal,
+`npm.cmd --prefix frontend run dev`. Vite
+proxies `/api` to the backend; production needs no Vite process. A synthetic
+demo can be generated once with `scripts/demo.py --data-dir demo-data`, then
+opened using `python -m repairshop --demo --data-dir demo-data`.
+
+## Test
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\demo.py --data-dir demo-data
-.\.venv\Scripts\python.exe -m repairshop --demo --data-dir demo-data
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m pytest -q --basetemp runtime\test-temp
+npm.cmd --prefix frontend test
+npm.cmd --prefix frontend run build
+.\.venv\Scripts\python.exe -m repairshop --smoke-test --data-dir '.\runtime\web-smoke'
 ```
 
-The generator refuses to overwrite an existing database. The demo contains only synthetic records and uses local message capture. Demo-only logins: `demo` / `DemoShop2026!`, `counter` / `DemoCounter2026!`, `technician` / `DemoTechnician2026!`. The production first-run flow never creates these accounts. The developer preview script also uses only this separate synthetic database.
+The Python suite includes domain, API, architecture-boundary and transitional
+desktop regression tests. `requirements-lock.txt` includes PyQt for those
+legacy tests; a production backend installed from `pyproject.toml` does not
+require PyQt. The smoke command checks the API and the built React assets.
 
-## Tests and scale measurements
-
-```powershell
-New-Item -ItemType Directory -Path runtime -Force
-.\.venv\Scripts\python.exe -m pytest -q --basetemp=runtime/test-temp
-.\.venv\Scripts\python.exe scripts\benchmark.py --generate
-```
-
-The benchmark generator creates 60,000 customers, 100,000 jobs, 200,000 items, 200,000 custody events, 100,000 quotations and 200,000 financial entries in a separate `benchmark-data` directory. It refuses to overwrite existing data. Omit `--generate` to measure the existing dataset. Results are saved in `docs/benchmark-results.json`.
-
-## Build a Windows distribution
+## Windows package
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+.\.venv\Scripts\python.exe scripts\verify_package.py
 ```
 
-The reproducible dependency pins are in `requirements-lock.txt`; the PyInstaller build input is `RepairShopManager.spec`. The build creates `dist\RepairShopManager.exe` and a portable ZIP containing exactly that executable. Run `scripts/verify_package.py` to validate its contents and test launch/restart with developer Python paths removed. No websites, cloud infrastructure, bank transfers, or system scheduled tasks are created.
+The build creates a one-file `dist\RepairShopManager.exe` and a portable ZIP.
+`verify_package.py` extracts the ZIP and launches it twice against a separate
+synthetic shop with development Python paths removed. The optional offline
+installer uses the verified EXE and `scripts\build_installer.ps1`; it requires
+the local Inno Setup compiler described in [installer instructions](docs/INSTALLER.md).
+Installing an update over an existing copy preserves shop data. The existing
+uninstaller is a permanent reset after confirmation, so do not uninstall to
+apply an update.
 
-To build the current offline installer without putting intermediate files in `dist`:
+## Architecture and operating guides
 
-```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --distpath build\offline-payload RepairShopManager.spec
-powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
-```
+- [Architecture](ARCHITECTURE.md): process, module, database and security boundaries.
+- [User guide](docs/USER_GUIDE.md): intake, lifecycle, custody, accounts and backups.
+- [Database](DATABASE.md): existing SQLite schema and migration history.
+- [Test plan](TEST_PLAN.md): regression and release checks.
+- [Release status](RELEASE.md): verified artifacts and remaining acceptance.
 
-The installer builder requires the freshly built payload; it never silently packages an older installed application. Remove superseded setup versions from `dist` after checking the new setup. UI rendering review: `.\.venv\Scripts\python.exe scripts\review_ui.py` uses a temporary synthetic shop and saves screenshots under `runtime/ui-review`.
-
-## Customer photos and repair overview
-
-Version 1.1 adds required customer webcam photos for new intake, resumable drafts, stable physical device IDs, product photos, permanent customer folders and a consolidated repair overview. Existing records remain accessible without a camera. See `docs/PHOTOS_AND_CUSTOMER_OVERVIEW.md` for usage, storage, migration and recovery details.
-
-## Operator documentation
-
-- `docs/USER_GUIDE.md`: owner/staff workflows.
-- `docs/ARCHITECTURE.md`: storage, state rules, accounting and recovery design.
-- `docs/MESSAGING.md`: actual provider setup, credentials and outbound-only limits.
-- `docs/TRACEABILITY.md`: requirements and acceptance coverage.
-- `docs/RELEASE_NOTES.md`: verification results and known limits.
-
-Runtime files, customer databases, managed attachments, backups, generated builds, logs and secrets are excluded from source control. Backups contain private shop data and should be stored in an owner-controlled location. Credentials are not included in archives and must be re-entered on another computer.
-
-## Repair lifecycle, cards, parts and warranties
-
-Version 1.2 integrates the supplied three-route lifecycle, stable Master Job with sequential Job Cards, structured parts and spare stock, approved part revisions, installed-part warranties and linked future warranty claims. See `docs/LIFECYCLE_IMPLEMENTATION_REPORT.md` for architecture, migrations, operator flow, validation and limits. Run `.venv/Scripts/python.exe scripts/lifecycle_demo.py --preview` for the isolated eleven-scenario demo.
+Production data lives in `%LOCALAPPDATA%\RepairShopManager`, outside the
+executable and project folder. Backups contain private customer and financial
+records; store exported copies in an owner-controlled location.

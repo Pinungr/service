@@ -2,8 +2,8 @@ import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QLineEdit
 from repairshop.domain import RuleError
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import Form, CustomerSelector, MasterSelector, STYLE
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import Form, CustomerSelector, MasterSelector, STYLE
 
 
 def test_main_pages_query_persisted_data(qtbot,service,customer,job):

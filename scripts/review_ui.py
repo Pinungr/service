@@ -11,10 +11,10 @@ from PyQt6.QtWidgets import QApplication, QDialog, QScrollArea
 from repairshop.persistence import Database
 from repairshop.services import Service
 from repairshop.customer_records import CustomerRecords
-from repairshop.customer_ui import CustomerOverview
-from repairshop.lifecycle_ui import JobWorkspace
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.customer_ui import CustomerOverview
+from legacy_desktop.lifecycle_ui import JobWorkspace
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
 
 app = QApplication([])
 for name in ('segoeui.ttf', 'segoeuib.ttf', 'seguisb.ttf'):

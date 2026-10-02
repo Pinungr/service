@@ -5,8 +5,8 @@ import pytest
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
-from repairshop.lifecycle_ui import JobWorkspace
-from repairshop.ui import MainWindow
+from legacy_desktop.lifecycle_ui import JobWorkspace
+from legacy_desktop.ui import MainWindow
 from test_lifecycle import approve, complete, diagnosis, fresh, qc, route
 
 
@@ -26,7 +26,7 @@ def workspace(qtbot, service, ident):
 def forbid_form(monkeypatch):
     def unexpected(*args, **kwargs):
         raise FormRequested('A routine action opened a form')
-    monkeypatch.setattr('repairshop.lifecycle_ui.Form', unexpected)
+    monkeypatch.setattr('legacy_desktop.lifecycle_ui.Form', unexpected)
 
 
 def test_initial_inspection_advances_and_refreshes_without_a_form(qtbot, service, customer, monkeypatch):

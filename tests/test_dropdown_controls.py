@@ -3,7 +3,7 @@ import pytest
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (QApplication, QCalendarWidget, QComboBox, QDateEdit,
     QSpinBox, QStyle, QStyleOptionComboBox, QStyleOptionSpinBox)
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.ui_widgets import STYLE
 
 
 @pytest.fixture

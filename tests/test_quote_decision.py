@@ -4,7 +4,7 @@ from PyQt6.QtCore import QDate, QTimer
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QLabel, QPushButton
 from repairshop.domain import RuleError
 from repairshop import services
-from repairshop.ui import MainWindow
+from legacy_desktop.ui import MainWindow
 from test_lifecycle import route, diagnosis
 
 

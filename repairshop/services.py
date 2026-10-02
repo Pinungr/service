@@ -5,7 +5,7 @@ import uuid
 from datetime import date
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
-from .domain import RuleError, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind, today, sql_in_shop
+from .domain import RuleError, AuthenticationRequired, PermissionDenied, NotFound, VersionConflict, now, norm, phone, day, STAGES, ROUTES, MASTER_KINDS, in_shop, staff_custody, custody_kind, today, sql_in_shop
 from .permissions import allowed
 from . import app_settings
 from .persistence import insert
@@ -28,12 +28,20 @@ class Service:
         """Confirm the session is still a live, active user. Roles are legacy; prefer
         `require_permission`, which states the operation instead of who may do it."""
         if not self.user:
-            raise RuleError("Please sign in.")
+            raise AuthenticationRequired("Please sign in.")
         live = self.db.one("SELECT * FROM users WHERE id=?", (self.user["id"],))
         if not live or not live["active"] or live["role"] not in (roles or ("owner", "counter", "technician")):
-            raise RuleError("Your role cannot perform this action.")
+            raise PermissionDenied("Your role cannot perform this action.")
         self.user = live
         return live
+
+    def resume(self, user_id):
+        """Bind this service to a signed-in user by id. Inactive or removed users are refused."""
+        self.user = self.db.one("SELECT * FROM users WHERE id=?", (user_id,))
+        if not self.user or not self.user["active"]:
+            self.user = None
+            raise AuthenticationRequired("Please sign in.")
+        return self.require()
 
     def require_permission(self, *permissions):
         """The authoritative check: may this signed-in user perform this operation?
@@ -44,7 +52,7 @@ class Service:
         live = self.require()
         for permission in permissions:
             if not allowed(live['role'], permission):
-                raise RuleError('Your role cannot perform this action: '
+                raise PermissionDenied('Your role cannot perform this action: '
                                 + permission.replace('_', ' ') + '.')
         return live
 
@@ -84,7 +92,7 @@ class Service:
         """The one guard every job-specific read and write goes through."""
         self.require()
         if not self.job_access(job_id, c):
-            raise RuleError('This repair is not assigned to you.')
+            raise PermissionDenied('This repair is not assigned to you.')
         return job_id
 
     def receiving_custody(self, location=None):
@@ -813,7 +821,7 @@ class Service:
         self.require()
         row = self.db.one("SELECT j.*,c.name AS customer,c.phone,c.email FROM jobs j JOIN customers c ON c.id=j.customer_id WHERE j.id=?", (ident,))
         if not row:
-            raise RuleError("Job not found.")
+            raise NotFound("Job not found.")
         return self.guard_job_access(row)
 
     def intake_visit(self,products,operation_id,draft_id=None,notes=''):
@@ -850,9 +858,9 @@ class Service:
     def _job(self, c, ident, version=None):
         j = c.execute("SELECT * FROM jobs WHERE id=?", (ident,)).fetchone()
         if not j:
-            raise RuleError("Job not found.")
+            raise NotFound("Job not found.")
         if version is not None and j["version"] != version:
-            raise RuleError("This job changed. Refresh and review before saving.")
+            raise VersionConflict("This job changed. Refresh and review before saving.")
         self.require_job_access(ident, c)
         return j
 

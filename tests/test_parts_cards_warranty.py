@@ -171,8 +171,8 @@ def test_claim_replacement_must_belong_to_claim_job(service,customer):
 
 
 def test_new_tabs_show_parts_cards_and_warranty(qtbot,service,customer):
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
     ident,life,part,q=installed(service,customer)
     w=MainWindow(service);qtbot.addWidget(w)
     dialog=JobWorkspace(w,ident);qtbot.addWidget(dialog)
@@ -248,7 +248,7 @@ def test_parts_reports_and_customer_folder_history(service,customer):
 
 def test_window_closes_after_background_work_without_blocking_dialog(qtbot,service,monkeypatch):
     import threading
-    from repairshop.ui import MainWindow
+    from legacy_desktop.ui import MainWindow
     from PyQt6.QtWidgets import QMessageBox
     w=MainWindow(service);qtbot.addWidget(w);w.show()
     started,release=threading.Event(),threading.Event()

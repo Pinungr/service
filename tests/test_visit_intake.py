@@ -4,7 +4,7 @@ import pytest
 from repairshop.domain import RuleError
 from repairshop.lifecycle import Lifecycle
 from repairshop.documents import Documents
-from repairshop.ui_widgets import MasterSelector,Form
+from legacy_desktop.ui_widgets import MasterSelector,Form
 
 
 def master(s,kind,name):
@@ -81,7 +81,7 @@ def test_visit_rejects_mixed_customers_and_duplicate_existing_device(service,cus
 def test_visit_basket_draft_resume_edit_and_save(qtbot,service,customer,monkeypatch):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication,QDialogButtonBox
-    from repairshop.ui import MainWindow
+    from legacy_desktop.ui import MainWindow
     from repairshop.customer_records import CustomerRecords
     w=MainWindow(service);qtbot.addWidget(w)
     summaries=[];monkeypatch.setattr(w,'visit_summary',lambda ids:summaries.append(ids))

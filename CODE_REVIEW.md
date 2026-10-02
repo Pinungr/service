@@ -152,3 +152,22 @@ Scope: `repairshop/journey_model.py`, `repairshop/repair_journey.py`,
 Release handoff: static review and the rendered screens pass. The Windows build,
 frozen-application capture and installer verification for 1.6.0 remain with the
 release owner and have not been performed.
+# 2026-10-02 web edition 2.0 review
+
+Reviewed the monolith boundaries, source launcher, React build, PyInstaller
+spec, installer script and isolated verification. Architecture tests now apply
+their import rule to domain/application modules while allowing the executable
+entry point to start Uvicorn; frontend checks distinguish API routes from
+filesystem paths. Both earlier false positives are resolved.
+
+The demo fixture had drifted from required structured addresses, byte-based
+image processing and intake storage locations. It now creates a complete
+synthetic shop without a Qt image adapter. Browser acceptance exposed a raw
+`unknown` warranty label after inspection; both repair views now use the same
+readable mapping. The authoritative lifecycle decision remains in Python.
+
+`655` Python tests plus the separately run demo regression and `8` frontend
+tests passed; production frontend build,
+frozen ZIP launch/restart and installer compilation passed. No unresolved
+finding was identified in the reviewed code. Physical camera and clean-host
+installer behavior require separate acceptance before distribution.\n

@@ -56,3 +56,36 @@ Artifact: `dist/RepairShopManager-Offline-Setup-1.4.4.exe`, 73,514,135 bytes. SH
   offline Inno Setup installer has not been compiled or verified. Version
   metadata reads 1.6.0, but no 1.6.0 artifact exists in `dist`. Run the existing
   `scripts/build_installer.ps1` gate on the Windows host before shipping.
+# Web edition 2.0.0 — modular monolith validation (2026-10-02)
+
+- Architecture: one React/TypeScript frontend, one loopback FastAPI process,
+  shared Python business modules, one existing SQLite database and managed
+  file store. `legacy_desktop/` retains the PyQt UI during parity review.
+- Database: schema 15 unchanged; no migration, data reset or job renumbering.
+- Tests: full Python suite **655 passed** before the added demo regression,
+  and that new test passed separately; one dependency deprecation warning.
+  Frontend **8 passed**; TypeScript/Vite production build passed. Headless
+  import tests block PyQt, and API tests exercise auth, permissions, intake,
+  lifecycle, contacts, dispatch, inventory, finance, files and backups.
+- Browser walkthrough against an isolated synthetic shop: signed in, found a
+  returning customer, manually entered a new product, received
+  `REP-2026-000025`, opened its repair, completed initial inspection and saw
+  the journey advance. Global phone search returned the three matching jobs.
+  The skipped warranty stage follows the recorded intake policy for unknown
+  coverage; the UI now displays a readable status label.
+- Windows ZIP: `build/web-validation-final/RepairShopManager-Windows-x64.zip`,
+  **33,682,112 bytes**, SHA256
+  `4816fcc8f5e4878ed2ced26e3c64ea0f77c924a0a787141466f3d9595c2ea9a8`.
+  Integrity passed. It contains one EXE and no runtime shop data. The EXE
+  launched and restarted with exit codes **0/0** in a reduced environment;
+  API health, React root and built JavaScript responded on both launches.
+- Optional Inno Setup artifact:
+  `build/web-validation-final/RepairShopManager-Offline-Setup-2.0.0.exe`,
+  **35,446,272 bytes**, SHA256
+  `AE6F90828FA44EF4CFC59A7A63CA6FC32E9F55D8066DE0E4DDE21BDCD7E806C9`.
+  Compilation succeeded; this installer was not installed or uninstalled on
+  the current profile.
+- Remaining external acceptance: install/update/uninstall on an independent
+  Windows computer, physical camera permissions/capture, and an operator-led
+  sweep of every repair route and staff role in the browser. These are not
+  claimed by the automated suite or synthetic walkthrough.\n

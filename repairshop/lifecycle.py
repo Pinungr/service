@@ -8,7 +8,7 @@ from datetime import datetime, timezone, date
 from zoneinfo import ZoneInfo
 import json
 import uuid
-from .domain import RuleError, now, day, rupees, today, in_shop, sql_in_shop
+from .domain import RuleError, InvalidAction, now, day, rupees, today, in_shop, sql_in_shop
 
 _command = ContextVar('repair_lifecycle_command', default=False)
 ROUTE_LABELS = {'in_house': 'IN-HOUSE REPAIR', 'warranty_centre': 'AUTHORIZED SERVICE CENTER', 'third_party': 'THIRD-PARTY REPAIR'}
@@ -125,6 +125,34 @@ def quote_guard(c, j):
         return
     if j['stage'] not in ('awaiting_estimate', 'awaiting_approval', 'approved'):
         raise RuleError('Record diagnosis and reach Prepare Estimate before issuing or revising a quotation.')
+
+
+def route_problem(data, warranty, route):
+    """Why `route` cannot be chosen for this repair now, or None when it can.
+
+    The one statement of which routes a warranty status allows. `Lifecycle.execute`
+    enforces it; presentation layers use `route_choices` to offer only the open routes.
+    """
+    status = data.get('warranty_status')
+    if route not in ROUTE_LABELS:
+        return 'Choose a repair route.'
+    if status not in ('under_warranty', 'out_of_warranty', 'shop_warranty', 'unknown'):
+        return 'Record the intake warranty status first. Use the warranty details action for a legacy job.'
+    if status == 'under_warranty' and route != 'warranty_centre' and (warranty or {}).get('decision') not in ('rejected', 'partial'):
+        return 'Valid manufacturer warranty uses an authorized service center. Record a rejection before selecting a paid route.'
+    if route == 'warranty_centre' and status != 'under_warranty':
+        return 'Verify manufacturer warranty before selecting its authorized service center.'
+    return None
+
+
+def route_choices(snapshot):
+    """Every route with whether it is open for this repair and, if not, why."""
+    data, warranty = snapshot.get('data') or {}, snapshot.get('warranty') or {}
+    return [dict(route=route, label=label, available=route_problem(data, warranty, route) is None,
+                 reason=route_problem(data, warranty, route) or '')
+            for route, label in (('warranty_centre', ROUTE_LABELS['warranty_centre']),
+                                 ('in_house', ROUTE_LABELS['in_house']),
+                                 ('third_party', ROUTE_LABELS['third_party']))]
 
 
 class Lifecycle:
@@ -560,18 +588,28 @@ class Lifecycle:
         c.execute('UPDATE jobs SET stage=?,lifecycle_data=?,version=version+1 WHERE id=?', (stage,json.dumps(data),j['id']))
         self.s.audit(c,'job',j['id'],'lifecycle',dict(action=action,before=j['stage'],after=stage,evidence=evidence))
 
-    def execute(self, ident, action, payload=None, version=None):
+    def execute(self, ident, action, payload=None, version=None, operation_id=None):
+        """Run one guided step. Returns False when `operation_id` was already applied.
+
+        The operation id makes a retried request (a double click, a browser retry after a
+        lost response) a no-op instead of a second handover or payment.
+        """
         p = payload or {}
         self.s.require()
         token = _command.set(True)
         try:
             with self.db.transaction() as c:
+                if operation_id and c.execute('SELECT 1 FROM commands WHERE operation_id=?', (operation_id,)).fetchone():
+                    if not c.execute('SELECT 1 FROM commands WHERE operation_id=? AND kind=? AND result_id=?',
+                                     (operation_id, 'lifecycle:' + action, ident)).fetchone():
+                        raise RuleError('This operation reference belongs to a different action.')
+                    return False
                 j = dict(self.s._job(c,ident,version))
                 v = self.snapshot(ident)
                 data = json.loads(j['lifecycle_data'])
                 data['in_transit']=v['data'].get('in_transit',False)
                 if action not in v['actions']:
-                    raise RuleError('That action is not available now. Refresh the job and follow the next required step.')
+                    raise InvalidAction('That action is not available now. Refresh the job and follow the next required step.')
                 # What each lifecycle step needs is stated once, in ACTION_PERMISSIONS,
                 # rather than as a role name listed here.
                 needed=ACTION_PERMISSIONS.get(action)
@@ -635,13 +673,9 @@ class Lifecycle:
                         raise RuleError('Receive the physical device at the shop before assigning this repair route.'
                             if action=='select_route' else 'Receive the physical device at the shop before changing its repair route.')
                     route=p.get('route')
-                    status=data.get('warranty_status')
-                    if status not in ('under_warranty','out_of_warranty','shop_warranty','unknown'):
-                        raise RuleError('Record the intake warranty status first. Use the warranty details action for a legacy job.')
-                    if status=='under_warranty' and route!='warranty_centre' and v['warranty'].get('decision') not in ('rejected','partial'):
-                        raise RuleError('Valid manufacturer warranty uses an authorized service center. Record a rejection before selecting a paid route.')
-                    if route=='warranty_centre' and status!='under_warranty':
-                        raise RuleError('Verify manufacturer warranty before selecting its authorized service center.')
+                    problem=route_problem(data,v['warranty'],route)
+                    if problem:
+                        raise RuleError(problem)
                     if route!='in_house':
                         party=c.execute('SELECT * FROM masters WHERE id=? AND active=1',(p.get('contact_id'),)).fetchone()
                         if not party or party['kind']!=('centre' if route=='warranty_centre' else 'vendor'):
@@ -863,6 +897,9 @@ class Lifecycle:
                 else:
                     raise RuleError('Use the quotation or payment form for this action.')
                 self._set(c,j,data,stage,action,p)
+                if operation_id:
+                    from .persistence import insert
+                    insert(c,'commands',operation_id=operation_id,kind='lifecycle:'+action,result_id=ident)
         finally:
             _command.reset(token)
         # Only after the lifecycle transaction has committed: the customer is never told
@@ -871,6 +908,7 @@ class Lifecycle:
             self.s.announce('completion', ident, data.get('repair_completed') or action,
                             'Your repair is complete. The summary of work and warranty is attached.',
                             'warranty_summary')
+        return True
 
     @staticmethod
     def _notes(notes):

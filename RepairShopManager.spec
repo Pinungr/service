@@ -1,8 +1,32 @@
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+"""One-file Windows application: FastAPI backend and the built React UI."""
 from pathlib import Path
-a = Analysis(['launch.py'], pathex=[], binaries=[], datas=collect_data_files('tzdata') + collect_data_files('repairshop', includes=['assets/*.svg']), hiddenimports=collect_submodules('keyring.backends') + ['sqlalchemy.dialects.sqlite'], hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=['tkinter'], noarchive=False)
-# Qt 6.11 uses the Windows ICU ABI. A development PATH can contain a different
-# ICU build (e.g. Poppler) with version-suffixed exports. Never bundle that copy.
-a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icudt78.dll'}]
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+web = Path('frontend/dist').resolve()
+if not (web / 'index.html').is_file() or not (web / 'assets').is_dir():
+    raise RuntimeError('Build frontend assets first: npm run build in frontend/')
+
+# Config.default_frontend_dist() looks beside repairshop.api when frozen.
+web_files = [
+    (str(source), str(Path('repairshop/api/static') / source.relative_to(web).parent))
+    for source in web.rglob('*') if source.is_file()
+]
+a = Analysis(
+    ['launch.py'],
+    pathex=[],
+    binaries=[],
+    datas=collect_data_files('tzdata') + web_files,
+    hiddenimports=collect_submodules('keyring.backends') + collect_submodules('uvicorn')
+                  + ['sqlalchemy.dialects.sqlite'],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=['tkinter', 'PyQt6', 'PySide6', 'legacy_desktop'],
+    noarchive=False,
+)
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='RepairShopManager', debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=False, disable_windowed_traceback=False)
+exe = EXE(
+    pyz, a.scripts, a.binaries, a.datas, [],
+    name='RepairShopManager', debug=False, bootloader_ignore_signals=False,
+    strip=False, upx=False, console=False, disable_windowed_traceback=False,
+)

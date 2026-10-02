@@ -377,7 +377,7 @@ def test_upgrade_lifts_profiles_and_snapshots_existing_history(service, customer
 def test_selector_recommends_summarises_and_quick_creates(qtbot, service, customer, monkeypatch):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication, QDialogButtonBox
-    from repairshop.contacts_ui import ContactSelector
+    from legacy_desktop.contacts_ui import ContactSelector
     contacts = Contacts(service)
     contacts.save('centre', dict(name='Apple Care Pune', mobile='9000000061', brands='Apple'))
     samsung = contacts.save('centre', dict(name='Samsung Service Centre Pune', mobile='9000000062', brands='Samsung',
@@ -406,8 +406,8 @@ def test_selector_recommends_summarises_and_quick_creates(qtbot, service, custom
 
 
 def test_contacts_and_services_screen_lists_each_section(qtbot, service):
-    from repairshop.ui import MainWindow
-    from repairshop.contacts_ui import ContactList, SetupList
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.contacts_ui import ContactList, SetupList
     repairer(service)
     bus_service(service)
     window = MainWindow(service)

@@ -2,8 +2,6 @@
 import json
 import uuid
 from pathlib import Path
-from PyQt6.QtCore import QBuffer, QIODevice, Qt
-from PyQt6.QtGui import QImage, QImageReader
 from .domain import RuleError, now, rupees, in_shop
 from .persistence import insert
 from .migration5 import slug
@@ -117,7 +115,7 @@ class CustomerRecords:
             raise RuleError('Choose whose photo is being saved.')
         if person_role == 'return' and not job_id:
             raise RuleError('Return evidence must be captured against the repair it documents.')
-        if not isinstance(image, QImage) or image.isNull():
+        if image is None:
             raise RuleError('Photo capture failed. Retake the photo and try again.')
         # A product is photographed at the counter, before the intake has created its
         # device record, so the description typed on the form is what names the evidence.
@@ -126,12 +124,8 @@ class CustomerRecords:
                             else 'Describe the accessory before capturing its photo.' if person_role == 'accessory'
                             else 'Enter the product description before photographing it.' if person_role == 'product'
                             else 'Describe what the return photo shows.')
-        image = image.scaled(1920, 1920, Qt.AspectRatioMode.KeepAspectRatio) if max(image.width(), image.height()) > 1920 else image
-        buffer = QBuffer()
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        if not image.save(buffer, 'JPEG', 90):
-            raise RuleError('The captured photo could not be encoded. Please retake it.')
-        data = bytes(buffer.data())
+        from .images import normalise
+        data = normalise(image)
         with self.db.transaction() as c:
             folder = customer_folder(c, customer_id)
             owner = c.execute('SELECT name FROM customers WHERE id=?', (customer_id,)).fetchone()[0]
@@ -173,12 +167,7 @@ class CustomerRecords:
         source = Path(source)
         if not source.is_file() or source.stat().st_size > 50 * 1024**2:
             raise RuleError('Choose a local image smaller than 50 MB.')
-        reader = QImageReader(str(source))
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if not size.isValid() or size.width() * size.height() > 80_000_000:
-            raise RuleError('Choose a supported image with at most 80 million pixels.')
-        return self.save_photo(reader.read(), customer_id, 'product', device_id=device_id, job_id=job_id)
+        return self.save_photo(source.read_bytes(), customer_id, 'product', device_id=device_id, job_id=job_id)
 
     def recover_photo(self, attachment_id, source):
         """Restore the identical lost file without rewriting evidence or its history."""

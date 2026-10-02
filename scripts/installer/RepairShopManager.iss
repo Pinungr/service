@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.5.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef AppPayload
   #error AppPayload must identify the freshly built application EXE.

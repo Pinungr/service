@@ -5,8 +5,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from PyQt6.QtWidgets import QApplication
 from repairshop.persistence import Database
 from repairshop.services import Service
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
 app=QApplication([])
 app.setStyle('Fusion')
 app.setStyleSheet(STYLE)

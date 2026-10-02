@@ -241,3 +241,9 @@ Two separate trees, both included in backup and restore:
 Nothing is routed by filename: `Documents.generate()` takes an explicit
 `visibility='customer'|'internal'`, and internal copies are recorded with attachment kind
 `internal_document`, which no customer send path will accept.
+# Web edition 2.0 note
+
+The web conversion reuses the existing SQLite database and migrations through
+schema 15. It adds no schema change. Earlier sections below describe the
+schema at the time of each native release; use `repairshop/persistence.py` and
+the latest migration for current column definitions.\n

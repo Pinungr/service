@@ -1,46 +1,93 @@
-# Intake and customer registration update
+# RepairShop Manager architecture — web edition 2.0
 
-The existing PyQt6 application, SQLite schema 9, service layer, customer photo storage, per-device jobs and atomic multi-product visits remain in use.
+## Runtime
 
-Customer registration is a dedicated dialog using existing customer and attachment services. The intake wizard arranges the existing fields into four pages and retains durable drafts and the visit basket. It performs step validation before the final existing intake service call. Shop product selection uses customer-owned sales and devices; warranty date status is derived from those records. External warranty details are preliminary customer-reported information stored in the existing job lifecycle JSON and audit, distinct from verified warranty coverage. No database migration is required.
+One local FastAPI process serves the React application and `/api/*` on
+`127.0.0.1`. It owns one SQLite database, the managed file store, sessions and
+an in-process background scheduler. `repairshop.server` obtains an operating
+system lock per data directory and starts Uvicorn with one worker. A second
+launch opens the existing instance. Do not run multiple workers or point two
+independent processes at the same SQLite shop. Horizontal scaling requires a
+future database and session architecture change; PostgreSQL is not part of
+this release.
 
-Required validation: existing customer/shop sale/active warranty, inline new customer/external warranty/new category/accessory, back navigation, draft resume, multiple products, source switching, duplicate customer choice, photo capture/upload persistence and negative charges. Release requires independent review, regression tests and a frozen offline build.
-# Repair journey presentation
+```
+Browser → React/TypeScript → same-origin /api → FastAPI routes
+                                           → Service / Lifecycle / domain
+                                           → SQLite + managed files
+```
 
-JobWorkspace continues to obtain one authoritative Lifecycle.snapshot per refresh. A pure read-only journey projection combines that snapshot's tracker, stage and timeline into display nodes; it stores no workflow state. RepairJourney renders connected vertical cards with read-only history dialogs and emits the snapshot's primary action to the existing JobWorkspace.act handler. RepairDetails groups the existing workspace values. A responsive splitter places journey beside tabs on wide windows and above tabs on smaller windows. No service/state-machine or database migration is planned.
+In development, Vite may run on port 5173 and proxy `/api` to the one backend
+on port 8765. In production, FastAPI serves the built files from
+`repairshop/api/static` in the frozen executable, or `frontend/dist` when
+running from source. Neither the browser nor React can open SQLite or learn
+local file paths. File access is through authenticated attachment IDs.
 
-# Contacts & Services (schema 15)
+## Source boundaries
 
-Configure once, select many times. Reusable business contacts — third-party repairers
-(`vendor`), authorized service centres (`centre`), suppliers and bus / transport services
-(`transporter`) — remain rows of the existing `masters` table. `contacts.py` is their domain
-service: per-kind profile fields, `snapshot()` for history, ranked `options()` for a repair,
-`duplicates()` and `quick_create()`. `contacts_ui.py` provides `ContactSelector` (a
-`MasterSelector`, so existing forms read it unchanged), the quick-create dialog and the
-Contacts & Services screen, which replaces Directories in navigation.
+- `repairshop/api/app.py` composes one FastAPI app. Its `modules/` routers are
+  thin HTTP adapters for auth, dashboard/search, customers, intake, repairs,
+  contacts, dispatch/custody, inventory/parts/warranty, finance, documents,
+  reporting, notifications, backup and settings. They call Python services
+  directly; there is no internal HTTP or second backend process.
+- `repairshop/services.py`, `lifecycle.py`, `contacts.py`, `dispatch.py`,
+  `custody.py`, `billing.py` and the other domain modules remain the source of
+  business rules. `readmodels.py` prepares bounded API read responses;
+  `action_forms.py` describes fields for an allowed lifecycle action. These
+  modules do not import FastAPI or PyQt.
+- `repairshop/persistence.py` owns SQLite and explicit migrations through
+  schema 15. This conversion makes no schema migration and preserves IDs,
+  repair numbers, audit, job cards, movements and historical snapshots.
+- `repairshop/images.py` uses Pillow and bytes for backend image handling.
+  `legacy_desktop/` contains the transitional PyQt presentation and adapters;
+  the web backend imports none of it. PyQt is an optional development extra,
+  not a production backend requirement.
+- `frontend/src/features/` contains React presentation by business area.
+  `frontend/src/api/client.ts` is its same-origin HTTP boundary. The backend
+  supplies lifecycle state, actions, journey nodes, permissions and validation;
+  React renders them and collects input.
 
-During a repair only job-specific data is typed: the partner's ticket / RMA, expected
-return and instructions go on the immutable assignment; journey details go on the
-dispatch. Partner and bus-service contact details come from the selected master and are
-frozen into `contact_snapshot` / `transporter_snapshot`. Selecting a partner is an
-assignment only; custody still changes solely through recorded movements.
+## State and safety rules
 
-`Dispatches.attempts(job_id)` projects assignments + dispatches + receive events into
-"attempt 1 / attempt 2" rows. A first-class `external_repair_attempts` table is the next
-step if per-attempt diagnosis, estimate and result need to be edited independently; the
-`assignment_id` now carried by every dispatch is the join it will need.
+`Lifecycle.snapshot()` supplies the authoritative current state. The journey
+API projects the existing tracker/history through `build_journey()`; it stores
+no second state machine. Action endpoints invoke `Lifecycle.execute()` or
+the relevant existing service. Lifecycle commands require the last-read job
+version, return HTTP 409 for stale state, and use operation IDs so retries do
+not apply twice. Intake visits, custody movements, dispatch handovers and
+financial entries retain their existing idempotency and audit rules.
 
-# Repair journey presentation — 1.6.0 delta
+Assignment and physical custody are separate. Choosing a repairer records
+responsibility; only a custody movement changes where the device is. Contact
+and transporter snapshots preserve the details used at the time of a repair,
+even after a directory entry changes. Courier remains free text; reusable bus
+services remain configured contacts. Money stays integer paise in the backend.
 
-No service, state-machine, schema or authorization change. `RepairJourney` gains
-an orientation: `JobWorkspace.resizeEvent` already re-orients its splitter, and
-now tells the journey to switch between the stacked column and the pinned rail at
-the same threshold. `Rail` is a thin wrapper that answers `heightForWidth` for
-the existing `FlowLayout`, which a resizable scroll area needs before it will
-allocate room for wrapped rows.
+Signed-in sessions are held by the one process and identified by an opaque,
+HTTP-only, SameSite cookie. Every protected request reconstructs the user from
+the database and checks service permissions; UI visibility is only a
+convenience. Unsafe `/api` requests require the application header. API errors
+share a stable `{error:{code,message,field}}` shape and unexpected errors go to
+the local rotating technical log without a browser stack trace. The local
+server binds to loopback only.
 
-`journey_model.route_options` reads `Lifecycle`'s own `route_label` to decide
-whether the route is still open and, if so, returns `ROUTE_LABELS`. It adds no
-stage and reaches no decision of its own. Status semantics moved from
-`repair_journey` into `ui_widgets.STATUS_STATES`; `JOURNEY_STATES` remains as an
-alias so existing imports keep working.
+The in-process scheduler processes notification claims/reminders, customer
+folder projections and due backups while an active user session exists. A
+failed optional task is logged and retried later; it cannot roll back a
+committed repair transaction. Shutdown cancels the scheduler and disposes the
+database engine. Backups and restores remain backend-owned.
+
+## Build and migration status
+
+`scripts/build.ps1` builds React before PyInstaller; the spec embeds the
+generated HTML/CSS/JS under `repairshop/api/static`. The frozen smoke check
+requires a healthy API, React root and JavaScript asset, then repeats after a
+restart using a separate synthetic data directory. Installation over an
+existing release keeps the existing `%LOCALAPPDATA%\RepairShopManager`
+database and migrations. Do not uninstall as an update: the existing
+uninstaller intentionally removes local shop data after confirmation.
+
+`legacy_desktop/` remains available during parity review. Retirement requires
+browser acceptance for every operator flow, including camera hardware and an
+independent Windows installation test. Database and domain code are shared;
+there is no parallel web-only business model.

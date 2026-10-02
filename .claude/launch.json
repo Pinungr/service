@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "repairshop-web",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "repairshop", "--data-dir", "runtime/web-verify", "--no-browser", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

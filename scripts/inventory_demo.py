@@ -28,10 +28,10 @@ def main():
     from repairshop.lifecycle import Lifecycle
     from repairshop.warranties import Warranties
     from repairshop.job_cards import JobCards
-    from repairshop.ui import MainWindow
-    from repairshop.lifecycle_ui import JobWorkspace
-    from repairshop.inventory_ui import InventoryPage
-    from repairshop.ui_widgets import STYLE
+    from legacy_desktop.ui import MainWindow
+    from legacy_desktop.lifecycle_ui import JobWorkspace
+    from legacy_desktop.inventory_ui import InventoryPage
+    from legacy_desktop.ui_widgets import STYLE
     app=QApplication([])
     for font in ('segoeui.ttf','segoeuib.ttf','segoeuil.ttf','seguisb.ttf'):QFontDatabase.addApplicationFont('C:/Windows/Fonts/'+font)
     app.setFont(QFont('Segoe UI',10));app.setStyleSheet(STYLE)

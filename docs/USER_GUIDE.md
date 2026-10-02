@@ -1,5 +1,12 @@
 # RepairShop Manager: owner and staff guide
 
+The current 2.0 application opens in a browser on the same Windows computer.
+Start `RepairShopManager.exe` once; it runs the local server and opens the
+browser. The left navigation contains **New Repair Intake**, **Active Repairs**,
+**Customers**, **Products sold** and the other areas below. The global search
+finds customer phones, REP job numbers and DEV product IDs. This guide also
+retains some 1.x screen names while the legacy desktop remains available.
+
 ## Start your shop
 
 Extract the Windows distribution and run RepairShopManager.exe. Enter the shop name, owner name, username and a password of at least 10 characters. This creates a live database in your Windows local application-data folder. Configure the address, opening hours, default return policy, backup location and external-drive destination under **Settings & staff**. The defaults are INR, Asia/Kolkata, 30 daily recovery copies, a permanent archive every 90 days, and test-mode messaging.

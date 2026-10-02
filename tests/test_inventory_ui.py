@@ -1,9 +1,9 @@
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication,QDialogButtonBox,QPushButton
-from repairshop.ui import MainWindow
-from repairshop.lifecycle_ui import JobWorkspace
-from repairshop.inventory_ui import InventoryPage
-from repairshop.part_editor import choose_and_plan,edit_part
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.lifecycle_ui import JobWorkspace
+from legacy_desktop.inventory_ui import InventoryPage
+from legacy_desktop.part_editor import choose_and_plan,edit_part
 from repairshop.inventory import Inventory
 from repairshop.parts import Parts
 from test_lifecycle import route,dispatch,diagnosis
@@ -87,7 +87,7 @@ def test_required_part_picker_starts_with_inventory_and_copies_warranty(qtbot,se
     def choose_stock():
         d=QApplication.activeModalWidget()
         try:
-            from repairshop.ui_widgets import Grid
+            from legacy_desktop.ui_widgets import Grid
             d.findChild(Grid).selectRow(0)
             QTimer.singleShot(40,save_part)
             next(b for b in d.findChildren(QPushButton) if b.text()=='Use shop stock').click()

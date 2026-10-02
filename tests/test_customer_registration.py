@@ -1,7 +1,7 @@
 import pytest
 from PyQt6.QtGui import QColor, QImage
 
-from repairshop.customer_registration import CustomerRegistration
+from legacy_desktop.customer_registration import CustomerRegistration
 from repairshop.domain import RuleError
 from repairshop.local_files import managed_path
 
@@ -138,7 +138,7 @@ def test_camera_photo_is_staged_until_customer_save(qtbot, service, monkeypatch)
         def exec(self):
             return True
 
-    monkeypatch.setattr('repairshop.customer_registration.CameraDialog', CapturedCamera)
+    monkeypatch.setattr('legacy_desktop.customer_registration.CameraDialog', CapturedCamera)
     dialog = registration(qtbot, service)
     dialog.capture()
     assert dialog.pending_image is not None

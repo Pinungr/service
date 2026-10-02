@@ -2,8 +2,8 @@
 import pytest
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE, MetricCard, Grid, FlowLayout
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE, MetricCard, Grid, FlowLayout
 
 
 @pytest.mark.parametrize('size', [(1920, 1000), (1366, 700), (1024, 650), (900, 600)])

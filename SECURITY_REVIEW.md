@@ -65,3 +65,18 @@ The SVG contains only a stroked check path. Explicit demo smoke capture renders
 application forms to the chosen local data directory, restores its submission
 interception in `finally`, and does not invoke customer or intake save callbacks.
 The release owner is testing with isolated synthetic data.
+# 2026-10-02 web edition 2.0 review
+
+The backend binds to loopback, serves React and `/api` from one origin, and
+requires an opaque HTTP-only session cookie plus an application request header
+for mutations. API handlers reconstruct the logged-in user and delegate
+permissions to existing services. They return shaped errors without tracebacks.
+File reads use authenticated IDs and managed paths; the frontend does not
+receive absolute storage paths. The package contains no shop database or
+customer files. Rotating logs omit URL access logs.
+
+Automated coverage includes unauthenticated access, role denial, CSRF header,
+file access and malformed input. The browser walkthrough used only a synthetic
+shop. No new open security finding was identified in this scoped review.
+Camera permission behavior and installer lifecycle on an independent Windows
+computer remain external acceptance checks.\n

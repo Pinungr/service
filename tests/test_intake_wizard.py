@@ -4,12 +4,12 @@ from datetime import date, timedelta
 import pytest
 from PyQt6.QtWidgets import QDialogButtonBox, QApplication
 
-from repairshop.customer_ui import IntakeForm
+from legacy_desktop.customer_ui import IntakeForm
 from repairshop.domain import RuleError
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
 from repairshop.customer_records import CustomerRecords
-from repairshop.intake_fields import INTAKE_STYLE
+from legacy_desktop.intake_fields import INTAKE_STYLE
 
 
 def picture(color='#456f93'):
@@ -148,7 +148,7 @@ def test_source_switch_does_not_link_stale_sale(qtbot,service,customer,monkeypat
 
 
 def test_customer_search_alternate_number(qtbot,service):
-    from repairshop.ui_widgets import CustomerSelector
+    from legacy_desktop.ui_widgets import CustomerSelector
     ident=service.save_customer('Alternate contact',phone_number='9995551234',alternate='9994447777',complete=False)
     selector=CustomerSelector(service); qtbot.addWidget(selector)
     selector.search.setText('9994447777')

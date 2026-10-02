@@ -168,6 +168,8 @@ class JobCards:
         card = self.db.one('SELECT * FROM job_cards WHERE id=?',(card_id,))
         if not card:
             raise RuleError('Select a job card.')
+        # A card id alone is not authorization: it must belong to a repair this user may open.
+        self.s.require_job_access(card['job_id'])
         p=json.loads(card['snapshot'])
         if not internal:
             from .inventory import public_values

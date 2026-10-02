@@ -6,10 +6,10 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from repairshop.persistence import Database
 from repairshop.services import Service
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
-from repairshop.customer_ui import CustomerOverview
-from repairshop.camera import CameraDialog
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
+from legacy_desktop.customer_ui import CustomerOverview
+from legacy_desktop.camera import CameraDialog
 
 class NoCamera(QObject):
     changed = pyqtSignal()

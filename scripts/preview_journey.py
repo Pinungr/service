@@ -14,9 +14,9 @@ from repairshop.customer_records import CustomerRecords
 from repairshop.persistence import Database
 from repairshop.services import Service
 from repairshop.lifecycle import Lifecycle
-from repairshop.lifecycle_ui import JobWorkspace
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import STYLE
+from legacy_desktop.lifecycle_ui import JobWorkspace
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import STYLE
 
 
 def intake(service, customer):

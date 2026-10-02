@@ -1,5 +1,31 @@
 # Targeted regression plan
 
+## Web edition 2.0 acceptance gates
+
+Use an isolated `--data-dir` for every source, browser or frozen test. The
+installed shop's database and files are outside the test scope.
+
+1. Run `pytest` for the domain and legacy regression suite, API contracts,
+   permissions, lifecycle version conflicts, migrations and architecture
+   import boundaries.
+2. Run `npm.cmd --prefix frontend test` and
+   `npm.cmd --prefix frontend run build`. Check the React page in a browser:
+   sign in, search, register/select a customer, enter a product, receive a
+   visit, open its repair, record inspection and inspect the resulting journey.
+   Exercise staff permissions and responsive/camera flows separately before
+   general rollout.
+   `tests/test_demo.py` guards the isolated synthetic fixture used for this
+   walkthrough.
+3. Build with `scripts/build.ps1`, then run `scripts/verify_package.py`
+   against that ZIP. It checks archive integrity, no bundled shop data, cold
+   launch/restart, API health, React root and built JavaScript under a reduced
+   environment. Compile the optional installer using that verified EXE.
+4. On an independent Windows machine, check setup, first run, browser launch,
+   existing-shop in-place update and the documented uninstall behavior before
+   distributing an installer.
+
+Current web acceptance evidence is recorded in [RELEASE.md](RELEASE.md).
+
 `tests/test_lifecycle_dialogs.py` verifies that beginning initial inspection, starting repair and notifying the customer advance without an empty form, refresh the workspace and retain lifecycle audit entries. It also verifies that completing inspection still requests the required findings and closing a delivered job asks for a specific confirmation that can be cancelled. The existing lifecycle tests cover permission and version checks in the service used by these direct actions.
 
 ## Intake and registration — 1.5.0

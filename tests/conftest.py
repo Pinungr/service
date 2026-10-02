@@ -1,6 +1,13 @@
+import importlib.util
 import pytest
+from repairshop.images import solid
 from repairshop.persistence import Database
 from repairshop.services import Service
+
+# Desktop-presentation tests hand QImage photos to the core; the legacy package registers
+# that conversion. Core and API tests need nothing from Qt.
+if importlib.util.find_spec('PyQt6') is not None:
+    import legacy_desktop  # noqa: F401
 
 
 @pytest.fixture
@@ -12,12 +19,9 @@ def service(tmp_path):
 
 @pytest.fixture
 def customer(service):
-    from PyQt6.QtGui import QImage, QColor
     from repairshop.customer_records import CustomerRecords
     ident = service.save_customer("Synthetic Customer", "9990000001", "synthetic@example.invalid", whatsapp_consent=True, email_consent=True, complete=False)
-    image = QImage(64, 64, QImage.Format.Format_RGB32)
-    image.fill(QColor('#68a398'))
-    CustomerRecords(service).save_photo(image, ident)
+    CustomerRecords(service).save_photo(solid(), ident)
     return ident
 
 

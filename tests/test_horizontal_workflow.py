@@ -2,8 +2,8 @@
 import json
 
 from repairshop.lifecycle import Lifecycle
-from repairshop.ui import MainWindow
-from repairshop.ui_widgets import MetricCard
+from legacy_desktop.ui import MainWindow
+from legacy_desktop.ui_widgets import MetricCard
 from test_lifecycle import approve, complete, diagnosis, route
 
 
@@ -65,7 +65,7 @@ def test_job_opens_as_main_page_and_returns_to_repairs(qtbot, service, customer)
 
 def test_customer_overview_dismisses_before_opening_job_page(qtbot, service, customer):
     from PyQt6.QtWidgets import QDialog
-    from repairshop.customer_ui import CustomerOverview
+    from legacy_desktop.customer_ui import CustomerOverview
 
     ident = service.intake(customer, 'Laptop', 'No power', guided=True)
     window = MainWindow(service)

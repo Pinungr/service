@@ -1,5 +1,9 @@
 # Architecture and data rules
 
+> Historical native desktop design (releases 1.x). The current web edition
+> architecture is in [ARCHITECTURE.md](../ARCHITECTURE.md). This page is kept
+> for migration and legacy desktop reference.
+
 One installable native application, a local SQLite database and relocatable managed files form a modular monolith. Python 3.14.6 on Windows 11 x64 is the measured baseline. PyQt6 is the only Qt binding. No browser/server/Redis/AI/cloud dependency is used for core work.
 
 | Module | Responsibility |
