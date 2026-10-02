@@ -12,6 +12,24 @@ from .domain import RuleError, now, day, rupees, today, in_shop, sql_in_shop
 
 _command = ContextVar('repair_lifecycle_command', default=False)
 ROUTE_LABELS = {'in_house': 'IN-HOUSE REPAIR', 'warranty_centre': 'AUTHORIZED SERVICE CENTER', 'third_party': 'THIRD-PARTY REPAIR'}
+
+
+def stage_age(since):
+    """Short elapsed time for a stage, from its recorded audit timestamp."""
+    if not since:
+        return 'Time not recorded'
+    try:
+        started = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        minutes = max(0, int((datetime.now(timezone.utc) - started).total_seconds() // 60))
+    except (TypeError, ValueError):
+        return 'Time not recorded'
+    if minutes < 60:
+        return f'{minutes}m'
+    if minutes < 1440:
+        return f'{minutes // 60}h {minutes % 60}m'
+    return f'{minutes // 1440}d {minutes % 1440 // 60}h'
 LABELS = dict(received='RECEIVED', inspection='INITIAL INSPECTION', warranty_check='WARRANTY CHECK',
     route_selection='SELECT REPAIR ROUTE', diagnosis='DIAGNOSIS', external_diagnosis='EXTERNAL DIAGNOSIS',
     awaiting_estimate='PREPARE ESTIMATE', awaiting_approval='WAITING FOR CUSTOMER APPROVAL', approved='APPROVED',
@@ -25,7 +43,7 @@ ACTIONS = {
     'hand_over':'Hand product to another staff member',
     'return_dispatch':'Hand returning device to courier','parts':'Check shop inventory / manage required parts',
     'costing':'Review internal repair costs','manual_warranty':'Manual warranty check',
-    'inspect': 'Perform initial inspection', 'inspection_done': 'Complete initial inspection',
+    'inspect': 'Begin initial inspection', 'inspection_done': 'Complete initial inspection',
     'verify_warranty': 'Verify warranty', 'select_route': 'Select repair route', 'change_route': 'Change repair route',
     'prepare_dispatch': 'Create dispatch record', 'dispatch': 'Send device', 'arrive': 'Confirm arrival at repairer',
     'diagnose': 'Record diagnosis', 'quote': 'Prepare customer estimate', 'decision': 'Record customer decision',
@@ -411,6 +429,37 @@ class Lifecycle:
         with self.db.read_snapshot():
             return self._rows(search,filter_key,offset,limit)
 
+    def search_jobs(self, term, limit=30):
+        """One scoped lookup for mobile, job/visit number and physical device ID."""
+        self.s.require()
+        term = str(term or '').strip()
+        if not term:
+            return []
+        digits = ''.join(c for c in term if c.isdigit())
+        phone_exact = digits or '!NO_PHONE_MATCH!'
+        phone_pattern = '%' + digits + '%' if digits else '!NO_PHONE_MATCH!'
+        device_id = int(digits) if term.upper().startswith('DEV-') and digits else -1
+        job_id = int(digits) if term.isdigit() and digits else -1
+        scope, scope_args = self.s.scope_jobs()
+        wildcard = '%' + term + '%'
+        if term.upper().startswith('DEV-') and digits:
+            match, match_args = 'j.device_id=?', (device_id,)
+        elif term.upper().startswith('REP-'):
+            match, match_args = 'j.number LIKE ?', (wildcard,)
+        else:
+            match = """(c.phone=? OR c.alternate=? OR j.number LIKE ? OR vi.number LIKE ?
+                OR j.device_id=? OR j.id=? OR c.phone LIKE ? OR c.alternate LIKE ?)"""
+            match_args = (phone_exact, phone_exact, wildcard, wildcard, device_id, job_id,
+                          phone_pattern, phone_pattern)
+        return self.db.rows("""SELECT j.id,j.number,j.device,j.stage,j.device_id,c.name AS customer,c.phone,
+                j.received,vi.number AS visit_number
+            FROM jobs j JOIN customers c ON c.id=j.customer_id
+            LEFT JOIN visits vi ON vi.id=j.visit_id
+            WHERE """ + match + " AND " + scope + """
+            ORDER BY CASE WHEN lower(j.number)=lower(?) THEN 0 WHEN c.phone=? OR c.alternate=? THEN 1 ELSE 2 END,
+                CASE WHEN j.stage IN ('collected','closed') THEN 1 ELSE 0 END,j.id DESC LIMIT ?""",
+            (*match_args, *scope_args, term, phone_exact, phone_exact, limit))
+
     def _rows(self, search='', filter_key='', offset=0, limit=50):
         self.s.require()
         attention_days = int(self.db.setting('lifecycle_attention_days', 3))
@@ -468,10 +517,10 @@ class Lifecycle:
         result=[]
         for row in ids:
             v=self.snapshot(row['id'])
-            result.append(dict(id=v['id'], number=v['number'],visit=v['visit_number'],customer=v['customer'],device=v['device'],device_id=v['device_id'],
+            result.append(dict(id=v['id'], number=v['number'],visit=v['visit_number'],customer=v['customer'],phone=v['phone'],device=v['device'],device_id=v['device_id'],
                 route=v['route_label'],status=v['current_status'],location=v['current_location'],responsible=v['responsible'],
                 current_custodian=v['current_custodian'],final_destination=v['final_destination'],
-                pending_since=v['pending_since'],expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
+                pending_since=v['pending_since'],stage_age=stage_age(v['pending_raw']),expected_date=v['return_due'] if v['away'] else v['collection_due'] or v['repair_due'],
                 balance=v['balance'],estimate=v['quote'].get('total',0),current_card=v['current_card'],warranty_indicator=v['warranty_indicator'],open_claims=v['open_claims'],next_action=v['next_action'],attention='; '.join(v['attention'])))
         return result
 

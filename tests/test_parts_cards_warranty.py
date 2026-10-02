@@ -178,7 +178,7 @@ def test_new_tabs_show_parts_cards_and_warranty(qtbot,service,customer):
     dialog=JobWorkspace(w,ident);qtbot.addWidget(dialog)
     names=[dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
     assert {'Job Cards','Parts','Warranty'}<=set(names)
-    assert 'CARD-04' in dialog.heading.text() and '1 active warranties' in dialog.heading.text()
+    assert 'CARD-04' in dialog.record_meta.text() and '1 active warranties' in dialog.record_meta.text()
     assert dialog.record_tabs[1].grid.rowCount()==1
 
 

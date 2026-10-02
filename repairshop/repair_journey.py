@@ -1,30 +1,24 @@
-"""Connected, read-only lifecycle presentation; actions remain in JobWorkspace.
+"""Horizontal repair workflow projected solely from Lifecycle.snapshot()."""
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame,
+                             QHBoxLayout, QLabel, QLineEdit, QScrollArea,
+                             QTextEdit, QVBoxLayout, QWidget)
 
-Every node, colour and word here is derived from one ``Lifecycle.snapshot``.
-The widget owns no workflow state of its own, so it can never disagree with the
-state machine: if the backend says WARRANTY CHECK, that is the only stage this
-screen can draw as current.
-"""
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QFrame,
-                             QScrollArea, QDialog, QSizePolicy)
-from .ui_widgets import button, FlowLayout, STATUS_STATES
-from .lifecycle import ACTIONS
 from .journey_model import build_journey
+from .lifecycle import ACTIONS, stage_age
+from .ui_widgets import STATUS_STATES, button
 
-# Shared semantics for every lifecycle node, connector, legend and status badge.
-# Defined once in the design system so no screen invents its own palette.
 JOURNEY_STATES = STATUS_STATES
+REPAIR_CHILDREN = ('waiting_parts', 'technician_testing')
+INLINE_ACTIONS = frozenset(('inspection_done', 'verify_warranty', 'diagnose',
+                            'complete_repair', 'test', 'qc', 'wait_parts', 'parts_received',
+                            'rework'))
 
-# Width below which the stacked card column is replaced by a wrapping rail.
-RAIL_WIDTH = 520
 
-
-def text_label(text='', bold=False):
-    label = QLabel(str(text))
-    label.setWordWrap(True)
+def text_label(value='', bold=False):
+    label = QLabel(str(value))
     label.setTextFormat(Qt.TextFormat.PlainText)
-    label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+    label.setWordWrap(True)
     if bold:
         font = label.font()
         font.setBold(True)
@@ -33,7 +27,6 @@ def text_label(text='', bold=False):
 
 
 def clear(layout):
-    """Drop every child of a layout without leaving stale widgets visible."""
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
@@ -41,46 +34,9 @@ def clear(layout):
             item.widget().deleteLater()
         elif item.layout():
             clear(item.layout())
-            item.layout().deleteLater()
 
 
-class Rail(QWidget):
-    """A wrapping row of chips that reports the height its width really needs.
-
-    ``FlowLayout`` wraps correctly but its size hint is one row tall, so inside a
-    scroll area the later rows were laid out below the clip and disappeared. This
-    wrapper answers ``heightForWidth`` for the layout above it, which is what a
-    box layout and a resizable scroll area both ask before allocating space.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.flow = FlowLayout(self)
-        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self.flow.heightForWidth(width)
-
-    def sizeHint(self):
-        width = self.width() or 600
-        return QSize(width, self.flow.heightForWidth(width))
-
-    def minimumSizeHint(self):
-        return self.sizeHint()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.setMinimumHeight(self.flow.heightForWidth(event.size().width()))
-        self.updateGeometry()
-
-
-class JourneyNode(QFrame):
-    """One lifecycle stage. Clicking it only ever opens its recorded history."""
+class WorkflowNode(QFrame):
     clicked = pyqtSignal()
 
     def mouseReleaseEvent(self, event):
@@ -89,290 +45,304 @@ class JourneyNode(QFrame):
             self.clicked.emit()
 
 
+class WorkflowConnector(QFrame):
+    """A real line between stages, not a text arrow or progress indicator."""
+    def __init__(self, vertical=False):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.VLine if vertical else QFrame.Shape.HLine)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        self.setStyleSheet('color:#a8b8c8;background:#a8b8c8;')
+        if vertical:
+            self.setFixedHeight(17)
+            self.setFixedWidth(2)
+        else:
+            self.setFixedWidth(24)
+
+
 class RepairJourney(QWidget):
+    """One reusable left-to-right graph plus a contextual stage panel."""
     action_requested = pyqtSignal(str)
+    inline_action_requested = pyqtSignal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        heading = text_label('Repair journey', True)
-        heading.setStyleSheet('font-size:18px;')
+        layout.setSpacing(9)
+        heading = text_label('Repair workflow', True)
+        heading.setStyleSheet('font-size:18px;color:#102a43;')
         layout.addWidget(heading)
         self.route = text_label()
         layout.addWidget(self.route)
-        self.legend = FlowLayout()
-        self.legend_labels = {}
-        for status, (icon, title, ink, _, _) in JOURNEY_STATES.items():
-            item = text_label(f'{icon} {title}')
-            item.setStyleSheet(f'color:{ink};font-size:11px;')
-            self.legend_labels[status] = item
-            self.legend.addWidget(item)
-        layout.addLayout(self.legend)
-        # The overview strip stays pinned above the scrolling detail, so the
-        # whole journey is still visible once the view scrolls to the current
-        # stage. It is only populated in rail mode.
-        self.rail_holder = QWidget()
-        self.rail_layout = QVBoxLayout(self.rail_holder)
-        self.rail_layout.setContentsMargins(0, 0, 0, 0)
-        self.rail_holder.hide()
-        layout.addWidget(self.rail_holder)
         self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setMinimumHeight(215)
+        self.scroll.setMaximumHeight(280)
         self.body = QWidget()
-        self.nodes_layout = QVBoxLayout(self.body)
-        self.nodes_layout.setContentsMargins(2, 4, 12, 4)
+        self.nodes_layout = QHBoxLayout(self.body)
+        self.nodes_layout.setContentsMargins(6, 7, 6, 7)
         self.nodes_layout.setSpacing(0)
         self.scroll.setWidget(self.body)
-        layout.addWidget(self.scroll, 1)
-        self.notice = text_label()
-        self.notice.setObjectName('subtitle')
-        layout.addWidget(self.notice)
+        layout.addWidget(self.scroll)
+        self.stage_panel = QFrame()
+        self.stage_panel.setObjectName('stageActionPanel')
+        self.stage_panel.setStyleSheet('QFrame#stageActionPanel {background:white;border:1px solid #dce5ee;border-radius:9px;}')
+        self.stage_layout = QVBoxLayout(self.stage_panel)
+        self.stage_layout.setContentsMargins(14, 10, 14, 10)
+        self.stage_layout.setSpacing(5)
+        layout.addWidget(self.stage_panel)
         self.primary = button('Continue', self.invoke_primary, True)
         self.primary.setAutoDefault(False)
         self.primary.hide()
+        self.current_action = text_label()
         self.snapshot = {}
         self.nodes = []
         self.node_widgets = []
         self.current_node = None
-        self.current_action = text_label()
+        self.selected_key = None
         self.readonly = False
-        self.orientation = Qt.Orientation.Vertical
+        self.inline_fields = {}
+        self.orientation = Qt.Orientation.Horizontal
         self.focus_timer = QTimer(self)
         self.focus_timer.setSingleShot(True)
         self.focus_timer.timeout.connect(self.focus_current)
-        self.setMinimumWidth(280)
-
-    # ---------------------------------------------------------------- input
-
-    def invoke_primary(self):
-        """Dispatch the snapshot's own primary action; no local rule decides it."""
-        action = self.snapshot.get('primary')
-        if action and self.primary.isEnabled():
-            self.action_requested.emit(action)
 
     def set_orientation(self, orientation):
-        """Stacked cards in a side column, a wrapping rail when placed on top."""
-        if orientation == self.orientation:
-            return
-        self.orientation = orientation
-        if self.snapshot:
-            self.render()
+        self.orientation = Qt.Orientation.Horizontal
 
     def set_snapshot(self, snapshot, readonly=False):
-        previous_stage = self.snapshot.get('stage')
+        old_stage = self.snapshot.get('stage')
         self.snapshot = snapshot
         self.readonly = readonly
         self.nodes = build_journey(snapshot)
+        if old_stage != snapshot.get('stage') or not self.selected_key:
+            current = next((n for n in self.nodes if n.get('is_current')), None)
+            self.selected_key = current['key'] if current else None
         self.render()
-        if previous_stage != snapshot['stage']:
+        if old_stage != snapshot.get('stage'):
             self.focus_timer.start(0)
 
-    # --------------------------------------------------------------- render
+    def graph_groups(self):
+        if not any(n['key'] == 'under_repair' for n in self.nodes):
+            return [(n, []) for n in self.nodes]
+        children = [n for n in self.nodes if n['key'] in REPAIR_CHILDREN]
+        return [(n, children if n['key'] == 'under_repair' else [])
+                for n in self.nodes if n['key'] not in REPAIR_CHILDREN]
 
     def render(self):
-        snapshot = self.snapshot
-        # The legend only explains the states actually drawn for this repair.
-        shown = {node['status'] for node in self.nodes} | {'completed', 'current', 'upcoming'}
-        for status, item in self.legend_labels.items():
-            item.setVisible(status in shown)
-        self.route.setText('Route · ' + snapshot['route_label'])
-        self.primary.setParent(self)
-        self.primary.hide()
-        self.primary.setText(ACTIONS.get(snapshot.get('primary'), 'No action available'))
-        self.primary.setEnabled(bool(snapshot.get('primary')) and not self.readonly)
         clear(self.nodes_layout)
-        clear(self.rail_layout)
-        self.rail_holder.setVisible(self.orientation == Qt.Orientation.Horizontal)
-        self.current_node = None
         self.node_widgets = []
-        if self.orientation == Qt.Orientation.Horizontal:
-            self.render_rail()
-        else:
-            self.render_column()
-        self.nodes_layout.addStretch(1)
-        legacy = not snapshot.get('lifecycle_version') or (snapshot.get('data') or {}).get('legacy_review')
-        undecided = str(snapshot.get('route_label') or '').startswith('NOT SELECTED')
-        self.notice.setText(
-            'Legacy history is shown only where evidence was recorded.' if legacy else
-            'The stages after route selection appear once the route is chosen.' if undecided else
-            'Upcoming stages follow the recorded route. Decisions may change the path.')
-
-    def render_column(self):
-        """Full connected cards, one per stage, for the tall side column."""
-        for index, node in enumerate(self.nodes):
+        self.current_node = None
+        self.route.setText('Route · ' + str(self.snapshot.get('route_label') or 'Not selected'))
+        groups = self.graph_groups()
+        for index, (node, children) in enumerate(groups):
             if index:
-                self.nodes_layout.addWidget(self.connector('│\n↓'))
-            card = self.make_node(node)
-            self.nodes_layout.addWidget(card)
-            self.node_widgets.append(card)
-            if node.get('is_current'):
-                self.current_node = card
+                self.nodes_layout.addWidget(WorkflowConnector())
+            column = QWidget()
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(0)
+            column_layout.addWidget(self.make_node(node), 0, Qt.AlignmentFlag.AlignTop)
+            if children:
+                column_layout.addWidget(WorkflowConnector(vertical=True), 0, Qt.AlignmentFlag.AlignHCenter)
+                row = QHBoxLayout()
+                row.setSpacing(5)
+                for child in children:
+                    row.addWidget(self.make_node(child, child=True))
+                column_layout.addLayout(row)
+            column_layout.addStretch()
+            self.nodes_layout.addWidget(column)
+        self.body.setMinimumWidth(12 + sum(max(170, 154 * len(children) + 5 * (len(children) - 1))
+                                           for _, children in groups) + 24 * max(0, len(groups) - 1))
+        self.body.setMinimumHeight(205 if any(children for _, children in groups) else 115)
+        self.nodes_layout.activate()
+        self.body.adjustSize()
+        self.show_selected()
 
-    def render_rail(self):
-        """A pinned chip rail, with the current stage expanded beneath it.
-
-        The whole journey stays readable in one short strip when the component
-        sits above the tabs, where a column of full cards would push every later
-        stage off the screen. The strip lives outside the scroll area, so
-        scrolling to the current stage never hides the overview it belongs to.
-        """
-        strip = Rail()
-        for index, node in enumerate(self.nodes):
-            if index:
-                strip.flow.addWidget(self.connector('→'))
-            chip = self.make_node(node, compact=True)
-            strip.flow.addWidget(chip)
-            self.node_widgets.append(chip)
-        self.rail_layout.addWidget(strip)
-        current = next((node for node in self.nodes if node.get('is_current')), None)
-        if current:
-            card = self.make_node(current)
-            self.nodes_layout.addWidget(card)
-            self.node_widgets.append(card)
-            self.current_node = card
-
-    def connector(self, glyph):
-        line = text_label(glyph)
-        line.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        line.setStyleSheet('color:' + JOURNEY_STATES['upcoming'][2] + ';font-size:14px;')
-        return line
-
-    def describe(self, node, state):
-        """Tooltip text: everything a node knows without crowding the card."""
-        icon, _, _, _, _ = JOURNEY_STATES.get(node['status'], JOURNEY_STATES['upcoming'])
-        lines = [f"{icon}  {node['title']} · {state}"]
-        if node.get('detail'):
-            lines.append(node['detail'])
-        events = node.get('events') or []
-        if events:
-            last = events[-1]
-            lines.append('Recorded ' + str(last.get('time') or last.get('created') or 'time not recorded')
-                         + ' by ' + str(last.get('actor') or 'staff not recorded'))
-        if node.get('is_current'):
-            lines.append('Location · ' + str(self.snapshot.get('current_location') or 'Not recorded'))
-            lines.append('Responsible · ' + str(self.snapshot.get('responsible') or 'Not assigned'))
-            lines.append('Route · ' + str(self.snapshot.get('route_label') or 'Not selected'))
-        lines.append('Click for recorded history.')
-        return '\n'.join(lines)
-
-    def make_node(self, node, compact=False):
+    def make_node(self, node, child=False):
         status = node.get('status', 'upcoming')
         icon, state, ink, surface, border = JOURNEY_STATES.get(status, JOURNEY_STATES['upcoming'])
-        current = bool(node.get('is_current'))
-        if current and status != 'current':
-            state = 'Current · ' + state
-        card = JourneyNode()
-        card.setObjectName('journeyNode')
+        selected = node['key'] == self.selected_key
+        card = WorkflowNode()
+        card.setObjectName('workflowNode')
         card.setProperty('stage', node['key'])
         card.setProperty('visualStatus', status)
+        card.setMinimumWidth(154 if child else 170)
+        card.setMaximumWidth(188 if child else 205)
+        card.setMinimumHeight(80 if child else 98)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setStyleSheet('QFrame#workflowNode {background:%s;border:%dpx solid %s;border-radius:8px;}'
+                           % (surface, 3 if selected else 2 if node.get('is_current') else 1, border))
         card.clicked.connect(lambda n=node: self.show_history(n))
-        card.setStyleSheet('QFrame#journeyNode {background:%s;border:%dpx solid %s;border-radius:10px;}'
-                           % (surface, 2 if current else 1, border))
-        layout = QVBoxLayout(card)
-        margin = 11 if compact else 13
-        layout.setContentsMargins(margin, margin - 3, margin, margin - 3)
-        layout.setSpacing(4 if compact else 7)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(10, 8, 10, 8)
+        box.setSpacing(3)
         title = text_label(f'{icon}  {node["title"]}', True)
-        title.setStyleSheet(f'color:{ink};font-size:{13 if compact else 14}px;')
-        layout.addWidget(title)
-        badge = text_label(state)
-        badge.setStyleSheet(f'color:{ink};font-size:{11 if compact else 12}px;')
-        layout.addWidget(badge)
-        card.setAccessibleName(node['title'] + ' · ' + state)
-        card.setToolTip(self.describe(node, state))
-        if compact:
-            # Chips size to their own stage name so the rail wraps on whole
-            # stages instead of breaking a title across two lines.
-            title.setWordWrap(False)
-            badge.setWordWrap(False)
-            return card
-        if node.get('detail'):
-            layout.addWidget(text_label(node['detail']))
-        events = node.get('events', [])
-        if status == 'completed' and events:
-            last = events[-1]
-            stamp = text_label(str(last.get('time') or last.get('created') or '')
-                               + ' · ' + str(last.get('actor') or 'Staff not recorded'))
-            stamp.setObjectName('subtitle')
-            layout.addWidget(stamp)
-        for line in self.branch_lines(node):
-            layout.addWidget(line)
-        if current:
-            self.fill_current(node, layout)
-        if events or current:
-            details = button('View stage history', lambda checked=False, n=node: self.show_history(n))
-            details.setAutoDefault(False)
-            details.setAccessibleName('View history: ' + node['title'])
-            layout.addWidget(details)
+        title.setStyleSheet(f'color:{ink};font-size:12px;')
+        box.addWidget(title)
+        status_text = 'Action required' if node.get('is_current') and status == 'current' else state
+        if node.get('is_current') and status == 'waiting':
+            status_text = 'Blocked / waiting'
+        stamp = text_label(status_text)
+        stamp.setStyleSheet(f'color:{ink};font-size:11px;')
+        box.addWidget(stamp)
+        if node.get('is_current'):
+            box.addWidget(text_label(stage_age(self.snapshot.get('pending_raw'))))
+        elif status == 'completed' and node.get('events'):
+            last = node['events'][-1]
+            box.addWidget(text_label(str(last.get('time') or last.get('created') or '')[:16]))
+        card.setAccessibleName(node['title'] + ' · ' + status_text)
+        card.setToolTip(node.get('detail') or status_text)
+        self.node_widgets.append(card)
+        if node.get('is_current'):
+            self.current_node = card
         return card
 
-    def branch_lines(self, node):
-        """Name the routes still open, without promising any route's stages."""
-        options = node.get('options')
-        if not options:
-            return []
-        heading = text_label('Possible routes from here', True)
-        heading.setStyleSheet('font-size:12px;')
-        branch = text_label('\n'.join('├─ ' + option for option in options[:-1]) + '\n└─ ' + options[-1])
-        branch.setStyleSheet('color:' + JOURNEY_STATES['upcoming'][2] + ';')
-        return [heading, branch]
+    def show_history(self, node):
+        """Select a stage in place; completed and future stages remain read only."""
+        self.selected_key = node['key']
+        self.render()
 
-    def fill_current(self, node, layout):
-        """What is happening, why it waits, what to do and what follows."""
-        self.current_action = text_label(self.snapshot['next_action'], True)
-        layout.addWidget(self.current_action)
-        layout.addWidget(text_label('Location · ' + str(self.snapshot.get('current_location') or 'Not recorded')
-                                    + '\nResponsible · ' + str(self.snapshot.get('responsible') or 'Not assigned')))
-        if self.snapshot.get('attention'):
-            warning = text_label('\n'.join('! ' + str(item) for item in self.snapshot['attention']))
-            warning.setStyleSheet('color:' + JOURNEY_STATES['waiting'][2] + ';')
-            layout.addWidget(warning)
-        layout.addWidget(self.primary)
-        self.primary.setVisible(bool(self.snapshot.get('primary')))
-        if self.readonly:
-            layout.addWidget(text_label('Read-only archive · actions disabled'))
-        following = self.nodes[self.nodes.index(node) + 1:]
-        upcoming = next((n for n in following if n.get('status') == 'upcoming'), None)
-        if upcoming:
-            layout.addWidget(text_label('Expected next · ' + upcoming['title']))
+    def show_selected(self):
+        self.stage_layout.removeWidget(self.primary)
+        self.primary.setParent(self.stage_panel)
+        self.primary.hide()
+        clear(self.stage_layout)
+        self.inline_fields = {}
+        node = next((n for n in self.nodes if n['key'] == self.selected_key), None)
+        if not node:
+            return
+        status = node['status']
+        icon, state, ink, _, _ = JOURNEY_STATES.get(status, JOURNEY_STATES['upcoming'])
+        title = text_label(f'{icon}  {node["title"]} · {state}', True)
+        title.setStyleSheet(f'color:{ink};font-size:14px;')
+        self.stage_layout.addWidget(title)
+        if node.get('detail'):
+            self.stage_layout.addWidget(text_label(node['detail']))
+        if node.get('options'):
+            self.stage_layout.addWidget(text_label('Available routes: ' + ', '.join(node['options'])))
+        if node.get('is_current'):
+            self.current_action = text_label(self.snapshot.get('next_action') or 'No action available', True)
+            self.stage_layout.addWidget(self.current_action)
+            if self.snapshot.get('attention'):
+                warning = text_label('\n'.join(str(item) for item in self.snapshot['attention']))
+                warning.setStyleSheet('color:#9a4b00;')
+                self.stage_layout.addWidget(warning)
+            action = self.snapshot.get('primary')
+            if action in INLINE_ACTIONS and not self.readonly:
+                self.add_inline_fields(action)
+            self.stage_layout.addWidget(self.primary, 0, Qt.AlignmentFlag.AlignLeft)
+            self.primary.setText(ACTIONS.get(self.snapshot.get('primary'), 'Continue'))
+            self.primary.setEnabled(bool(self.snapshot.get('primary')) and not self.readonly)
+            self.primary.setVisible(bool(self.snapshot.get('primary')))
+        elif status == 'completed':
+            events = node.get('events') or []
+            for event in events[-3:]:
+                self.stage_layout.addWidget(text_label(
+                    f"{event.get('time') or event.get('created') or 'Time not recorded'} · "
+                    f"{event.get('actor') or 'Staff not recorded'} · "
+                    f"{event.get('details') or event.get('event') or event.get('action') or ''}"))
+            if not events:
+                self.stage_layout.addWidget(text_label('No completion evidence recorded for this stage.'))
+        else:
+            self.stage_layout.addWidget(text_label(
+                'Follow the current stage before this step can begin.' if status == 'upcoming'
+                else node.get('detail') or 'This stage is not currently actionable.'))
 
-    # ------------------------------------------------------------ behaviour
+    def add_inline_fields(self, action):
+        fields = QFormLayout()
+        fields.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+        def entry(key, title, kind='text', options=(), checked=False):
+            if kind == 'notes':
+                widget = QTextEdit()
+                widget.setMaximumHeight(65)
+            elif kind == 'choice':
+                widget = QComboBox()
+                for label, value in options:
+                    widget.addItem(label, value)
+            elif kind == 'check':
+                widget = QCheckBox(title)
+                widget.setChecked(checked)
+            else:
+                widget = QLineEdit()
+            fields.addRow('' if kind == 'check' else title, widget)
+            self.inline_fields[key] = widget
+
+        if action == 'inspection_done':
+            entry('notes', 'Inspection findings *', 'notes')
+        elif action == 'verify_warranty':
+            entry('warranty_status', 'Warranty status', 'choice', (
+                ('Choose status', ''), ('Under manufacturer warranty', 'under_warranty'),
+                ('Out of warranty', 'out_of_warranty'), ('Unknown', 'unknown')))
+            entry('notes', 'Evidence / verification *', 'notes')
+        elif action == 'diagnose':
+            entry('notes', 'Confirmed fault *', 'notes')
+            entry('repairable', 'Device is repairable', 'check', checked=True)
+            entry('parts', 'Required parts')
+            entry('parts_available', 'Required parts available', 'check', checked=True)
+        elif action == 'complete_repair':
+            entry('notes', 'Work performed *', 'notes')
+            entry('parts', 'Parts used')
+        elif action == 'test':
+            entry('result', 'Test result', 'choice', (('Passed', 'passed'), ('Failed', 'failed')))
+            entry('notes', 'Test observations *', 'notes')
+        elif action == 'qc':
+            if self.snapshot.get('data', {}).get('unrepaired'):
+                entry('condition_checked', 'Condition checked against intake', 'check')
+            else:
+                entry('result', 'QC result *', 'choice', (
+                    ('Choose result', ''), ('Pass QC', 'passed'), ('Fail QC', 'failed')))
+                for key, title in (('functional', 'Functional test'), ('power', 'Power test'),
+                                   ('charging', 'Charging test'), ('display', 'Display test'),
+                                   ('connectivity', 'Connectivity test'), ('complaint', 'Reported fault resolved')):
+                    choices = [('Not checked', ''), ('Passed', 'passed'), ('Failed', 'failed')]
+                    if key in ('charging', 'display', 'connectivity'):
+                        choices.append(('Not applicable', 'not_applicable'))
+                    entry(key, title, 'choice', choices)
+            entry('notes', 'QC findings / return condition *', 'notes')
+            entry('repair_warranty', 'Repair warranty terms')
+            entry('warranty_until', 'Warranty valid until (YYYY-MM-DD)')
+        elif action in ('wait_parts', 'parts_received', 'rework'):
+            entry('notes', 'Details *', 'notes')
+        self.stage_layout.addLayout(fields)
+
+    def inline_values(self):
+        values = {}
+        for key, widget in self.inline_fields.items():
+            if isinstance(widget, QTextEdit):
+                values[key] = widget.toPlainText().strip()
+            elif isinstance(widget, QComboBox):
+                values[key] = widget.currentData()
+            elif isinstance(widget, QCheckBox):
+                values[key] = widget.isChecked()
+            else:
+                values[key] = widget.text().strip()
+        return values
+
+    def show_error(self, message):
+        error = text_label(message)
+        error.setStyleSheet('color:#b42318;font-weight:600;')
+        self.stage_layout.addWidget(error)
+
+    def invoke_primary(self):
+        action = self.snapshot.get('primary')
+        if action and self.primary.isEnabled():
+            if action in INLINE_ACTIONS and self.inline_fields:
+                values = self.inline_values()
+                if action == 'qc':
+                    values['checks'] = {key: values.pop(key) for key in
+                                        ('functional', 'power', 'charging', 'display',
+                                         'connectivity', 'complaint') if key in values}
+                self.inline_action_requested.emit(action, values)
+            else:
+                self.action_requested.emit(action)
 
     def focus_current(self):
         if self.current_node:
-            self.nodes_layout.activate()
-            self.scroll.ensureWidgetVisible(self.current_node, 0, 18)
-
-    def show_history(self, node):
-        dialog = QDialog(self)
-        dialog.setWindowTitle(node['title'] + ' · Recorded history')
-        dialog.resize(650, 480)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(text_label(node['title'], True))
-        layout.addWidget(text_label(self.describe(node, JOURNEY_STATES.get(
-            node['status'], JOURNEY_STATES['upcoming'])[1]).rsplit('\n', 1)[0]))
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        body = QWidget()
-        rows = QVBoxLayout(body)
-        events = node.get('events', [])
-        if not events:
-            rows.addWidget(text_label('No historical completion evidence is recorded for this stage.'))
-        for event in events:
-            rows.addWidget(text_label(f"{event.get('time') or event.get('created') or 'Time not recorded'}"
-                                      f" · {event.get('actor') or 'Staff not recorded'}", True))
-            rows.addWidget(text_label(event.get('event') or event.get('action', '')))
-            rows.addWidget(text_label(event.get('details') or 'No additional details recorded.'))
-        rows.addStretch()
-        scroll.setWidget(body)
-        layout.addWidget(scroll, 1)
-        layout.addWidget(button('Close', dialog.accept))
-        dialog.exec()
+            self.scroll.ensureWidgetVisible(self.current_node, 36, 0)
 
     def text(self):
-        """Accessible text equivalent retained for old view integrations."""
         return '\n'.join(node['title'] + ' · ' + node['status'] for node in self.nodes)

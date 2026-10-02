@@ -57,7 +57,8 @@ def render(output):
     app.setStyleSheet(STYLE)
     service = Service(Database(output / 'synthetic-data'))
     service.setup('Demo Repair Shop', 'owner', 'PreviewOnly123!')
-    customer = service.save_customer('Demo Customer', '9990001234', address='123 Demo Street')
+    customer = service.save_customer('Demo Customer', '9990001234',
+        address_line1='123 Demo Street', pincode='411001', district='Pune', state='Maharashtra')
     picture = QImage(64, 64, QImage.Format.Format_RGB32)
     picture.fill(QColor('#97bfb4'))
     CustomerRecords(service).save_photo(picture, customer)
@@ -93,7 +94,9 @@ def render(output):
 
     ident, life = to_route(service, customer, 'warranty_centre', warranty=True)
     life.execute(ident, 'prepare_dispatch', dict(items=[r['id'] for r in life.holdings(ident)], consent=True,
-                                                 condition='Intact', expected_return='2099-01-01'))
+                                                 condition='Intact', expected_return='2099-01-01',
+                                                 transport_mode='IN_HAND',
+                                                 transport={'person_name': 'Shop runner', 'mobile': '9990011001'}))
     life.execute(ident, 'dispatch', dict(counterparty='Repairer', condition='Intact', acknowledgment='Receipt D1', carrier=''))
     life.execute(ident, 'diagnose', dict(notes='Mainboard fault', repairable=True, parts='Mainboard', parts_available=True))
     life.execute(ident, 'warranty_result', dict(decision='accepted', rma='RMA-1', notes='Claim accepted',

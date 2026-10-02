@@ -427,11 +427,21 @@ class CustomerOverview(QDialog):
             self.grids[key] = grid
             self.tabs.addTab(grid, title)
         for key in ('outstanding', 'history'):
-            self.grids[key].cellDoubleClicked.connect(lambda *_, key=key: window.safe(lambda: (window.job_detail(window.selected(self.grids[key])['id']), self.reload())))
-        self.grids['visits'].cellDoubleClicked.connect(lambda *_: window.safe(lambda: (window.visit_summary([p['job_id'] for p in window.selected(self.grids['visits'])['product_list']]), self.reload())))
+            self.grids[key].cellDoubleClicked.connect(lambda *_, key=key: window.safe(lambda: self.open_job(key)))
+        self.grids['visits'].cellDoubleClicked.connect(lambda *_: window.safe(self.open_visit))
         self.grids['devices'].cellDoubleClicked.connect(lambda *_: window.safe(self.device_details))
         self.grids['photos'].cellDoubleClicked.connect(lambda *_: window.safe(lambda: window.open_attachment(window.selected(self.grids['photos'])['path'])))
         self.reload()
+
+    def open_job(self, key):
+        ident = self.window.selected(self.grids[key])['id']
+        self.accept()
+        self.window.job_detail(ident)
+
+    def open_visit(self):
+        identifiers = [p['job_id'] for p in self.window.selected(self.grids['visits'])['product_list']]
+        self.accept()
+        self.window.visit_summary(identifiers)
 
     def reload(self):
         self.render(self.records.overview(self.customer_id))

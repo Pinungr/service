@@ -229,7 +229,7 @@ def test_completed_stages_carry_their_recorded_history(service, customer):
     assert all(not n['events'] for n in nodes if n['key'] in ('under_repair', 'billing', 'collected'))
 
 
-def test_primary_button_reuses_the_backend_action_and_sits_in_the_current_card(qtbot, service, customer):
+def test_primary_button_reuses_the_backend_action_in_the_stage_panel(qtbot, service, customer):
     ident, life = fresh(service, customer)
     v = life.snapshot(ident)
     view = RepairJourney()
@@ -239,7 +239,7 @@ def test_primary_button_reuses_the_backend_action_and_sits_in_the_current_card(q
     view.action_requested.connect(seen.append)
     view.primary.click()
     assert seen == [v['primary']] == ['inspect']
-    assert view.primary.parent() is view.current_node
+    assert view.primary.parent() is view.stage_panel
 
     view.set_snapshot(v, readonly=True)
     assert not view.primary.isEnabled()
@@ -247,26 +247,27 @@ def test_primary_button_reuses_the_backend_action_and_sits_in_the_current_card(q
     assert len(seen) == 1
 
 
-def test_legend_explains_only_the_states_drawn_for_this_repair(qtbot, service, customer):
+def test_nodes_show_live_completed_pending_and_failed_states(qtbot, service, customer):
     ident, life = fresh(service, customer)
     view = RepairJourney()
     qtbot.addWidget(view)
     view.show()
     view.set_snapshot(life.snapshot(ident))
     qtbot.wait(20)
-    assert view.legend_labels['completed'].isVisible() and view.legend_labels['upcoming'].isVisible()
-    assert not view.legend_labels['failed'].isVisible()
-    assert not view.legend_labels['skipped'].isVisible()
+    assert {w.property('visualStatus') for w in view.node_widgets} == {'current', 'upcoming'}
+    life.execute(ident, 'inspect')
+    view.set_snapshot(life.snapshot(ident))
+    assert {w.property('visualStatus') for w in view.node_widgets} >= {'completed', 'current', 'upcoming'}
 
     other, life2 = route(service, customer, 'in_house')
     life2.execute(other, 'diagnose', dict(notes='Board is burnt beyond repair', repairable=False, parts='', parts_available=False))
     view.set_snapshot(life2.snapshot(other))
     qtbot.wait(20)
-    assert view.legend_labels['failed'].isVisible()
-    assert view.legend_labels['skipped'].isVisible()
+    assert any(w.property('visualStatus') == 'failed' for w in view.node_widgets)
+    assert any(w.property('visualStatus') == 'skipped' for w in view.node_widgets)
 
 
-def test_workspace_keeps_every_tab_and_reflows_instead_of_clipping(qtbot, service, customer):
+def test_workspace_keeps_horizontal_workflow_above_every_tab(qtbot, service, customer):
     from repairshop.ui import MainWindow
     from repairshop.lifecycle_ui import JobWorkspace
     ident, life = route(service, customer, 'in_house')
@@ -284,13 +285,13 @@ def test_workspace_keeps_every_tab_and_reflows_instead_of_clipping(qtbot, servic
 
     d.resize(1400, 900)
     qtbot.wait(30)
-    assert d.splitter.orientation() == Qt.Orientation.Horizontal
+    assert d.splitter.orientation() == Qt.Orientation.Vertical
     d.resize(820, 900)
     qtbot.wait(30)
     assert d.splitter.orientation() == Qt.Orientation.Vertical
     assert [d.tabs.tabText(i) for i in range(d.tabs.count())] == titles
-    for card in d.journey.node_widgets:
-        assert card.width() <= d.journey.width()
+    assert d.journey.scroll.horizontalScrollBar().maximum() > 0
+    assert all(card.width() >= 154 for card in d.journey.node_widgets)
     window.pool.waitForDone(10000)
 
 
@@ -310,37 +311,28 @@ def test_route_options_offer_the_backend_routes_only_while_the_route_is_open(ser
     assert settled['status'] == 'completed' and not settled.get('options')
 
 
-def test_rail_mode_keeps_every_stage_visible_and_switches_back(qtbot, service, customer):
-    """Placed above the tabs the journey becomes a pinned rail, not a column."""
+def test_horizontal_graph_scrolls_and_branches_under_repair(qtbot, service, customer):
     ident, life = route(service, customer, 'in_house')
     view = RepairJourney()
     qtbot.addWidget(view)
     view.resize(900, 420)
+    view.setMaximumWidth(900)
     view.show()
     view.set_snapshot(life.snapshot(ident))
     qtbot.wait(30)
-    assert not view.rail_holder.isVisible()
-    expected = [node['title'] for node in view.nodes]
-
-    view.set_orientation(Qt.Orientation.Horizontal)
-    qtbot.wait(30)
-    assert view.rail_holder.isVisible()
-    rail = view.rail_layout.itemAt(0).widget()
-    chips = [rail.flow.itemAt(i).widget() for i in range(rail.flow.count())]
-    named = [c.accessibleName().rsplit(' · ', 1)[0] for c in chips if c.accessibleName()]
-    assert named == expected
-    # The strip must really occupy the height its wrapped rows need.
-    assert rail.height() >= rail.flow.heightForWidth(rail.width()) > 0
-    # The current stage is still expanded, with its action inside it.
+    assert view.orientation == Qt.Orientation.Horizontal
+    assert view.scroll.horizontalScrollBar().maximum() > 0, (view.width(), view.body.width(), view.scroll.viewport().width(), len(view.nodes))
+    assert view.scroll.horizontalScrollBar().value() > 0
+    groups = view.graph_groups()
+    repair = next(children for node, children in groups if node['key'] == 'under_repair')
+    assert [child['key'] for child in repair] == ['technician_testing']
     assert view.current_node is not None and view.primary.isVisible()
-    assert view.primary.parent() is view.current_node
+    assert view.primary.parent() is view.stage_panel
 
     view.set_orientation(Qt.Orientation.Vertical)
     qtbot.wait(30)
-    assert not view.rail_holder.isVisible()
-    assert [node['title'] for node in view.nodes] == expected
-    assert view.primary.parent() is view.current_node
-
+    assert view.orientation == Qt.Orientation.Horizontal
+    assert view.scroll.horizontalScrollBar().maximum() > 0
 
 def test_clicking_a_stage_only_opens_its_history(qtbot, service, customer, monkeypatch):
     """Stage clicks are for reading. They must never dispatch a transition."""

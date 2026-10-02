@@ -1,5 +1,7 @@
 # Targeted regression plan
 
+`tests/test_lifecycle_dialogs.py` verifies that beginning initial inspection, starting repair and notifying the customer advance without an empty form, refresh the workspace and retain lifecycle audit entries. It also verifies that completing inspection still requests the required findings and closing a delivered job asks for a specific confirmation that can be cancelled. The existing lifecycle tests cover permission and version checks in the service used by these direct actions.
+
 ## Intake and registration — 1.5.0
 
 `test_customer_registration.py`: required fields, phone duplicates with both choices, image upload/capture/staging/cancel/retry and existing-customer edits.
@@ -47,3 +49,22 @@ suites 35 passed at 150% display scaling. Visual verification used
 approval, repair in progress, not repairable, warranty covered and two narrow
 windows, each inspected. Windows packaging and installer verification for 1.6.0
 have not been run and remain open.
+
+## Horizontal operational workflow
+
+`tests/test_horizontal_workflow.py` covers global mobile and ID lookup, multiple
+jobs on one mobile, no result, dashboard status counts and filtering, direct
+opening into the main job page, returning to repairs, inline inspection
+completion, inline final QC, future stage read-only behavior and lifecycle audit. The updated
+`tests/test_repair_journey.py` checks horizontal scroll, real repair child
+stages, palette states, blocked and failed states, and the current action in
+the selected-stage panel. `tests/test_lifecycle_dialogs.py` covers direct
+zero-input transitions and the retained close confirmation. Existing lifecycle
+tests cover permission, version and transition checks. Run with:
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m pytest -q --basetemp runtime\test-temp\run
+```
+
+This source test command does not create a Windows executable or installer.

@@ -30,6 +30,21 @@ Customer collection requires the collector and acknowledgment for each selected 
 
 ## Repair work and warranty
 
+### Find and advance a repair
+
+Use the search field at the top of the application to enter a customer's mobile
+number or a repair/product ID. If the mobile has several jobs, choose the right
+one from the list. You can also click a status card on the Dashboard and open a
+job from its filtered list.
+
+The job opens on a single status page. Scroll the workflow left or right to see
+its full path; it starts with the current stage in view. Green stages are done,
+amber is the action to take now, grey stages are ahead, orange needs attention
+and red indicates failure or rejection. Click a finished stage to read its
+history. Click the current stage to see the next action and enter only the
+details it needs. When saved, the workflow advances automatically. The tabs
+below the workflow hold photos, parts, work cards, custody and financial details.
+
 Open the job to view clearly named tabs for custody, work, assignments, warranty, quotes, accounts, expenses, movements, documents, messages and audit history. Record diagnosis, actions, installed parts, start/completion details and service warranty. Switch assignments to another vendor when needed; previous records remain.
 
 Warranty date eligibility is separate from the centre's decision. Record pending, accepted, rejected or partial coverage with RMA, findings, covered/excluded work, and evidence. Approved warranty work can be no-charge, while transport or handling remains separately agreed. Rejection can lead to a paid quote or return without repair. A replacement records both serial identities, evidence and the warranty terms actually supplied; no fresh warranty is invented.

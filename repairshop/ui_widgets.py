@@ -197,7 +197,7 @@ QStatusBar {background: #e2e8f0;color: #475569;}
 # the meaning on their own so nothing depends on colour alone.
 STATUS_STATES = {
     'completed': ('\u2713', 'Completed', '#166534', '#edf9f0', '#b7dec2'),
-    'current': ('\u25cf', 'Current', '#0f766e', '#eaf7f5', '#0f766e'),
+    'current': ('\u25cf', 'Action required', '#854d0e', '#fef3c7', '#f59e0b'),
     'upcoming': ('\u25cb', 'Upcoming', '#64748b', '#f8fafc', '#dde5ee'),
     'waiting': ('!', 'Waiting / blocked', '#92400e', '#fff7e6', '#e9bd69'),
     'failed': ('\u00d7', 'Failed', '#b42318', '#fff1f0', '#efb4ad'),

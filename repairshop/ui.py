@@ -6,7 +6,7 @@ from decimal import Decimal
 from PyQt6.QtCore import Qt, QThreadPool, QTimer, QUrl, QDate
 from PyQt6 import sip
 from PyQt6.QtGui import QDesktopServices, QShortcut, QKeySequence
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox, QProgressBar)
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QDialog, QTabWidget, QMessageBox, QFileDialog, QLineEdit, QCheckBox, QScrollArea, QGridLayout, QPushButton, QSpinBox, QProgressBar, QListWidget, QListWidgetItem)
 from .ui_widgets import Form, Grid, MasterSelector, CustomerSelector, Task, button, combo, STYLE, badge, panel, MetricCard, CardGrid, FlowLayout
 from .domain import RuleError, money, rupees, STAGES, ROUTES, MASTER_KINDS, today
 from .queries import Queries
@@ -113,6 +113,23 @@ class MainWindow(QMainWindow):
         state_badge = badge("READ-ONLY ARCHIVE" if self.db.readonly else "SYNTHETIC DEMO" if demo else self.db.setting("shop_name", "Your shop"), "warning" if self.db.readonly else "info")
         top.addWidget(state_badge, 0, Qt.AlignmentFlag.AlignTop)
         body.addLayout(top)
+        self.global_search = QLineEdit()
+        self.global_search.setPlaceholderText('Search mobile number or Job / Product ID...')
+        self.global_search.setClearButtonEnabled(True)
+        self.global_search.setAccessibleName('Global job search')
+        body.addWidget(self.global_search)
+        self.global_results = QListWidget()
+        self.global_results.setMaximumHeight(230)
+        self.global_results.hide()
+        body.addWidget(self.global_results)
+        self.global_matches = []
+        self.global_search_timer = QTimer(self)
+        self.global_search_timer.setSingleShot(True)
+        self.global_search_timer.setInterval(180)
+        self.global_search_timer.timeout.connect(self.update_global_search)
+        self.global_search.textChanged.connect(lambda: self.global_search_timer.start())
+        self.global_search.returnPressed.connect(self.open_global_search)
+        self.global_results.itemClicked.connect(self.open_global_item)
         self.stack = QStackedWidget()
         body.addWidget(self.stack)
         root.addWidget(content, 1)
@@ -224,6 +241,44 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Please review", str(exc))
 
+    def update_global_search(self):
+        term = self.global_search.text().strip()
+        self.global_matches = Lifecycle(self.s).search_jobs(term) if term else []
+        self.global_results.clear()
+        if not term:
+            self.global_results.hide()
+            return
+        for row in self.global_matches:
+            item = QListWidgetItem(
+                f"{row['number']}  ·  {row['customer']}  ·  {row['phone']}\n"
+                f"{row['device']}  ·  {LABELS.get(row['stage'], row['stage'])}")
+            item.setData(Qt.ItemDataRole.UserRole, row['id'])
+            self.global_results.addItem(item)
+        if not self.global_matches:
+            self.global_results.addItem('No matching jobs')
+        self.global_results.show()
+
+    def open_global_search(self):
+        self.global_search_timer.stop()
+        self.update_global_search()
+        term = self.global_search.text().strip().casefold()
+        exact = [row for row in self.global_matches if row['number'].casefold() == term]
+        choice = exact[0] if len(exact) == 1 else self.global_matches[0] if len(self.global_matches) == 1 else None
+        if choice:
+            self.open_global_job(choice['id'])
+        elif self.global_matches:
+            self.global_results.setFocus()
+
+    def open_global_item(self, item):
+        ident = item.data(Qt.ItemDataRole.UserRole)
+        if ident:
+            self.open_global_job(ident)
+
+    def open_global_job(self, ident):
+        self.global_results.hide()
+        self.global_search.clear()
+        self.safe(lambda: self.job_detail(ident))
+
     # Screens a role may not use at all. Hiding a button is only tidiness: `navigate`
     # refuses the screen and every service call behind it enforces the rule again.
     #: The permission each screen needs. A screen with no entry is open to any signed-in
@@ -270,6 +325,9 @@ class MainWindow(QMainWindow):
             self.run(folders, 'Updating browsable customer folders…', refresh=False)
 
     def _refresh(self):
+        if self.page_name == 'Job Workflow':
+            self.job_workspace.reload()
+            return
         old = self.stack.currentWidget()
         page = QWidget()
         self.layout = QVBoxLayout(page)
@@ -328,6 +386,8 @@ class MainWindow(QMainWindow):
         self.layout.addStretch()
 
     def active_repairs(self, filter_key=''):
+        filter_key = getattr(self, 'repair_filter', '') or filter_key
+        self.repair_filter = ''
         life = Lifecycle(self.s)
         filters, filter_layout = panel('Find repair work', 'Use search and status filters together. Double-click any row to open the repair workspace.')
         row = QHBoxLayout()
@@ -335,11 +395,13 @@ class MainWindow(QMainWindow):
         search.setPlaceholderText('Search job, customer, phone, device or serial…')
         choices = [('All active repairs',''), ('Ready for delivery','ready'), ('Attention required','attention'), ('At service center','external_centre'), ('With third party','external_vendor'), ('In-house','in_house'), ('Warranty claims','warranty_claims'), ('All repair history','history')] + [(label,key) for key,label in LABELS.items()]
         selector = combo(choices, filter_key)
+        self.active_filter = selector
         row.addWidget(search, 3)
         row.addWidget(selector, 1)
         filter_layout.addLayout(row)
         self.layout.addWidget(filters)
         grid = self.table([], COLUMNS)
+        self.active_grid = grid
         offset = [0]
         def reload(): grid.fill(life.rows(search.text(),selector.currentData(),offset[0]),COLUMNS)
         timer = QTimer(search); timer.setSingleShot(True);timer.setInterval(250);timer.timeout.connect(reload)
@@ -359,7 +421,10 @@ class MainWindow(QMainWindow):
         heading = QLabel('My work queue' if mine else 'Your work queue')
         heading.setObjectName('sectionTitle')
         self.layout.addWidget(heading)
-        definitions = [('Received','received','info'),('Under diagnosis','diagnosis','info'),('Waiting for approval','awaiting_approval','warning'),('Waiting for parts','waiting_parts','warning'),('Repair in progress','under_repair','info'),('Final quality check','final_qc','info'),('Ready for delivery','ready','success'),('Overdue','overdue','error')]
+        definitions = [('Received','received','info'),('Waiting inspection','inspection','warning'),
+                       ('Estimate pending','awaiting_estimate','warning'),('Waiting approval','awaiting_approval','warning'),
+                       ('Repair in progress','under_repair','info'),('Waiting for parts','waiting_parts','warning'),
+                       ('Ready for delivery','ready','success'),('Completed','collected','success')]
         cards = [MetricCard(('My ' + title[0].lower() + title[1:]) if mine else title,
                             totals.get(key, 0), lambda checked=False, k=key: self.safe(lambda: self.lifecycle_list(k)), tone)
                  for title, key, tone in definitions]
@@ -397,11 +462,8 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(footer)
 
     def lifecycle_list(self,key):
-        d=QDialog(self);d.setWindowTitle('Matching repairs');d.resize(1150,650)
-        layout=QVBoxLayout(d);g=Grid();g.fill(Lifecycle(self.s).rows(filter_key=key,limit=0),COLUMNS);layout.addWidget(g)
-        layout.addWidget(button('Open selected repair',lambda:self.safe(lambda:self.job_detail(self.selected(g)['id'])),True))
-        g.cellDoubleClicked.connect(lambda *_:self.safe(lambda:self.job_detail(self.selected(g)['id'])))
-        d.exec()
+        self.repair_filter = key
+        self.navigate('Active Repairs')
 
     def operations_dashboard(self):
         data = self.q.dashboard()
@@ -462,7 +524,11 @@ class MainWindow(QMainWindow):
         g = Grid()
         g.fill(self.q.jobs(**filters))
         layout.addWidget(g)
-        layout.addWidget(button("Open selected job", lambda: self.safe(lambda: self.job_detail(self.selected(g)["id"])), True))
+        def open_selected():
+            ident = self.selected(g)['id']
+            d.accept()
+            self.job_detail(ident)
+        layout.addWidget(button("Open selected job", lambda: self.safe(open_selected), True))
         d.exec()
 
     def customers(self):
@@ -967,7 +1033,11 @@ class MainWindow(QMainWindow):
         d=QDialog(self);d.setWindowTitle('Products received · '+visit['number']);d.resize(1000,600)
         layout=QVBoxLayout(d);layout.addWidget(QLabel(f"{len(rows)} products received for {rows[0]['customer']} · Visit {visit['number']} · {visit['status']}"))
         grid=Grid();grid.fill(rows,['number','device','serial','complaint','stage']);layout.addWidget(grid)
-        layout.addWidget(button('Open selected repair',lambda:self.safe(lambda:self.job_detail(self.selected(grid)['id']))))
+        def open_selected():
+            ident = self.selected(grid)['id']
+            d.accept()
+            self.job_detail(ident)
+        layout.addWidget(button('Open selected repair',lambda:self.safe(open_selected)))
         layout.addWidget(button('Print visit receipt',lambda:self.run(lambda:self.docs.visit_receipt(identifiers),'Creating visit receipt…',callback=lambda p:QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))),refresh=False)))
         layout.addWidget(button('Close',d.accept));d.exec()
 
@@ -980,8 +1050,23 @@ class MainWindow(QMainWindow):
         self.visit_summary([r['id'] for r in self.db.rows('SELECT id FROM jobs WHERE intake_ref=? AND customer_id=? ORDER BY id',(job['intake_ref'],job['customer_id']))])
 
     def job_detail(self, ident):
-        JobWorkspace(self, ident).exec()
-        self.refresh()
+        if self.page_name != 'Job Workflow':
+            self.previous_page = self.page_name
+        old = self.stack.currentWidget()
+        workspace = JobWorkspace(self, ident, embedded=True)
+        self.job_workspace = workspace
+        self.page_name = 'Job Workflow'
+        self.title.setText('Job workflow')
+        self.subtitle.setText('Status, next action, repair records and history')
+        for name, nav_button in self.nav.items():
+            nav_button.setProperty('active', name == self.previous_page)
+            nav_button.style().unpolish(nav_button)
+            nav_button.style().polish(nav_button)
+        self.stack.addWidget(workspace)
+        self.stack.setCurrentWidget(workspace)
+        if old:
+            self.stack.removeWidget(old)
+            old.deleteLater()
 
     def job_records(self, ident):
         j = self.s.job(ident)

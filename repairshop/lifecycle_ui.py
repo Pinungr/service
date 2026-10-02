@@ -8,7 +8,8 @@ from .lifecycle import Lifecycle,ACTIONS,ROUTE_LABELS,local_time
 from .domain import rupees, money, RuleError, in_shop
 from .customer_ui import DevicePhotos,show_photo
 
-COLUMNS=['number','customer','device','visit','route','current_card','status','location','current_custodian','final_destination','responsible','pending_since','expected_date','estimate','balance','warranty_indicator','next_action']
+COLUMNS=['number','customer','phone','device','stage_age','route','status','responsible','next_action','attention']
+ZERO_INPUT_ACTIONS=frozenset(('inspect','start_repair','notify'))
 
 
 def label(text, large=False):
@@ -21,9 +22,11 @@ def label(text, large=False):
 
 
 class JobWorkspace(QDialog):
-    def __init__(self,window,ident):
+    def __init__(self,window,ident,embedded=False):
         super().__init__(window)
-        self.window,self.ident=window,ident
+        self.window,self.ident,self.embedded=window,ident,embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.life=Lifecycle(window.s)
         self.resize(1220,840)
         self.setMinimumSize(720,520)
@@ -49,15 +52,17 @@ class JobWorkspace(QDialog):
         self.metrics.setColumnStretch(1,1);self.metrics.setColumnStretch(3,1)
         outer.addWidget(context)
         from .repair_journey import RepairJourney
-        self.splitter=QSplitter(Qt.Orientation.Horizontal)
+        self.splitter=QSplitter(Qt.Orientation.Vertical)
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setMinimumHeight(520)
-        self.journey=RepairJourney(self);self.journey.action_requested.connect(self.act)
+        self.splitter.setMinimumHeight(700)
+        self.journey=RepairJourney(self)
+        self.journey.action_requested.connect(self.act)
+        self.journey.inline_action_requested.connect(self.act_inline)
         self.tracker=self.journey  # Readable compatibility view, backed by the same nodes.
         self.primary=self.journey.primary
         self.splitter.addWidget(self.journey)
         self.tabs=QTabWidget();self.tabs.setMinimumWidth(360)
-        self.splitter.addWidget(self.tabs);self.splitter.setSizes([370,800])
+        self.splitter.addWidget(self.tabs);self.splitter.setSizes([380,420])
         outer.addWidget(self.splitter,1)
         route_scroll=QScrollArea();route_scroll.setWidgetResizable(True)
         route=QWidget();route_layout=QVBoxLayout(route)
@@ -67,6 +72,9 @@ class JobWorkspace(QDialog):
         self.tools_caption=label('Tools');self.tools_caption.setObjectName('muted')
         route_layout.addWidget(self.tools_caption)
         self.tools=FlowLayout();route_layout.addLayout(self.tools)
+        self.record_meta=label('')
+        self.record_meta.setObjectName('muted')
+        route_layout.addWidget(self.record_meta)
         from .repair_details import RepairDetails
         self.summary=RepairDetails();route_layout.addWidget(self.summary);route_layout.addStretch()
         route_scroll.setWidget(route);self.tabs.addTab(route_scroll,'Repair workspace')
@@ -95,20 +103,18 @@ class JobWorkspace(QDialog):
             b.setEnabled(not window.db.readonly or text=='Full records')
         self.exception_buttons=FlowLayout();utility_layout.addLayout(self.exception_buttons)
         outer.addWidget(self.utilities);self.utilities.hide()
-        shell.addWidget(button('Close window',self.accept))
+        shell.addWidget(button('Back to repairs' if embedded else 'Close window',
+                               self.close_workspace))
         self.reload()
+
+    def close_workspace(self):
+        if self.embedded:
+            self.window.navigate(self.window.previous_page)
+        else:
+            self.accept()
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        if hasattr(self,'splitter'):
-            orientation=Qt.Orientation.Vertical if self.width()<1050 else Qt.Orientation.Horizontal
-            if self.splitter.orientation()!=orientation:
-                self.splitter.setOrientation(orientation)
-                self.splitter.setMinimumHeight(830 if orientation==Qt.Orientation.Vertical else 520)
-                self.splitter.setSizes([440,420] if orientation==Qt.Orientation.Vertical else [370,800])
-                # Stacked above the tabs the journey has width but little height,
-                # so it switches to the wrapping rail; beside them it stays a column.
-                self.journey.set_orientation(Qt.Orientation.Horizontal if orientation==Qt.Orientation.Vertical else Qt.Orientation.Vertical)
 
     def support(self,fn):
         self.window.safe(fn)
@@ -117,7 +123,8 @@ class JobWorkspace(QDialog):
     def reload(self):
         self.view=self.life.snapshot(self.ident);v=self.view
         self.setWindowTitle(v['number']+' · Repair lifecycle')
-        self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}  ·  DEV-{v['device_id']:06d}  ·  Serial: {v['serial'] or 'Not recorded'}" if v['device_id'] else f"{v['number']} · {v['device']} · {v['customer']}")
+        self.heading.setText(f"{v['number']}  ·  {v['device']}\n{v['customer']}  ·  {v['phone']}"
+                             + (f"  ·  DEV-{v['device_id']:06d}" if v['device_id'] else ''))
         # Who took the product in, who is responsible for the repair and who is holding it
         # are three different answers and are shown as three different fields.
         v=dict(v,received_by_name=(v.get('received_by') or {}).get('name') or 'Not recorded',
@@ -129,6 +136,8 @@ class JobWorkspace(QDialog):
             w.setText(str(v[key] or '—').replace('_',' '))
         self.journey.set_snapshot(v,readonly=self.window.db.readonly)
         self.next=self.journey.current_action
+        self.record_meta.setText(f"Visit: {v['visit_number'] or 'Not recorded'}  ·  "
+                                 f"Current card: {v['current_card']}  ·  {v['warranty_indicator']}")
         self.summary.set_snapshot(v)
         for group in (self.buttons,self.tools,self.exception_buttons):
             while group.count():
@@ -149,7 +158,6 @@ class JobWorkspace(QDialog):
         self.tools_caption.setVisible(self.tools.count()>0)
         self.timeline.fill(v['timeline'],['time','event','actor','details'])
         self.custody.fill(v['holdings'],['description','type','serial','location','quantity'])
-        self.heading.setText(self.heading.text()+'\nVisit: '+str(v['visit_number'] or 'Not recorded')+'  ·  Current card: '+v['current_card']+'  ·  '+v['warranty_indicator'])
         for tab in self.record_tabs:tab.reload()
         # The dispatch record belongs to this job only; it appears once a route sends it out.
         if self.dispatch_tab is None and (v['route']!='in_house' or v['dispatch']):
@@ -169,8 +177,20 @@ class JobWorkspace(QDialog):
 
     def act(self,action):
         if not action:return
-        self.window.safe(lambda:self._act(action))
-        self.reload()
+        try:
+            self._act(action)
+        except Exception as exc:
+            self.journey.show_error(str(exc))
+        else:
+            self.reload()
+
+    def act_inline(self, action, payload):
+        try:
+            self.life.execute(self.ident, action, payload, self.view['version'])
+        except Exception as exc:
+            self.journey.show_error(str(exc))
+        else:
+            self.reload()
 
     def _act(self,action):
         v=self.life.snapshot(self.ident)
@@ -189,6 +209,21 @@ class JobWorkspace(QDialog):
         if action in ('select_route','change_route'):return self.route_choice(action,v)
         if action=='qc':return self.qc(v)
         if action=='handover':return self.handover(v)
+        if action=='bill':return self.review_billing(v)
+        if action in ZERO_INPUT_ACTIONS:
+            return self.life.execute(self.ident,action,{},v['version'])
+        if action=='close':
+            prompt=QMessageBox(self)
+            prompt.setWindowTitle('Close job')
+            prompt.setText('Close this delivered job?')
+            prompt.setInformativeText('The job and its history will remain available in Repair History.')
+            close_button=prompt.addButton('Close job',QMessageBox.ButtonRole.AcceptRole)
+            cancel_button=prompt.addButton('Cancel',QMessageBox.ButtonRole.RejectRole)
+            prompt.setDefaultButton(cancel_button)
+            prompt.exec()
+            if prompt.clickedButton() is close_button:
+                return self.life.execute(self.ident,action,{},v['version'])
+            return
         d=Form(ACTIONS[action],self,v['next_action'])
         if action=='adopt':
             d.check('confirmed','I reviewed the saved status, location, quotation and history')
@@ -267,8 +302,6 @@ class JobWorkspace(QDialog):
         elif action in ('decline','repair_failed'):
             d.select('reason','Outcome',['Customer declined repair','Not repairable','Repair failed','Cancelled'])
             d.text('notes','Reason and customer conversation',multiline=True)
-        elif action=='bill':
-            return self.review_billing(v)
         elif action=='details':
             details=v['data'].get('route_details',{})
             if v['data'].get('legacy_review'):
@@ -297,11 +330,7 @@ class JobWorkspace(QDialog):
                 h=rows[index]
                 self.life.execute(self.ident,action,dict(p,item_id=h['id'],source=h['location'],quantity=int(p['quantity'])),v['version'])
             return d.submit(resolve)
-        elif action=='notify':
-            d.layout.addRow(label('Queues an update using existing consent and channel settings. Sending is subject to the configured provider; the Messages screen shows delivery status.'))
-        elif action=='close':
-            d.layout.addRow(label('The delivered job and its full history will remain accessible in Repair History.'))
-        elif action!='inspect' and action!='start_repair':
+        else:
             d.text('notes','Findings / notes',multiline=True)
         def save(p):
             for key in ('vendor_parts','vendor_labour','transport_cost','other_cost','customer_price'):
